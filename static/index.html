@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>因果AI量化交易系统 Pro</title>
+    <style>
+      :root {
+        --bg: #071018;
+        --panel: rgba(9, 23, 34, 0.86);
+        --panel2: rgba(13, 31, 45, 0.92);
+        --line: rgba(144, 184, 196, 0.18);
+        --text: #eff9fc;
+        --muted: #94b6c3;
+        --good: #71d4a0;
+        --bad: #ff8b82;
+        --warn: #f3c86f;
+        --accent: #7ce2ff;
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        color: var(--text);
+        font-family: "IBM Plex Sans", "PingFang SC", sans-serif;
+        background:
+          radial-gradient(circle at left top, rgba(124, 226, 255, 0.18), transparent 24%),
+          radial-gradient(circle at right top, rgba(243, 200, 111, 0.16), transparent 24%),
+          linear-gradient(160deg, #03070b 0%, #071018 44%, #0b1d29 100%);
+      }
+
+      .shell {
+        width: min(1440px, calc(100vw - 28px));
+        margin: 18px auto 40px;
+      }
+
+      .hero, .grid, .triple {
+        display: grid;
+        gap: 18px;
+      }
+
+      .hero { grid-template-columns: 1.35fr 1fr; }
+      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 18px; }
+      .triple { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 18px; }
+
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 18px;
+        box-shadow: 0 20px 60px rgba(0,0,0,0.22);
+        backdrop-filter: blur(12px);
+      }
+
+      h1, h2, h3 { margin: 0 0 12px; }
+      p { margin: 0; color: var(--muted); line-height: 1.6; }
+
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .stat {
+        background: var(--panel2);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 14px;
+      }
+
+      .label {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-bottom: 6px;
+      }
+
+      .value { font-size: 24px; font-weight: 700; }
+      .good { color: var(--good); }
+      .bad { color: var(--bad); }
+      .warn { color: var(--warn); }
+
+      input, select, textarea {
+        width: 100%;
+        border-radius: 12px;
+        border: 1px solid rgba(144, 184, 196, 0.22);
+        background: rgba(4, 13, 20, 0.94);
+        color: var(--text);
+        padding: 12px;
+        font: inherit;
+      }
+
+      textarea { min-height: 290px; resize: vertical; }
+
+      .actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-top: 12px;
+      }
+
+      button {
+        border: 0;
+        border-radius: 999px;
+        padding: 11px 16px;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 700;
+        color: #08131a;
+        background: linear-gradient(135deg, var(--accent), #c1f6ff);
+      }
+
+      button.secondary {
+        color: var(--text);
+        background: linear-gradient(135deg, rgba(243, 200, 111, 0.18), rgba(243, 200, 111, 0.08));
+        border: 1px solid rgba(243, 200, 111, 0.22);
+      }
+
+      button.ghost {
+        color: var(--text);
+        background: linear-gradient(135deg, rgba(124, 226, 255, 0.12), rgba(124, 226, 255, 0.06));
+        border: 1px solid rgba(124, 226, 255, 0.18);
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+
+      th, td {
+        text-align: left;
+        padding: 10px 8px;
+        vertical-align: top;
+        border-bottom: 1px solid rgba(144, 184, 196, 0.12);
+      }
+
+      pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 13px;
+        line-height: 1.5;
+        background: rgba(4, 13, 20, 0.95);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 14px;
+        min-height: 220px;
+      }
+
+      .chart-wrap {
+        height: 420px;
+        border-radius: 14px;
+        overflow: hidden;
+        border: 1px solid var(--line);
+      }
+
+      .mono { font-family: "SF Mono", "Menlo", monospace; }
+      .pill {
+        display: inline-block;
+        border-radius: 999px;
+        padding: 4px 9px;
+        background: rgba(124, 226, 255, 0.08);
+        border: 1px solid rgba(124, 226, 255, 0.18);
+        font-size: 12px;
+      }
+
+      @media (max-width: 1080px) {
+        .hero, .grid, .triple, .stats { grid-template-columns: 1fr; }
+      }
+    </style>
+    <script src="/vendor/lightweight-charts.standalone.production.js"></script>
+  </head>
+  <body>
+    <div class="shell">
+      <section class="hero">
+        <div class="card">
+          <h1>因果AI量化交易系统 Pro</h1>
+          <p>这版系统把前三个梯队的关键项目按“原生集成、桥接集成、导出集成、评测集成”全部纳入：`ccxt / ta / backtrader / lightweight-charts / OpenBB bridge / QuantLib bridge / Lean / Freqtrade / Hummingbot / FinEval / FinLongEval / XuanYuan / TradingAgents-AShare`。默认推理链路也升级成了“便宜信号先筛选，因果图后确认，多智能体再裁决”的低 token 流水线。</p>
+          <div class="actions">
+            <button onclick="refreshAll()">刷新全局状态</button>
+            <button class="secondary" onclick="runOptimizedPipeline()">运行优化流水线</button>
+            <button class="ghost" onclick="executeCausalDecision()">执行因果决策</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="stats" id="stats"></div>
+        </div>
+      </section>
+
+      <section class="triple">
+        <div class="card">
+          <h2>项目生态状态</h2>
+          <table id="ecosystemTable"></table>
+        </div>
+        <div class="card">
+          <h2>GitHub 项目状态</h2>
+          <table id="githubTable"></table>
+        </div>
+        <div class="card">
+          <h2>事件与优化</h2>
+          <table id="eventTable"></table>
+        </div>
+      </section>
+
+      <section class="grid">
+        <div class="card">
+          <h2>策略定义与导出</h2>
+          <input id="strategyName" value="Causal Strategy Draft" />
+          <div style="height: 10px"></div>
+          <select id="datasetSelect"></select>
+          <div style="height: 10px"></div>
+          <select id="statusSelect">
+            <option value="draft">draft</option>
+            <option value="active">active</option>
+            <option value="paused">paused</option>
+          </select>
+          <div style="height: 10px"></div>
+          <textarea id="strategySpec"></textarea>
+          <div class="actions">
+            <button onclick="saveStrategy()">保存策略</button>
+            <button class="secondary" onclick="exportStrategy('lean')">导出 Lean</button>
+            <button class="secondary" onclick="exportStrategy('freqtrade')">导出 Freqtrade</button>
+            <button class="secondary" onclick="exportStrategy('hummingbot')">导出 Hummingbot</button>
+            <button class="ghost" onclick="exportStrategy('tradingagents')">导出 TradingAgents</button>
+            <button class="ghost" onclick="exportStrategy('xuanyuan')">导出 XuanYuan</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>执行与高级回测</h2>
+          <select id="strategyList"></select>
+          <div style="height: 10px"></div>
+          <select id="brokerMode">
+            <option value="paper">paper</option>
+            <option value="live">live webhook</option>
+          </select>
+          <div class="actions">
+            <button onclick="runBacktest()">简单回测</button>
+            <button class="secondary" onclick="runAdvancedBacktest()">Backtrader 回测</button>
+            <button class="secondary" onclick="executeStrategy()">执行策略</button>
+            <button class="ghost" onclick="loadCausalDecision()">查看因果决策</button>
+          </div>
+          <div style="height: 12px"></div>
+          <input id="symbolInput" value="AAPL,MSFT,GOOGL,600000,QQQ" />
+          <div class="actions">
+            <button class="secondary" onclick="runOptimizedPipeline()">优化流水线</button>
+            <button class="ghost" onclick="priceOption()">QuantLib 定价</button>
+          </div>
+          <pre id="resultBox"></pre>
+        </div>
+      </section>
+
+      <section class="grid">
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+            <h2>行情与订单标记</h2>
+            <select id="chartDataset" onchange="loadChart()"></select>
+          </div>
+          <div class="chart-wrap" id="chart"></div>
+        </div>
+        <div class="card">
+          <h2>优化推理结果</h2>
+          <pre id="causalBox"></pre>
+        </div>
+      </section>
+
+      <section class="grid">
+        <div class="card">
+          <h2>市场快照与评测</h2>
+          <pre id="marketBox"></pre>
+        </div>
+        <div class="card">
+          <h2>订单与持仓</h2>
+          <table id="ordersTable"></table>
+          <div style="height: 18px"></div>
+          <table id="positionsTable"></table>
+        </div>
+      </section>
+
+      <section class="grid">
+        <div class="card">
+          <h2>策略与风险事件</h2>
+          <table id="strategiesTable"></table>
+          <div style="height: 18px"></div>
+          <table id="riskTable"></table>
+        </div>
+        <div class="card">
+          <h2>研究输出</h2>
+          <pre id="researchBox"></pre>
+        </div>
+      </section>
+    </div>
+
+    <script>
+      const defaultSpec = {
+        symbol: "XAUUSD",
+        direction: "long_only",
+        indicators: [
+          { name: "fast_ma", type: "sma", window: 12 },
+          { name: "slow_ma", type: "sma", window: 36 },
+          { name: "rsi_14", type: "rsi", window: 14 },
+          { name: "macd_diff", type: "macd_diff", window: 12 }
+        ],
+        entry_rules: [
+          { left: "fast_ma", op: "crosses_above", right: "slow_ma" },
+          { left: "rsi_14", op: ">", right: 50 }
+        ],
+        exit_rules: [
+          { left: "fast_ma", op: "crosses_below", right: "slow_ma" }
+        ],
+        position_sizing: { mode: "fixed_fraction", risk_fraction: 0.1, max_units: 120 },
+        risk_limits: {
+          max_order_notional: 50000,
+          max_position_per_symbol: 120,
+          max_gross_exposure: 250000,
+          stop_loss_pct: 0.05,
+          take_profit_pct: 0.12
+        }
+      };
+
+      let chart;
+      let candleSeries;
+
+      async function api(path, options = {}) {
+        const response = await fetch(path, {
+          headers: { "Content-Type": "application/json" },
+          ...options
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Request failed");
+        return data;
+      }
+
+      function renderTable(id, headers, rows) {
+        const table = document.getElementById(id);
+        table.innerHTML = `
+          <thead><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr></thead>
+          <tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`).join("")}</tbody>
+        `;
+      }
+
+      function ensureChart() {
+        if (chart) return;
+        chart = LightweightCharts.createChart(document.getElementById("chart"), {
+          layout: { background: { color: "#071018" }, textColor: "#cfe6ef" },
+          grid: { vertLines: { color: "rgba(144,184,196,0.08)" }, horzLines: { color: "rgba(144,184,196,0.08)" } },
+          crosshair: { mode: 1 },
+          rightPriceScale: { borderColor: "rgba(144,184,196,0.2)" },
+          timeScale: { borderColor: "rgba(144,184,196,0.2)" }
+        });
+        candleSeries = chart.addCandlestickSeries({
+          upColor: "#71d4a0",
+          downColor: "#ff8b82",
+          borderVisible: false,
+          wickUpColor: "#71d4a0",
+          wickDownColor: "#ff8b82"
+        });
+      }
+
+      async function loadChart() {
+        ensureChart();
+        const dataset = document.getElementById("chartDataset").value;
+        if (!dataset) return;
+        const result = await api(`/api/data/series?dataset=${encodeURIComponent(dataset)}`);
+        candleSeries.setData(result.series);
+        candleSeries.setMarkers(result.markers || []);
+      }
+
+      async function refreshDashboard() {
+        const data = await api("/api/dashboard");
+        const p = data.portfolio;
+        const c = data.causal_status;
+        const stats = [
+          ["权益", p.equity.toLocaleString()],
+          ["现金", p.cash.toLocaleString()],
+          ["回撤", `${(p.drawdown * 100).toFixed(2)}%`],
+          ["因果引擎", c.causal_engine],
+          ["交易智能体", c.trading_agent],
+          ["token压缩", "compact-first"]
+        ];
+        document.getElementById("stats").innerHTML = stats.map(([label, value]) => `
+          <div class="stat">
+            <div class="label">${label}</div>
+            <div class="value ${label === "回撤" && p.drawdown < -0.03 ? "bad" : "good"}">${value}</div>
+          </div>
+        `).join("");
+
+        renderTable(
+          "strategiesTable",
+          ["策略", "状态", "市场", "方向", "操作"],
+          data.strategies.map((s) => [
+            `<div><strong>${s.name}</strong><div class="label mono">${s.id.slice(0, 8)}</div></div>`,
+            s.status,
+            `${s.dataset} / ${s.spec.symbol}`,
+            s.spec.direction,
+            `<button class="ghost" onclick="selectStrategy('${s.id}')">载入</button>`
+          ])
+        );
+
+        renderTable(
+          "positionsTable",
+          ["Symbol", "Qty", "Avg Price", "Realized PnL"],
+          data.positions.map((item) => [item.symbol, item.quantity, item.avg_price, item.realized_pnl])
+        );
+
+        renderTable(
+          "ordersTable",
+          ["时间", "Symbol", "Side", "Qty", "状态", "模式"],
+          data.orders.map((o) => [o.requested_at.slice(0, 19), o.symbol, o.side, o.quantity, o.status, o.broker_mode])
+        );
+
+        renderTable(
+          "riskTable",
+          ["时间", "类型", "级别", "内容"],
+          data.risk_events.map((e) => [e.created_at.slice(0, 19), e.event_type, e.severity, e.message])
+        );
+
+        document.getElementById("datasetSelect").innerHTML = data.datasets.map((d) => `<option value="${d.name}">${d.name}</option>`).join("");
+        document.getElementById("chartDataset").innerHTML = data.datasets.map((d) => `<option value="${d.name}">${d.name}</option>`).join("");
+        document.getElementById("strategyList").innerHTML = data.strategies.map((s) => `<option value="${s.id}">${s.name}</option>`).join("");
+      }
+
+      async function refreshStatus() {
+        const [causal, ecosystem] = await Promise.all([api("/api/causal/status"), api("/api/ecosystem/status")]);
+        renderTable(
+          "ecosystemTable",
+          ["能力", "状态"],
+          Object.entries(ecosystem).map(([key, value]) => [key, typeof value === "boolean" ? (value ? "enabled" : "off") : value || ""])
+        );
+        renderTable(
+          "githubTable",
+          ["项目", "梯队", "模式", "状态"],
+          Object.entries(causal.github_projects).map(([name, item]) => [
+            `<span class="pill">${name}</span>`,
+            item.tier,
+            item.integration_mode,
+            item.status
+          ])
+        );
+        renderTable(
+          "eventTable",
+          ["项", "值"],
+          [
+            ["日历事件数", Object.keys(causal.event_calendar).length],
+            ["账户权益", causal.account_monitor.equity],
+            ["回撤", `${(causal.account_monitor.drawdown * 100).toFixed(2)}%`],
+            ["优化原则", "cheap-first -> causal -> committee -> compact"],
+            ["py311 bridge", ecosystem.py311 || "none"]
+          ]
+        );
+      }
+
+      async function loadMarketSnapshot() {
+        const result = await api("/api/causal/market");
+        document.getElementById("marketBox").textContent = JSON.stringify(result, null, 2);
+      }
+
+      async function loadResearch() {
+        const result = await api("/api/research");
+        document.getElementById("researchBox").textContent = JSON.stringify(result, null, 2);
+      }
+
+      async function selectStrategy(id) {
+        const strategies = await api("/api/strategies");
+        const strategy = strategies.find((item) => item.id === id);
+        if (!strategy) return;
+        document.getElementById("strategyName").value = strategy.name;
+        document.getElementById("datasetSelect").value = strategy.dataset;
+        document.getElementById("statusSelect").value = strategy.status;
+        document.getElementById("strategySpec").value = JSON.stringify(strategy.spec, null, 2);
+        document.getElementById("strategyList").value = strategy.id;
+      }
+
+      async function saveStrategy() {
+        const body = {
+          name: document.getElementById("strategyName").value,
+          dataset: document.getElementById("datasetSelect").value,
+          status: document.getElementById("statusSelect").value,
+          spec: JSON.parse(document.getElementById("strategySpec").value)
+        };
+        const result = await api("/api/strategies", { method: "POST", body: JSON.stringify(body) });
+        document.getElementById("resultBox").textContent = JSON.stringify(result, null, 2);
+        await refreshDashboard();
+      }
+
+      async function runBacktest() {
+        const strategyId = document.getElementById("strategyList").value;
+        const result = await api("/api/backtest", { method: "POST", body: JSON.stringify({ strategy_id: strategyId }) });
+        document.getElementById("resultBox").textContent = JSON.stringify(result, null, 2);
+      }
+
+      async function runAdvancedBacktest() {
+        const strategyId = document.getElementById("strategyList").value;
+        const result = await api("/api/backtest/advanced", { method: "POST", body: JSON.stringify({ strategy_id: strategyId }) });
+        document.getElementById("resultBox").textContent = JSON.stringify(result, null, 2);
+      }
+
+      async function executeStrategy() {
+        const strategyId = document.getElementById("strategyList").value;
+        const brokerMode = document.getElementById("brokerMode").value;
+        const result = await api("/api/execute", {
+          method: "POST",
+          body: JSON.stringify({ strategy_id: strategyId, broker_mode: brokerMode })
+        });
+        document.getElementById("resultBox").textContent = JSON.stringify(result, null, 2);
+        await refreshDashboard();
+        await loadChart();
+      }
+
+      async function exportStrategy(target) {
+        const strategyId = document.getElementById("strategyList").value;
+        const result = await api("/api/export/strategy", {
+          method: "POST",
+          body: JSON.stringify({ strategy_id: strategyId, target })
+        });
+        document.getElementById("resultBox").textContent = JSON.stringify(result, null, 2);
+      }
+
+      async function loadCausalDecision() {
+        const result = await api("/api/causal/decision");
+        document.getElementById("resultBox").textContent = JSON.stringify(result, null, 2);
+      }
+
+      async function runOptimizedPipeline() {
+        const symbols = document.getElementById("symbolInput").value.split(",").map((s) => s.trim()).filter(Boolean);
+        const result = await api("/api/causal/pipeline", {
+          method: "POST",
+          body: JSON.stringify({ symbols })
+        });
+        document.getElementById("causalBox").textContent = JSON.stringify(result, null, 2);
+        document.getElementById("resultBox").textContent = JSON.stringify(result, null, 2);
+        document.getElementById("marketBox").textContent = JSON.stringify({
+          market_data: result.market_data,
+          evaluation: result.evaluation,
+          optimized_reasoning: result.optimized_reasoning
+        }, null, 2);
+      }
+
+      async function executeCausalDecision() {
+        const brokerMode = document.getElementById("brokerMode").value;
+        const result = await api("/api/causal/execute", {
+          method: "POST",
+          body: JSON.stringify({ broker_mode: brokerMode })
+        });
+        document.getElementById("causalBox").textContent = JSON.stringify(result, null, 2);
+        document.getElementById("resultBox").textContent = JSON.stringify(result, null, 2);
+        await refreshDashboard();
+        await loadChart();
+      }
+
+      async function priceOption() {
+        const result = await api("/api/options/price", {
+          method: "POST",
+          body: JSON.stringify({
+            spot: 100,
+            strike: 105,
+            volatility: 0.22,
+            risk_free_rate: 0.03,
+            maturity_days: 45,
+            option_type: "call"
+          })
+        });
+        document.getElementById("resultBox").textContent = JSON.stringify(result, null, 2);
+      }
+
+      async function refreshAll() {
+        await refreshDashboard();
+        await refreshStatus();
+        await loadMarketSnapshot();
+        await loadResearch();
+        await loadChart();
+      }
+
+      document.getElementById("strategySpec").value = JSON.stringify(defaultSpec, null, 2);
+      refreshAll().catch((error) => {
+        document.getElementById("resultBox").textContent = error.message;
+      });
+    </script>
+  </body>
+</html>
