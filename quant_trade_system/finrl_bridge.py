@@ -57,14 +57,21 @@ class FinRLBridge:
                 return candidate
         return None
 
+    def _build_cmd(self, code: str) -> List[str]:
+        """安全地构建subprocess命令"""
+        if not self.python:
+            raise RuntimeError("Python interpreter not available")
+        return [self.python, "-c", code]
+
     def _check_availability(self) -> bool:
         """检查FinRL-X是否可用"""
         if not self.python:
             return False
 
         try:
+            cmd = self._build_cmd("import finrl; print('FinRL available')")
             result = subprocess.run(
-                [self.python, "-c", "import finrl; print('FinRL available')"],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=20,
@@ -85,12 +92,13 @@ class FinRLBridge:
 
     def get_version(self) -> Optional[str]:
         """获取FinRL-X版本"""
-        if not self.available:
+        if not self.available or not self.python:
             return None
 
         try:
+            cmd = self._build_cmd("import finrl; print(finrl.__version__)")
             result = subprocess.run(
-                [self.python, "-c", "import finrl; print(finrl.__version__)"],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=20,
@@ -105,6 +113,7 @@ class FinRLBridge:
 
     def get_available_algorithms(self) -> List[str]:
         """获取可用的强化学习算法"""
+        # 即使FinRL-X未安装，也返回支持的算法列表
         algorithms = [
             "a2c",
             "ddpg",
@@ -116,7 +125,7 @@ class FinRLBridge:
             "gail",  # FinRL-X特有
             "a3c",  # FinRL-X特有
         ]
-        return algorithms if self.available else []
+        return algorithms
 
     def create_trading_env(
         self,

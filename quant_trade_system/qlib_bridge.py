@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -56,14 +57,21 @@ class QlibBridge:
                 return candidate
         return None
 
+    def _build_cmd(self, code: str) -> List[str]:
+        """安全地构建subprocess命令"""
+        if not self.python:
+            raise RuntimeError("Python interpreter not available")
+        return [self.python, "-c", code]
+
     def _check_availability(self) -> bool:
         """检查Qlib是否可用"""
         if not self.python:
             return False
 
         try:
+            cmd = self._build_cmd("import qlib; print(qlib.__version__)")
             result = subprocess.run(
-                [self.python, "-c", "import qlib; print(qlib.__version__)"],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=20,
@@ -83,12 +91,13 @@ class QlibBridge:
 
     def get_version(self) -> Optional[str]:
         """获取Qlib版本"""
-        if not self.available:
+        if not self.available or not self.python:
             return None
 
         try:
+            cmd = self._build_cmd("import qlib; print(qlib.__version__)")
             result = subprocess.run(
-                [self.python, "-c", "import qlib; print(qlib.__version__)"],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=20,
@@ -138,8 +147,9 @@ cal = D.calendar()
 print(f"Date range: {{cal[0]}} to {{cal[-1]}}")
 """
 
+            cmd = self._build_cmd(code)
             result = subprocess.run(
-                [self.python, "-c", code],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=120,
@@ -211,8 +221,9 @@ result = {{
 print(json.dumps(result, default=str))
 """
 
+            cmd = self._build_cmd(code)
             result = subprocess.run(
-                [self.python, "-c", code],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=120,
@@ -266,8 +277,9 @@ print(f"Features: {features_str}")
 print("Model created successfully")
 """
 
+            cmd = self._build_cmd(code)
             result = subprocess.run(
-                [self.python, "-c", code],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=120,
@@ -327,8 +339,9 @@ print("Backtest execution in Qlib...")
 print("Note: Full backtest requires complete strategy configuration")
 """
 
+            cmd = self._build_cmd(code)
             result = subprocess.run(
-                [self.python, "-c", code],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=300,

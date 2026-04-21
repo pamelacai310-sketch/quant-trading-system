@@ -104,6 +104,7 @@ class HFTBacktestBridge:
 
     def get_supported_exchanges(self) -> List[str]:
         """获取支持的交易所"""
+        # 即使hftbacktest未安装，也返回支持的交易所列表
         exchanges = [
             "binance",
             "bitmex",
@@ -111,7 +112,7 @@ class HFTBacktestBridge:
             "okx",
             "coinbase",
         ]
-        return exchanges if self.available else []
+        return exchanges
 
     def create_order_book(
         self,
