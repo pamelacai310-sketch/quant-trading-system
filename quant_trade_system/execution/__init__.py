@@ -25,6 +25,18 @@ from .vwap_algorithm import (
     execute_pov,
 )
 
+from .dynamic_stops import (
+    DynamicStopManager,
+    EntryFilter,
+    OptimizedBacktester,
+    StopAction,
+    StopLossConfig,
+    StopTrigger,
+    StopType,
+    create_recommended_entry_filter,
+    create_recommended_stop_manager,
+)
+
 __all__ = [
     'ExecutionAlgorithm',
     'ExecutionResult',
@@ -38,4 +50,13 @@ __all__ = [
     'POVAlgorithm',
     'execute_vwap',
     'execute_pov',
+    'DynamicStopManager',
+    'EntryFilter',
+    'OptimizedBacktester',
+    'StopAction',
+    'StopLossConfig',
+    'StopTrigger',
+    'StopType',
+    'create_recommended_entry_filter',
+    'create_recommended_stop_manager',
 ]
