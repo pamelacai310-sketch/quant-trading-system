@@ -28,6 +28,10 @@ python3 run.py
 - 🎯 **策略管理** - JSON配置驱动的策略定义和执行
 - 📊 **回测引擎** - 历史数据回测和性能分析
 - 📈 **MAE/MFE 诊断** - 基于最大潜亏/潜盈的策略诊断与优化
+- 🏆 **欧奈尔CANSLIM体系** - 完整实现欧奈尔7要素选股框架
+- 📐 **形态识别** - 杯柄、VCP、双底等经典形态自动识别
+- 💎 **口袋支点** - 提前买入信号检测（Pocket Pivot）
+- 📉 **波动收缩VCP** - Minervini SEPA框架的VCP形态
 - 🤖 **因果AI** - 因果关系发现和智能决策
 - 🔒 **风险控制** - 预交易风控和实时监控
 - 🛡️ **动态止损止盈** - 智能跟踪止损和硬止损机制
@@ -35,11 +39,80 @@ python3 run.py
 - ⚠️ **实盘监控熔断** - 实时监控策略健康度并触发熔断
 - 🌉 **生态集成** - 多个量化项目无缝集成
 
-这版系统的设计目标不是“堆最多项目”，而是围绕三个优化准则做工程收敛：
+这版系统的设计目标不是”堆最多项目”，而是围绕三个优化准则做工程收敛：
 
 - 推理逻辑最强：先因子和技术面预筛，再做因果发现，再做多智能体裁决
 - 分析效率最大化：优先跑便宜的统计和技术特征，把昂贵分析只留给 shortlist
 - token 成本最小化：输出 compact evidence pack，减少重复上下文和长文本展开
+
+---
+
+## 🏆 欧奈尔CANSLIM交易体系
+
+### 系统概述
+
+完整实现威廉·欧奈尔（William J. O'Neil）的CANSLIM交易体系及其演化变体，包括：
+
+- ✅ **CANSLIM 选股器** - 7要素基本面筛选系统
+- ✅ **形态识别器** - 杯柄、VCP、双底等经典形态自动识别
+- ✅ **口袋支点检测器** - Gil Morales & Chris Kacher的提前买入信号
+- ✅ **波动收缩VCP** - Mark Minervini的SEPA框架实现
+- ✅ **策略引擎** - 整合扫描、执行、风险管理的完整系统
+
+### CANSLIM 七要素
+
+| 要素 | 名称 | 标准 | 实现 |
+|------|------|------|------|
+| **C** | Current Earnings | 当季EPS增长≥20-25% | `CANSLIM_Screener._score_c()` |
+| **A** | Annual Earnings | 年化EPS增长≥25-30%，连续3年 | `CANSLIM_Screener._score_a()` |
+| **N** | New | 新产品/催化剂，接近52周新高 | `CANSLIM_Screener._score_n()` |
+| **S** | Supply/Demand | 流通盘适中，成交量活跃 | `CANSLIM_Screener._score_s()` |
+| **L** | Leader | 相对强度评级(RS)≥70 | `CANSLIM_Screener._score_l()` |
+| **I** | Institutional | 机构持股5-70% | `CANSLIM_Screener._score_i()` |
+| **M** | Market | 大盘处于上升趋势 | `CANSLIM_Screener._score_m()` |
+
+### 经典形态识别
+
+#### 1. 杯柄形态 (Cup with Handle)
+- 前期上涨≥30%
+- 杯底深度15-50%
+- 柄部深度<杯底的1/3
+- 枢轴点：柄部顶部
+- 成交量：底部收缩，突破放大
+
+#### 2. 波动收缩VCP (Minervini)
+- 3-4次收缩，幅度递减（18% → 12% → 6%）
+- 最后收缩<10%
+- 突破时成交量放大1.4-1.5倍
+- 风险回报比常达1:10+
+
+#### 3. 口袋支点 (Pocket Pivot)
+- 突破10日均线
+- 成交量>过去10日所有下跌日
+- 提前买入，成本更低
+- 止损在10日均线下方
+
+### 快速使用
+
+```python
+from quant_trade_system.strategies import run_oneill_strategy
+
+# 运行完整欧奈尔策略
+engine = run_oneill_strategy(
+    stocks_data=stocks_data,
+    fundamentals_dict=fundamentals_dict,
+    market_index_data=market_data,
+    initial_capital=100_000,
+    max_positions=5,
+)
+```
+
+### 详细文档
+
+- **[欧奈尔交易体系指南](docs/欧奈尔交易体系指南.md)** - 完整使用手册
+- **[使用示例](examples/oneill_strategy_example.py)** - 6个完整示例
+
+---
 
 ## 当前支持能力
 
