@@ -225,6 +225,105 @@ print(simulated_strategy.generate_report())
 
 ---
 
+## 🔌 FinceptTerminal 集成
+
+### 系统概述
+
+[FinceptTerminal](https://github.com/Fincept-Corporation/FinceptTerminal)是一个现代化的C++20 Qt6金融终端，提供100+数据连接器、Python 3.11嵌入、AI代理和实时数据分析功能。本系统现已完整集成FinceptTerminal，实现：
+
+- ✅ **数据桥接** - 从FinceptTerminal获取100+数据源（Yahoo Finance, FRED, Polygon等）
+- ✅ **策略导出** - 将系统策略导出为Fincept格式（JSON、Python、Workflow）
+- ✅ **信号推送** - 将交易信号推送到FinceptTerminal执行
+- ✅ **智能回退** - Fincept未安装时自动使用yfinance等库
+
+### 核心功能
+
+#### 1. 数据桥接
+
+```python
+from quant_trade_system.integrations import create_fincept_integration
+
+integrator = create_fincept_integration()
+
+# 获取市场数据
+data = integrator.data_bridge.fetch_market_data(
+    symbol="AAPL",
+    start_date="2024-01-01",
+    end_date="2024-12-31",
+)
+
+# 获取经济数据
+gdp_data = integrator.data_bridge.fetch_economic_data(
+    indicator="GDP",
+    start_date="2020-01-01",
+    end_date="2024-12-31",
+)
+```
+
+#### 2. 策略导出
+
+支持三种导出格式：
+
+- **fincept_json**：Fincept配置文件格式
+- **fincept_python**：可执行的Python脚本
+- **fincept_workflow**：可视化工作流定义
+
+```python
+# 导出策略
+strategy = {
+    "name": "My Strategy",
+    "symbol": "AAPL",
+    "indicators": [...],
+    "entry_rules": [...],
+    "exit_rules": [...],
+}
+
+integrator.export_strategy_to_fincept(strategy)
+```
+
+#### 3. 信号推送
+
+```python
+# 推送交易信号
+integrator.signal_pusher.push_signal(
+    symbol="AAPL",
+    action="buy",
+    quantity=100,
+    price=150.25,
+    reason="Golden cross",
+)
+```
+
+### FinceptTerminal 优势
+
+- **100+数据源**：Yahoo Finance, FRED, Polygon, DBnomics等
+- **C++20性能**：高性能数据处理和实时分析
+- **Python 3.11嵌入**：可直接运行Python策略
+- **AI代理支持**：内置AI辅助决策
+- **可视化界面**：Qt6现代化界面
+
+### 快速使用
+
+```python
+from quant_trade_system.integrations import create_fincept_integration
+
+# 创建集成实例
+integrator = create_fincept_integration()
+
+# 检查集成状态
+status = integrator.check_integration_status()
+print(f"Fincept已安装: {status['fincept_installed']}")
+print(f"可用连接器: {status['available_connectors']}")
+```
+
+### 详细文档
+
+- **[Fincept集成指南](docs/FINCEPT_INTEGRATION_GUIDE.md)** - 完整使用手册
+- **[使用示例](examples/fincept_integration_example.py)** - 10个完整示例
+- **[FinceptTerminal GitHub](https://github.com/Fincept-Corporation/FinceptTerminal)** - FinceptTerminal项目
+
+---
+
 ## 当前支持能力
 
 - JSON 直接定义策略
@@ -240,6 +339,7 @@ print(simulated_strategy.generate_report())
 - 因果图发现：`novaaware -> PCMCI -> 本地启发式回退`
 - 因果智能体：`Causal-AI-Agent -> Base Logic` 自动降级
 - `finshare` 数据桥接：Python 3.11 子进程拉取数据，失败后自动回退
+- **FinceptTerminal 集成**：100+数据源、策略导出、信号推送
 - OpenBB 桥接预留：宏观/市场上下文桥接接口
 - QuantLib 桥接预留：期权定价与风险分析接口
 - `ccxt` 接入：多交易所统一执行适配基础
