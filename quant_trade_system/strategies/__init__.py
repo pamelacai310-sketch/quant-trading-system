@@ -38,6 +38,14 @@ from .causal_hybrid_strategy import (
     HybridPosition,
     simulate_causal_hybrid_strategy,
 )
+from .weekly_swing_strategy import (
+    WeeklySwingStrategy,
+    SwingPosition,
+    WeeklyTarget,
+    DayOfWeek,
+    PositionSide,
+    simulate_weekly_swing_strategy,
+)
 
 __all__ = [
     # O'Neil CANSLIM
@@ -67,4 +75,11 @@ __all__ = [
     "CausalSignals",
     "HybridPosition",
     "simulate_causal_hybrid_strategy",
+    # Weekly Swing Strategy
+    "WeeklySwingStrategy",
+    "SwingPosition",
+    "WeeklyTarget",
+    "DayOfWeek",
+    "PositionSide",
+    "simulate_weekly_swing_strategy",
 ]
