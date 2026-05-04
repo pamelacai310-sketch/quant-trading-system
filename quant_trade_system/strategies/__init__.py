@@ -59,6 +59,13 @@ from .hybrid_swing_strategy import (
     AssetType,
     simulate_hybrid_strategy,
 )
+from .enhanced_hybrid_swing_strategy import (
+    EnhancedHybridSwingStrategy,
+    MarketState,
+    EnhancedStockOpportunity,
+    EnhancedFuturesOpportunity,
+    simulate_enhanced_hybrid_strategy,
+)
 
 __all__ = [
     # O'Neil CANSLIM
@@ -106,4 +113,10 @@ __all__ = [
     "UnifiedPosition",
     "AssetType",
     "simulate_hybrid_strategy",
+    # Enhanced Hybrid Swing Strategy
+    "EnhancedHybridSwingStrategy",
+    "MarketState",
+    "EnhancedStockOpportunity",
+    "EnhancedFuturesOpportunity",
+    "simulate_enhanced_hybrid_strategy",
 ]
