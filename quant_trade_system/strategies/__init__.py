@@ -46,6 +46,13 @@ from .weekly_swing_strategy import (
     PositionSide,
     simulate_weekly_swing_strategy,
 )
+from .far_month_futures_strategy import (
+    FarMonthFuturesStrategy,
+    FuturesContract,
+    FuturesPosition,
+    MarketSentiment,
+    simulate_far_month_futures_strategy,
+)
 
 __all__ = [
     # O'Neil CANSLIM
@@ -82,4 +89,10 @@ __all__ = [
     "DayOfWeek",
     "PositionSide",
     "simulate_weekly_swing_strategy",
+    # Far Month Futures Strategy
+    "FarMonthFuturesStrategy",
+    "FuturesContract",
+    "FuturesPosition",
+    "MarketSentiment",
+    "simulate_far_month_futures_strategy",
 ]
