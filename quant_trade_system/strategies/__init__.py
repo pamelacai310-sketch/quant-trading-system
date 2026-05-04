@@ -53,6 +53,12 @@ from .far_month_futures_strategy import (
     MarketSentiment,
     simulate_far_month_futures_strategy,
 )
+from .hybrid_swing_strategy import (
+    HybridSwingStrategy,
+    UnifiedPosition,
+    AssetType,
+    simulate_hybrid_strategy,
+)
 
 __all__ = [
     # O'Neil CANSLIM
@@ -95,4 +101,9 @@ __all__ = [
     "FuturesPosition",
     "MarketSentiment",
     "simulate_far_month_futures_strategy",
+    # Hybrid Swing Strategy
+    "HybridSwingStrategy",
+    "UnifiedPosition",
+    "AssetType",
+    "simulate_hybrid_strategy",
 ]
