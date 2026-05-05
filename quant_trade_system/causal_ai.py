@@ -1151,6 +1151,35 @@ class CausalTradingSystemV4:
         market_data["openbb_market_context"] = self.ecosystem.fetch_openbb_market_context(["AAPL", "MSFT", "GOOGL"])
         return market_data
 
+    def _build_global_peer_datasets(
+        self,
+        symbol_datasets: Dict[str, pd.DataFrame],
+        period: str = "6mo",
+    ) -> Dict[str, Dict[str, pd.DataFrame]]:
+        """为期货品种补齐全球同类合约数据。"""
+        peer_cache: Dict[str, pd.DataFrame] = {}
+        peer_map: Dict[str, Dict[str, pd.DataFrame]] = {}
+
+        for symbol in symbol_datasets:
+            peer_symbols = self.self_iterating_engine.get_global_peer_symbols(symbol)
+            if not peer_symbols:
+                continue
+            resolved: Dict[str, pd.DataFrame] = {}
+            for peer_symbol in peer_symbols:
+                if peer_symbol == symbol:
+                    continue
+                if peer_symbol not in peer_cache:
+                    try:
+                        peer_cache[peer_symbol] = self.data_adapter.get_symbol_data(peer_symbol, period=period)
+                    except Exception:
+                        peer_cache[peer_symbol] = pd.DataFrame()
+                frame = peer_cache.get(peer_symbol)
+                if frame is not None and not frame.empty:
+                    resolved[peer_symbol] = frame
+            if resolved:
+                peer_map[symbol] = resolved
+        return peer_map
+
     def full_analysis_pipeline_v4(
         self,
         symbols: List[str],
@@ -1186,6 +1215,10 @@ class CausalTradingSystemV4:
         learning_inputs = shortlisted_data if shortlisted_data else {
             symbol: frame for symbol, frame in data.items() if len(frame) >= 80
         }
+        global_peer_datasets = self._build_global_peer_datasets(learning_inputs, period="6mo")
+        results["global_peer_context"] = {
+            symbol: sorted(peers.keys()) for symbol, peers in global_peer_datasets.items()
+        }
         benchmark_frame = raw_datasets.get("nasdaq_daily")
         if benchmark_frame is not None and {"timestamp", "close"}.issubset(set(benchmark_frame.columns)):
             benchmark_frame = benchmark_frame.rename(
@@ -1205,6 +1238,7 @@ class CausalTradingSystemV4:
                 "crisis_probability": 0.15,
                 "cross_asset_regime": market_data.get("cross_asset_regime", {}),
             },
+            global_peer_datasets=global_peer_datasets,
         )
         results["self_iterating_cycle"] = learning_cycle
         committee = self.ecosystem.run_multi_agent_committee(

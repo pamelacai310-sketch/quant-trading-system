@@ -33,6 +33,16 @@ class CausalLibraryTests(unittest.TestCase):
         self.assertIn("interest_rate_premium", factor_ids)
         self.assertIn("refinancing_cost", factor_ids)
 
+    def test_quantized_commodity_factors_flag_global_peer_linkage(self) -> None:
+        gold_factor = self.library.get_quantized_factor("causal_quant_inflation_premium")
+        copper_factor = self.library.get_quantized_factor("causal_quant_supply_demand_balance")
+        self.assertIsNotNone(gold_factor)
+        self.assertIsNotNone(copper_factor)
+        self.assertTrue(gold_factor.metadata["global_peer_linkage_relevant"])
+        self.assertEqual(gold_factor.metadata["global_peer_family"], "precious_metals")
+        self.assertTrue(copper_factor.metadata["global_peer_linkage_relevant"])
+        self.assertEqual(copper_factor.metadata["global_peer_family"], "base_metals")
+
     def test_unitize_exposures_produces_cross_sectional_scores(self) -> None:
         exposures = pd.DataFrame(
             {
