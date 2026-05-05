@@ -29,8 +29,9 @@ class EcosystemIntegrationManager:
         self.backtrader = self._optional_import("backtrader", "backtrader")
         self.lightweight_chart_asset = self.static_vendor_dir / "lightweight-charts.standalone.production.js"
         self.py311 = self._find_python311()
-        self.openbb_bridge = self._detect_bridge("openbb", self.base_dir / "quant_trade_system" / "openbb_bridge.py")
-        self.quantlib_bridge = self._detect_bridge("QuantLib", self.base_dir / "quant_trade_system" / "quantlib_bridge.py")
+        self.openbb_bridge = self._detect_bridge("openbb", self._resolve_bridge_script("openbb_bridge.py"))
+        self.akshare_bridge = self._detect_bridge("akshare", self._resolve_bridge_script("akshare_bridge.py"))
+        self.quantlib_bridge = self._detect_bridge("QuantLib", self._resolve_bridge_script("quantlib_bridge.py"))
         self._mark_export_integrations()
         if self.lightweight_chart_asset.exists():
             self.github_manager.mark_status_name("lightweight-charts", "tested")
@@ -56,6 +57,16 @@ class EcosystemIntegrationManager:
             if candidate and Path(candidate).exists():
                 return candidate
         return None
+
+    def _resolve_bridge_script(self, filename: str) -> Path:
+        candidates = [
+            self.base_dir / "quant_trade_system" / filename,
+            Path(__file__).with_name(filename),
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return candidates[-1]
 
     def _bridge_env(self, name: str) -> Dict[str, str]:
         env = os.environ.copy()
@@ -129,12 +140,17 @@ class EcosystemIntegrationManager:
             "backtrader": bool(self.backtrader),
             "lightweight_charts": self.lightweight_chart_asset.exists(),
             "openbb_bridge": bool(self.openbb_bridge),
+            "akshare_bridge": bool(self.akshare_bridge),
             "quantlib_bridge": bool(self.quantlib_bridge),
             "py311": self.py311,
         }
 
     def fetch_openbb_market_context(self, symbols: List[str]) -> Dict[str, Any]:
         data = self._run_bridge("openbb", self.openbb_bridge, "market", {"symbols": symbols})
+        return data or {}
+
+    def fetch_akshare_market_context(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        data = self._run_bridge("akshare", self.akshare_bridge, "market_context", payload)
         return data or {}
 
     def price_option(self, payload: Dict[str, Any]) -> Dict[str, Any]:

@@ -19,6 +19,8 @@ import numpy as np
 import pandas as pd
 
 from .ecosystem import EcosystemIntegrationManager
+from .core.causal import CausalFactorLibrary, CrossAssetCausalEngine, SelfIteratingCausalEngine
+from .factors import FactorLibrary
 
 
 class DataSource(Enum):
@@ -58,6 +60,16 @@ GITHUB_PROJECTS: Dict[str, GitHubProject] = {
         description="专业的金融数据获取工具库",
         category="数据源",
         import_name="finshare",
+        tier="tier0",
+        integration_mode="bridge",
+    ),
+    "akshare": GitHubProject(
+        name="AKShare",
+        url="https://github.com/akfamily/akshare",
+        stars=0,
+        description="中国资产宏观、库存、估值、持仓与政策日历数据接口",
+        category="数据源",
+        import_name="akshare",
         tier="tier0",
         integration_mode="bridge",
     ),
@@ -927,6 +939,13 @@ class CausalTradingSystemV4:
         self.causal_inference_engine = EnhancedCausalInferenceEngine(use_novaaware=True)
         self.account_monitor = AccountHealthMonitor(initial_capital)
         self.trading_agent = EnhancedCausalTradingAgent(self.account_monitor, use_causal_ai_agent=True)
+        self.causal_factor_library = CausalFactorLibrary()
+        self.cross_asset_engine = CrossAssetCausalEngine(self.causal_factor_library)
+        self.factor_library = FactorLibrary(cache_dir=str(self.base_dir / "state" / "factor_cache"))
+        self.self_iterating_engine = SelfIteratingCausalEngine(
+            factor_library=self.factor_library,
+            causal_factor_library=self.causal_factor_library,
+        )
 
     def sync_account_snapshot(self, snapshot: Dict[str, Any]) -> None:
         self.account_monitor.sync(snapshot)
@@ -943,8 +962,66 @@ class CausalTradingSystemV4:
             "account_monitor": self.account_monitor.status(),
             "github_projects": self.github_manager.get_project_status(),
             "ecosystem": self.ecosystem.status(),
+            "causal_knowledge_base": self.causal_factor_library.get_factor_coverage_summary(),
+            "cross_asset_processing": self.cross_asset_engine.describe_capabilities(),
+            "self_iterating_learning": self.self_iterating_engine.describe_capabilities(),
             "event_calendar": self.trading_agent.event_calendar,
         }
+
+    @staticmethod
+    def _to_numeric(value: Any) -> Optional[float]:
+        if value is None or value == "":
+            return None
+        if isinstance(value, bool):
+            return float(value)
+        if isinstance(value, (int, float)):
+            return float(value)
+        text = str(value).replace(",", "").replace("%", "").strip()
+        if text in {"", "-", "--", "None", "nan"}:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+
+    @classmethod
+    def _extract_bridge_value(cls, payload: Any, aliases: List[str]) -> Optional[float]:
+        if isinstance(payload, dict):
+            direct = cls._to_numeric(payload.get("value"))
+            if direct is not None:
+                return direct
+            for key, value in payload.items():
+                if any(alias.lower() in str(key).lower() for alias in aliases):
+                    numeric = cls._to_numeric(value)
+                    if numeric is not None:
+                        return numeric
+            for nested_key in ["record", "latest", "snapshot", "records", "rows", "calendar"]:
+                if nested_key in payload:
+                    numeric = cls._extract_bridge_value(payload[nested_key], aliases)
+                    if numeric is not None:
+                        return numeric
+            return None
+        if isinstance(payload, list):
+            for item in reversed(payload):
+                numeric = cls._extract_bridge_value(item, aliases)
+                if numeric is not None:
+                    return numeric
+            return None
+        return cls._to_numeric(payload)
+
+    @classmethod
+    def _sum_bridge_values(cls, payload: Any, aliases: List[str]) -> Optional[float]:
+        records = payload.get("records", []) if isinstance(payload, dict) else payload
+        if not isinstance(records, list):
+            return None
+        total = 0.0
+        found = False
+        for item in records:
+            numeric = cls._extract_bridge_value(item, aliases)
+            if numeric is not None:
+                total += numeric
+                found = True
+        return round(total, 4) if found else None
 
     def build_market_data(self, datasets: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
         gold = datasets.get("gold_daily")
@@ -960,13 +1037,115 @@ class CausalTradingSystemV4:
         gold_mom = pct(gold, 60)
         copper_mom = pct(copper, 30)
         nasdaq_mom = pct(nasdaq, 60)
+        akshare_context = self.ecosystem.fetch_akshare_market_context(
+            {
+                "date": datetime.now().strftime("%Y%m%d"),
+                "equity_symbol": "600000",
+                "hk_symbol": "00700",
+                "inventory_symbols": ["沪铜", "沪金"],
+                "futures_rank_symbols": ["CU", "AU", "RB"],
+            }
+        )
+        macro_context = akshare_context.get("macro", {})
+        inventory_context = akshare_context.get("inventory", {})
+        valuation_context = akshare_context.get("valuation", {})
+        holdings_context = akshare_context.get("holdings", {})
+        policy_context = akshare_context.get("policy", {})
+
+        lpr_1y = self._extract_bridge_value(macro_context.get("lpr_1y", {}), ["lpr1y", "1年", "1y", "利率"])
+        shibor_1y = self._extract_bridge_value(macro_context.get("shibor_1y", {}), ["1y", "1年", "shibor"])
+        m2_yoy = self._extract_bridge_value(macro_context.get("m2_yoy", {}), ["同比", "增速", "value", "今值"])
+        gdp_yoy = self._extract_bridge_value(macro_context.get("gdp_yoy", {}), ["同比", "增速", "value", "今值"])
+        cpi_yoy = self._extract_bridge_value(macro_context.get("cpi_yoy", {}), ["同比", "增速", "value", "今值"])
+        ppi_yoy = self._extract_bridge_value(macro_context.get("ppi_yoy", {}), ["同比", "增速", "value", "今值"])
+        copper_inventory = self._extract_bridge_value(inventory_context.get("沪铜_inventory", {}), ["库存", "存量", "数量", "value"])
+        gold_inventory = self._extract_bridge_value(inventory_context.get("沪金_inventory", {}), ["库存", "存量", "数量", "value"])
+        a_share_pe = self._extract_bridge_value(valuation_context.get("a_share_pe_ttm", {}), ["市盈率", "close", "value"])
+        a_share_pb = self._extract_bridge_value(valuation_context.get("a_share_pb", {}), ["市净率", "close", "value"])
+        hk_pe = self._extract_bridge_value(valuation_context.get("hk_pe_ttm", {}), ["市盈率", "close", "value"])
+        northbound_holding_value = self._sum_bridge_values(
+            holdings_context.get("northbound_rank", {}),
+            ["今日持股-市值", "持股-市值", "持股市值", "市值"],
+        )
+        northbound_change_value = self._sum_bridge_values(
+            holdings_context.get("northbound_rank", {}),
+            ["今日增持-估计市值", "估计市值", "增持市值", "今日增持"],
+        )
+        policy_event_count = self._extract_bridge_value(policy_context.get("event_count", {}), ["value"]) or 0.0
+        warehouse_records = inventory_context.get("shfe_warehouse_receipt", {}).get("records", [])
+
+        growth_signal = (gdp_yoy / 100.0) if gdp_yoy is not None else 0.02 + nasdaq_mom * 0.4
+        inflation_candidates = [
+            value / 100.0
+            for value in [cpi_yoy, ppi_yoy]
+            if value is not None
+        ]
+        inflation_signal = max(inflation_candidates) if inflation_candidates else 0.025 + max(gold_mom, 0.0) * 0.25
+        liquidity_signal = (
+            ((m2_yoy or 0.0) / 100.0)
+            - ((shibor_1y or 0.0) / 100.0) * 0.35
+            - max(-nasdaq_mom, 0.0) * 0.25
+            - max(-copper_mom, 0.0) * 0.10
+        ) if m2_yoy is not None or shibor_1y is not None else (
+            0.01 - max(-nasdaq_mom, 0.0) * 0.35 - max(-copper_mom, 0.0) * 0.15
+        )
+        regime_snapshot = self.cross_asset_engine.detect_macro_regime(
+            growth=growth_signal,
+            inflation=inflation_signal,
+            liquidity=liquidity_signal,
+        )
+        copper_inventory_days = round(
+            max(1.5, min(12.0, (copper_inventory / 30_000.0) if copper_inventory is not None else 5.5 - max(copper_mom, 0.0) * 14)),
+            2,
+        )
         market_data = {
             "US_Debt": {"value": 38_500_000_000_000, "source": "macro_baseline"},
             "Central_Bank_Gold_Purchase": {"value": round(78 + max(gold_mom, 0) * 120, 2), "source": "gold_proxy"},
             "ON_RRP_Balance": {"value": max(350_000_000_000, 620_000_000_000 - max(nasdaq_mom, 0) * 400_000_000_000), "source": "liquidity_proxy"},
-            "LME_Inventory_Days": {"value": round(max(1.5, 5.5 - max(copper_mom, 0) * 14), 2), "source": "copper_proxy"},
+            "LME_Inventory_Days": {"value": copper_inventory_days, "source": "akshare_inventory" if copper_inventory is not None else "copper_proxy"},
             "AI_DataCenter_Capex": {"growth": round(max(0.08, 0.12 + max(nasdaq_mom, 0) * 0.9), 4), "source": "tech_proxy"},
+            "macro_columns": {
+                "China_LPR_1Y": {"value": lpr_1y, "source": "akshare_macro"},
+                "China_SHIBOR_1Y": {"value": shibor_1y, "source": "akshare_macro"},
+                "China_M2_YoY": {"value": m2_yoy, "source": "akshare_macro"},
+                "China_GDP_YoY": {"value": gdp_yoy, "source": "akshare_macro"},
+                "China_CPI_YoY": {"value": cpi_yoy, "source": "akshare_macro"},
+                "China_PPI_YoY": {"value": ppi_yoy, "source": "akshare_macro"},
+            },
+            "inventory_columns": {
+                "SHFE_Warehouse_Receipt_Count": {"value": float(len(warehouse_records)), "source": "akshare_inventory"},
+                "Copper_Inventory": {"value": copper_inventory, "source": "akshare_inventory"},
+                "Gold_Inventory": {"value": gold_inventory, "source": "akshare_inventory"},
+            },
+            "valuation_columns": {
+                "A_Share_PE_TTM": {"value": a_share_pe, "source": "akshare_valuation"},
+                "A_Share_PB": {"value": a_share_pb, "source": "akshare_valuation"},
+                "HK_PE_TTM": {"value": hk_pe, "source": "akshare_valuation"},
+            },
+            "holding_columns": {
+                "Northbound_Top5_Holding_Value": {"value": northbound_holding_value, "source": "akshare_holdings"},
+                "Northbound_Top5_Change_Value": {"value": northbound_change_value, "source": "akshare_holdings"},
+                "Northbound_Rank_Count": {
+                    "value": float(holdings_context.get("northbound_rank", {}).get("count", 0)),
+                    "source": "akshare_holdings",
+                },
+            },
+            "policy_columns": {
+                "Policy_Event_Count": {"value": float(policy_event_count), "source": "akshare_policy"},
+                "Policy_Calendar_Date": {
+                    "value": policy_context.get("calendar", {}).get("date"),
+                    "source": "akshare_policy",
+                },
+            },
+            "cross_asset_regime": {
+                "regime": regime_snapshot.regime.value,
+                "growth": regime_snapshot.growth,
+                "inflation": regime_snapshot.inflation,
+                "liquidity": regime_snapshot.liquidity,
+                "confidence": regime_snapshot.confidence,
+            },
         }
+        market_data["akshare_market_context"] = akshare_context
         finshare_snapshots = self.data_adapter.get_batch_snapshots(["AAPL", "MSFT", "600000"])
         market_data["finshare_snapshots"] = finshare_snapshots
         market_data["openbb_market_context"] = self.ecosystem.fetch_openbb_market_context(["AAPL", "MSFT", "GOOGL"])
@@ -1004,6 +1183,30 @@ class CausalTradingSystemV4:
             raw_datasets = {}
         market_data = self.build_market_data(raw_datasets)
         results["market_data"] = market_data
+        learning_inputs = shortlisted_data if shortlisted_data else {
+            symbol: frame for symbol, frame in data.items() if len(frame) >= 80
+        }
+        benchmark_frame = raw_datasets.get("nasdaq_daily")
+        if benchmark_frame is not None and {"timestamp", "close"}.issubset(set(benchmark_frame.columns)):
+            benchmark_frame = benchmark_frame.rename(
+                columns={
+                    "timestamp": "date",
+                    "open": "open",
+                    "high": "high",
+                    "low": "low",
+                    "close": "close",
+                    "volume": "volume",
+                }
+            )
+        learning_cycle = self.self_iterating_engine.run_learning_cycle(
+            learning_inputs,
+            benchmark_frame=benchmark_frame,
+            market_context={
+                "crisis_probability": 0.15,
+                "cross_asset_regime": market_data.get("cross_asset_regime", {}),
+            },
+        )
+        results["self_iterating_cycle"] = learning_cycle
         committee = self.ecosystem.run_multi_agent_committee(
             technical_pack=technical_pack,
             causal_graph=results.get("causal_graph", {}),
@@ -1011,10 +1214,20 @@ class CausalTradingSystemV4:
             account_status=self.account_monitor.status(),
         )
         results["committee"] = committee
-        decision = self.trading_agent.execute_decision(
+        legacy_decision = self.trading_agent.execute_decision(
             current_date=datetime.now().strftime("%Y-%m-%d"),
             market_data=market_data,
         )
+        results["legacy_decision"] = legacy_decision
+        if learning_cycle.get("trade_actions"):
+            decision = {
+                "actions": learning_cycle["trade_actions"],
+                "timestamp": datetime.now().strftime("%Y-%m-%d"),
+                "engine": "Self-Iterating Causal Alpha",
+                "portfolio_plan": learning_cycle.get("portfolio_plan", {}),
+            }
+        else:
+            decision = legacy_decision
         results["decision"] = decision
         compact_report = self.ecosystem.build_compact_evidence_pack(
             shortlist,
