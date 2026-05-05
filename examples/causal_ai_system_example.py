@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 
 from quant_trade_system.core.causal import (
     CausalFactorLibrary,
+    CrossAssetCausalEngine,
     FactorCategory,
     AssetClass,
 )
@@ -313,6 +314,56 @@ def example5_causal_trading_signals():
 
 
 # ============================================================================
+# 示例6：跨资产因果暴露处理
+# ============================================================================
+
+def example6_cross_asset_processing():
+    """示例6：跨资产共有因子的单位化、正交化与风险预算。"""
+    print("\n" + "="*80)
+    print("示例6：跨资产因果暴露处理")
+    print("="*80)
+
+    engine = CrossAssetCausalEngine()
+
+    exposures = pd.DataFrame(
+        {
+            "equity_cn": [0.90, 0.35, -0.10],
+            "copper": [1.20, 0.50, 0.20],
+            "gold": [-0.30, 1.40, 0.10],
+        },
+        index=["growth_beta", "inflation_beta", "liquidity_beta"],
+    ).T
+    volatility = pd.Series({"equity_cn": 0.22, "copper": 0.30, "gold": 0.18})
+
+    normalized = engine.unitize_exposures(exposures, volatility=volatility)
+    print("\n📊 单位化后的截面暴露:")
+    print(normalized.round(3))
+
+    factor_returns = pd.DataFrame(
+        {
+            "growth": [0.02, 0.01, -0.01, 0.03, 0.015],
+            "inflation": [0.01, 0.015, 0.005, 0.02, 0.012],
+            "liquidity": [0.018, 0.012, -0.004, 0.024, 0.011],
+        },
+        index=pd.date_range("2026-04-01", periods=5, freq="D"),
+    )
+    orthogonal = engine.orthogonalize_pca(factor_returns, n_components=2)
+    print("\n🧭 PCA解释方差:")
+    print([round(x, 4) for x in orthogonal["explained_variance"]])
+
+    regime = engine.detect_macro_regime(growth=0.045, inflation=0.038, liquidity=0.008)
+    print("\n🌐 宏观制度识别:")
+    print(f"  regime: {regime.regime.value}")
+    print(f"  confidence: {regime.confidence:.2f}")
+
+    covariance = factor_returns.corr().fillna(0.0)
+    weights = pd.Series({"growth": 0.4, "inflation": 0.35, "liquidity": 0.25})
+    risk_budget = engine.compute_factor_risk_contributions(weights, covariance)
+    print("\n🛡️ 因子风险贡献:")
+    print(risk_budget.round(4))
+
+
+# ============================================================================
 # 主函数
 # ============================================================================
 
@@ -327,6 +378,7 @@ def main():
     example3_build_causal_graph()
     example4_apply_to_trading()
     example5_causal_trading_signals()
+    example6_cross_asset_processing()
 
     print("\n" + "="*80)
     print("✅ 所有示例运行完成！")

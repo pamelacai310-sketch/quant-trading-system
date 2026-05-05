@@ -430,6 +430,8 @@ class TechnicalFactors:
             # 跳过私有方法和特殊方法
             if attr_name.startswith('_') or not callable(attr):
                 continue
+            if attr_name in {"get_all_factors", "compute_all_factors"}:
+                continue
 
             # 检查是否是因子计算方法（接受DataFrame返回Series）
             if hasattr(attr, '__call__'):

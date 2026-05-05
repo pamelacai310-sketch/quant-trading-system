@@ -35,6 +35,12 @@ except ImportError:
     PolarsDataFrame = None
     should_use_polars = None
 
+try:
+    from ..core.causal.causal_factor_library import CausalFactorLibrary, QuantizedCausalFactor
+except ImportError:
+    CausalFactorLibrary = None
+    QuantizedCausalFactor = None
+
 
 class FactorLibrary:
     """
@@ -61,6 +67,10 @@ class FactorLibrary:
         # 初始化各因子类别
         self.technical = TechnicalFactors() if TechnicalFactors else None
         self.fundamental = FundamentalFactors() if FundamentalFactors else None
+        self.causal_library = CausalFactorLibrary() if CausalFactorLibrary else None
+        self.causal_quant_catalog: Dict[str, QuantizedCausalFactor] = (
+            self.causal_library.get_quantized_factor_catalog() if self.causal_library else {}
+        )
 
         # 构建因子注册表
         self.factor_registry = self._build_registry()
@@ -94,7 +104,25 @@ class FactorLibrary:
         # 4. 其他因子类别...
         # 动量、反转、波动率、流动性、质量、情绪、季节性等
 
+        # 5. 因果量化因子（把因果语义关系结构化）
+        registry.update(self._build_causal_quant_registry())
+
         return registry
+
+    def _build_causal_quant_registry(self) -> Dict[str, Callable]:
+        """构建因果量化因子注册表。"""
+        registry: Dict[str, Callable] = {}
+        for factor_name, spec in self.causal_quant_catalog.items():
+            registry[factor_name] = self._make_causal_quant_calculator(spec)
+        return registry
+
+    def _make_causal_quant_calculator(self, spec: QuantizedCausalFactor) -> Callable:
+        """为量化因子定义生成可执行计算器。"""
+        def calculator(df: pd.DataFrame) -> pd.Series:
+            normalized = self._normalize_market_frame(df)
+            return self._compute_causal_quant_factor(normalized, spec)
+
+        return calculator
 
     def get_factor_list(
         self,
@@ -235,6 +263,196 @@ class FactorLibrary:
 
         return self.technical.compute_all_factors(df)
 
+    def _normalize_market_frame(self, df: pd.DataFrame) -> pd.DataFrame:
+        """把输入统一成因子计算所需的小写市场列。"""
+        normalized = df.copy()
+        rename_map = {}
+        for column in normalized.columns:
+            lower = column.lower()
+            if lower in {"date", "timestamp", "datetime", "time"}:
+                rename_map[column] = "date"
+            elif lower in {"open", "open_price"}:
+                rename_map[column] = "open"
+            elif lower in {"high", "high_price"}:
+                rename_map[column] = "high"
+            elif lower in {"low", "low_price"}:
+                rename_map[column] = "low"
+            elif lower in {"close", "close_price", "adj_close", "price"}:
+                rename_map[column] = "close"
+            elif lower in {"volume", "vol"}:
+                rename_map[column] = "volume"
+            else:
+                rename_map[column] = lower
+        normalized = normalized.rename(columns=rename_map)
+        for column in ["open", "high", "low", "close", "volume"]:
+            if column not in normalized.columns:
+                if column == "volume":
+                    normalized[column] = 1.0
+                else:
+                    normalized[column] = normalized.get("close", pd.Series(index=normalized.index, dtype=float))
+            normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
+        return normalized
+
+    @staticmethod
+    def _rolling_r_squared(series: pd.Series, window: int) -> pd.Series:
+        """滚动趋势R²。"""
+        values = pd.to_numeric(series, errors="coerce")
+        result = pd.Series(index=series.index, dtype=float)
+        x = np.arange(window, dtype=float)
+        x_centered = x - x.mean()
+        ss_x = np.sum(x_centered ** 2)
+        for idx in range(window - 1, len(values)):
+            window_values = values.iloc[idx - window + 1: idx + 1]
+            if window_values.isna().any():
+                continue
+            y = window_values.to_numpy(dtype=float)
+            y_centered = y - y.mean()
+            slope = float(np.dot(x_centered, y_centered) / ss_x) if ss_x else 0.0
+            intercept = float(y.mean() - slope * x.mean())
+            y_hat = intercept + slope * x
+            ss_res = float(np.sum((y - y_hat) ** 2))
+            ss_tot = float(np.sum((y - y.mean()) ** 2))
+            result.iloc[idx] = 1.0 - ss_res / ss_tot if ss_tot else 0.0
+        return result.fillna(0.0)
+
+    @staticmethod
+    def _zscore(series: pd.Series, window: int = 20) -> pd.Series:
+        """滚动z-score。"""
+        values = pd.to_numeric(series, errors="coerce")
+        mean = values.rolling(window, min_periods=max(5, window // 2)).mean()
+        std = values.rolling(window, min_periods=max(5, window // 2)).std().replace(0, np.nan)
+        result = (values - mean) / std
+        return result.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    @staticmethod
+    def _select_explicit_or_proxy(
+        df: pd.DataFrame,
+        aliases: List[str],
+        proxy: pd.Series,
+    ) -> pd.Series:
+        """优先使用显式列，缺失时回落到市场代理。"""
+        for alias in aliases:
+            key = alias.lower()
+            if key in df.columns:
+                return pd.to_numeric(df[key], errors="coerce").ffill().fillna(0.0)
+        return proxy.fillna(0.0)
+
+    def _compute_causal_quant_factor(
+        self,
+        df: pd.DataFrame,
+        spec: QuantizedCausalFactor,
+    ) -> pd.Series:
+        """执行因果关系到量化因子的映射计算。"""
+        close = pd.to_numeric(df["close"], errors="coerce").replace(0, np.nan).ffill()
+        high = pd.to_numeric(df["high"], errors="coerce").fillna(close)
+        low = pd.to_numeric(df["low"], errors="coerce").fillna(close)
+        volume = pd.to_numeric(df["volume"], errors="coerce").replace(0, np.nan).ffill().fillna(1.0)
+
+        returns_1 = close.pct_change().fillna(0.0)
+        momentum_5 = close.pct_change(5).fillna(0.0)
+        momentum_20 = close.pct_change(20).fillna(0.0)
+        realized_vol_20 = returns_1.rolling(20, min_periods=5).std().fillna(0.0)
+        downside_vol_20 = returns_1.clip(upper=0).rolling(20, min_periods=5).std().fillna(0.0)
+        volume_participation_20 = np.log1p(volume).diff().rolling(20, min_periods=5).mean().fillna(0.0)
+        volume_surprise_5 = (volume / volume.rolling(20, min_periods=5).mean().replace(0, np.nan) - 1).fillna(0.0)
+        spread_proxy_20 = ((high - low) / close.replace(0, np.nan)).rolling(20, min_periods=5).mean().fillna(0.0)
+        relative_strength_20 = (momentum_20 - momentum_20.rolling(20, min_periods=5).mean()).fillna(0.0)
+        price_vs_ma_20 = (close / close.rolling(20, min_periods=5).mean().replace(0, np.nan) - 1).fillna(0.0)
+        drawdown_20 = (close / close.rolling(20, min_periods=5).max().replace(0, np.nan) - 1).fillna(0.0)
+        drawdown_repair_proxy = (-drawdown_20).rolling(10, min_periods=3).mean().fillna(0.0)
+        trend_r2_20 = self._rolling_r_squared(close, 20)
+        basis_proxy_20 = ((close - close.rolling(5, min_periods=3).mean()) / close.rolling(5, min_periods=3).mean().replace(0, np.nan)).fillna(0.0)
+        term_structure_proxy_20 = (close.rolling(20, min_periods=5).mean() / close.rolling(60, min_periods=10).mean().replace(0, np.nan) - 1).fillna(0.0)
+
+        valuation_multiple_proxy = self._select_explicit_or_proxy(
+            df,
+            ["pe", "pb", "ps", "valuation_multiple", "market_cap_to_sales"],
+            (1.0 / (price_vs_ma_20.abs() + 1e-3)).fillna(0.0),
+        )
+        cashflow_yield_proxy = self._select_explicit_or_proxy(
+            df,
+            ["cashflow_yield", "earnings_yield", "fcf_yield", "dividend_yield"],
+            (momentum_20 / (realized_vol_20 + 1e-6)).fillna(0.0),
+        )
+        profitability_proxy = self._select_explicit_or_proxy(
+            df,
+            ["roic", "roe", "gross_margin", "eps_growth", "profitability"],
+            (trend_r2_20 + price_vs_ma_20 - downside_vol_20).fillna(0.0),
+        )
+        stability_proxy = self._select_explicit_or_proxy(
+            df,
+            ["quality_score", "stability", "interest_coverage", "altman_z"],
+            (1.0 - realized_vol_20).fillna(0.0),
+        )
+        rate_proxy = self._select_explicit_or_proxy(
+            df,
+            ["rate", "yield_10y", "shibor", "libor", "funding_rate"],
+            (realized_vol_20 + spread_proxy_20).fillna(0.0),
+        )
+        inflation_proxy = self._select_explicit_or_proxy(
+            df,
+            ["inflation", "cpi", "ppi", "breakeven_inflation"],
+            (momentum_20 + price_vs_ma_20).fillna(0.0),
+        )
+        real_rate_proxy = self._select_explicit_or_proxy(
+            df,
+            ["real_rate", "tips_yield", "real_yield"],
+            (rate_proxy - inflation_proxy).fillna(0.0),
+        )
+        liquidity_growth_20 = self._select_explicit_or_proxy(
+            df,
+            ["m2_growth", "credit_impulse", "liquidity_growth", "social_financing_growth"],
+            (volume_participation_20 - spread_proxy_20).fillna(0.0),
+        )
+        funding_stress_20 = self._select_explicit_or_proxy(
+            df,
+            ["funding_stress", "credit_spread", "basis_stress"],
+            (spread_proxy_20 + downside_vol_20).fillna(0.0),
+        )
+        demand_proxy_20 = self._select_explicit_or_proxy(
+            df,
+            ["demand", "sales_growth", "consumption", "import_growth"],
+            (momentum_20 + volume_participation_20).fillna(0.0),
+        )
+        supply_proxy_20 = self._select_explicit_or_proxy(
+            df,
+            ["supply", "production_growth", "export_growth"],
+            (spread_proxy_20 + realized_vol_20).fillna(0.0),
+        )
+        inventory_proxy = self._select_explicit_or_proxy(
+            df,
+            ["inventory", "stocks", "warehouse_stock"],
+            (-momentum_20 + realized_vol_20).fillna(0.0),
+        )
+        inventory_tightness_proxy = ((demand_proxy_20 - inventory_proxy) / (inventory_proxy.abs() + 1e-6)).fillna(0.0)
+        storage_pressure_proxy = self._select_explicit_or_proxy(
+            df,
+            ["storage_cost", "carry_cost", "warehouse_cost"],
+            (inventory_proxy + spread_proxy_20).fillna(0.0),
+        )
+        seasonal_return_same_period = momentum_20.rolling(12, min_periods=6).mean().fillna(0.0)
+        calendar_flow_proxy = volume_surprise_5.rolling(5, min_periods=3).mean().fillna(0.0)
+        duration_sensitive_drawdown = (drawdown_20 + rate_proxy).fillna(0.0)
+        real_asset_momentum_20d = (momentum_20 - real_rate_proxy).fillna(0.0)
+
+        family_map = {
+            "rate_discount": -self._zscore(rate_proxy.diff(5)) + 0.35 * self._zscore(cashflow_yield_proxy) - 0.20 * self._zscore(duration_sensitive_drawdown),
+            "inflation_real_asset": self._zscore(inflation_proxy.diff(20)) + 0.5 * self._zscore(real_asset_momentum_20d) - 0.25 * self._zscore(real_rate_proxy),
+            "liquidity_policy": self._zscore(liquidity_growth_20 - funding_stress_20) + 0.25 * self._zscore(volume_participation_20),
+            "participation_flow": self._zscore(volume_participation_20) - 0.5 * self._zscore(spread_proxy_20) - 0.25 * self._zscore(realized_vol_20),
+            "sentiment_regime": self._zscore(momentum_5) + 0.5 * self._zscore(volume_surprise_5) - 0.5 * self._zscore(downside_vol_20),
+            "volatility_tail": -self._zscore(realized_vol_20 + downside_vol_20) + 0.35 * self._zscore(drawdown_repair_proxy),
+            "trend_strength": self._zscore(momentum_20 / (realized_vol_20 + 1e-6)) + 0.4 * self._zscore(trend_r2_20),
+            "valuation_quality": -self._zscore(valuation_multiple_proxy) + 0.6 * self._zscore(cashflow_yield_proxy) + 0.2 * self._zscore(relative_strength_20),
+            "fundamental_quality": self._zscore(profitability_proxy) + 0.45 * self._zscore(stability_proxy) + 0.25 * self._zscore(relative_strength_20),
+            "supply_demand_balance": self._zscore((demand_proxy_20 - supply_proxy_20) / (supply_proxy_20.abs() + 1e-6)) + 0.25 * self._zscore(inventory_tightness_proxy),
+            "carry_curve": self._zscore(basis_proxy_20) + 0.4 * self._zscore(term_structure_proxy_20) - 0.2 * self._zscore(storage_pressure_proxy),
+            "seasonality": self._zscore(seasonal_return_same_period) + 0.3 * self._zscore(calendar_flow_proxy),
+            "broad_causal": self._zscore(relative_strength_20) + 0.35 * self._zscore(volume_participation_20) - 0.25 * self._zscore(drawdown_20),
+        }
+        result = family_map.get(spec.formula_family, family_map["broad_causal"])
+        return (result * float(spec.expected_sign)).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
     def compute_cross_sectional_factors(
         self,
         df: pd.DataFrame,
@@ -341,16 +559,45 @@ class FactorLibrary:
         """
         return self._factor_metadata.get(factor_name, {})
 
+    def update_factor_metadata(
+        self,
+        factor_name: str,
+        metadata: Dict[str, Any],
+        persist: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        更新或创建因子元数据。
+        """
+        current = self._factor_metadata.setdefault(factor_name, {})
+        current.update(metadata)
+        if persist:
+            self.save_factor_metadata()
+        return current
+
     def _load_factor_metadata(self) -> Dict[str, Dict[str, Any]]:
         """加载因子元数据"""
         metadata_file = self.cache_dir / "factor_metadata.json"
 
         if metadata_file.exists():
             with open(metadata_file, 'r') as f:
-                return json.load(f)
+                metadata = json.load(f)
+        else:
+            metadata = {}
 
-        # 否则返回默认元数据
-        return {}
+        for factor_name, spec in self.causal_quant_catalog.items():
+            metadata.setdefault(
+                factor_name,
+                {
+                    "category": "causal_quant",
+                    "family": spec.formula_family,
+                    "formula": spec.formula,
+                    "financial_meaning": spec.financial_meaning,
+                    "required_inputs": spec.required_inputs,
+                    "expected_sign": spec.expected_sign,
+                    "source_factor_id": spec.source_factor_id,
+                },
+            )
+        return metadata
 
     def save_factor_metadata(self):
         """保存因子元数据到缓存"""
