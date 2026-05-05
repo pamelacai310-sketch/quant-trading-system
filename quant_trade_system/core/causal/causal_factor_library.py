@@ -1298,6 +1298,7 @@ class CausalFactorLibrary:
         catalog: Dict[str, QuantizedCausalFactor] = {}
         for factor in self.factors.values():
             family = self._infer_formula_family(factor)
+            peer_family = self._infer_global_peer_family(factor)
             formula, inputs, expected_sign = self._formula_template_for_family(factor, family)
             quant_factor_id = f"causal_quant_{factor.factor_id}"
             catalog[quant_factor_id] = QuantizedCausalFactor(
@@ -1318,9 +1319,36 @@ class CausalFactorLibrary:
                     "reliability": factor.reliability,
                     "confidence": factor.confidence,
                     "tags": list(factor.tags),
+                    "global_peer_linkage_relevant": peer_family is not None,
+                    "global_peer_family": peer_family,
                 },
             )
         return catalog
+
+    def _infer_global_peer_family(self, factor: CausalFactor) -> Optional[str]:
+        """推断该因果因素是否天然需要全球同类期货联动上下文。"""
+        text = " ".join(
+            [
+                factor.factor_id,
+                factor.name,
+                factor.description,
+                factor.causal_mechanism,
+                " ".join(factor.tags),
+            ]
+        ).lower()
+        if factor.asset_class not in {AssetClass.COMMODITY, AssetClass.ALL}:
+            return None
+        if any(token in text for token in ["gold", "precious", "inflation", "real asset", "通胀", "黄金"]):
+            return "precious_metals"
+        if any(token in text for token in ["copper", "base metal", "industrial metal", "库存", "trade balance", "铜"]):
+            return "base_metals"
+        if any(token in text for token in ["oil", "energy", "storage", "carry", "原油", "能源"]):
+            return "energy"
+        if any(token in text for token in ["steel", "ferrous", "rebar", "hot coil", "黑色", "螺纹", "热卷"]):
+            return "ferrous"
+        if factor.asset_class == AssetClass.COMMODITY:
+            return "broad_commodity"
+        return None
 
     def _infer_formula_family(self, factor: CausalFactor) -> str:
         """基于因果标签推断量化公式族。"""

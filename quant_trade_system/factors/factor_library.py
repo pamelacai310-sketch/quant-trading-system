@@ -10,6 +10,7 @@ import numpy as np
 from typing import Dict, List, Callable, Any, Optional
 from pathlib import Path
 import json
+import re
 from datetime import datetime
 import warnings
 
@@ -337,6 +338,232 @@ class FactorLibrary:
                 return pd.to_numeric(df[key], errors="coerce").ffill().fillna(0.0)
         return proxy.fillna(0.0)
 
+    @staticmethod
+    def _peer_context_key(peer_name: str) -> str:
+        """把全球同类合约名称规范成可拼接列名的 key。"""
+        return re.sub(r"[^a-z0-9]+", "_", str(peer_name).strip().lower()).strip("_")
+
+    def attach_global_peer_context(
+        self,
+        df: pd.DataFrame,
+        peer_frames: Optional[Dict[str, pd.DataFrame]] = None,
+    ) -> pd.DataFrame:
+        """
+        把全球同类期货的行情上下文拼接到单品种数据上。
+
+        约定输出列:
+        - peer_<peer_key>_close
+        - peer_<peer_key>_volume
+        """
+        normalized = self._normalize_market_frame(df)
+        if not peer_frames:
+            return normalized
+
+        enriched = normalized.copy()
+        original_index = enriched.index
+        merge_key = "_peer_merge_key"
+        if "date" in enriched.columns:
+            enriched[merge_key] = pd.to_datetime(enriched["date"], errors="coerce")
+        else:
+            enriched[merge_key] = pd.RangeIndex(len(enriched))
+
+        for peer_name, peer_frame in peer_frames.items():
+            if peer_frame is None or getattr(peer_frame, "empty", True):
+                continue
+            peer = self._normalize_market_frame(peer_frame)
+            peer_key = self._peer_context_key(peer_name)
+            close_col = f"peer_{peer_key}_close"
+            volume_col = f"peer_{peer_key}_volume"
+
+            if "date" in peer.columns and "date" in enriched.columns:
+                peer_dates = pd.to_datetime(peer["date"], errors="coerce")
+                payload = pd.DataFrame(
+                    {
+                        merge_key: peer_dates,
+                        close_col: pd.to_numeric(peer["close"], errors="coerce"),
+                        volume_col: pd.to_numeric(peer.get("volume", 1.0), errors="coerce"),
+                    }
+                ).dropna(subset=[merge_key])
+                payload = payload.drop_duplicates(subset=[merge_key], keep="last")
+                enriched = enriched.merge(payload, on=merge_key, how="left")
+            else:
+                peer_reset = peer.reset_index(drop=True)
+                enriched[close_col] = pd.to_numeric(
+                    peer_reset["close"],
+                    errors="coerce",
+                ).reindex(range(len(enriched))).to_numpy()
+                enriched[volume_col] = pd.to_numeric(
+                    peer_reset.get("volume", pd.Series(1.0, index=peer_reset.index)),
+                    errors="coerce",
+                ).reindex(range(len(enriched))).to_numpy()
+
+        peer_columns = [column for column in enriched.columns if column.startswith("peer_")]
+        if peer_columns:
+            enriched[peer_columns] = enriched[peer_columns].ffill()
+        enriched = enriched.drop(columns=[merge_key], errors="ignore")
+        enriched.index = original_index
+        return enriched
+
+    def compute_global_futures_linkage_factors(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        计算期货品种对全球同类合约的联动特征。
+
+        所有特征都保持明确金融含义：
+        - 海外基准的上一交易日收益
+        - 国内/海外相对动量差
+        - 量价强弱差
+        - 波动率和 Beta 传导
+        """
+        normalized = self._normalize_market_frame(df)
+        peer_close_cols = sorted(
+            column for column in normalized.columns if column.startswith("peer_") and column.endswith("_close")
+        )
+        if not peer_close_cols:
+            return pd.DataFrame(index=normalized.index)
+
+        peer_volume_cols = sorted(
+            column for column in normalized.columns if column.startswith("peer_") and column.endswith("_volume")
+        )
+        peer_close = normalized[peer_close_cols].apply(pd.to_numeric, errors="coerce").replace(0, np.nan).ffill()
+        peer_volume = (
+            normalized[peer_volume_cols].apply(pd.to_numeric, errors="coerce").replace(0, np.nan).ffill()
+            if peer_volume_cols
+            else pd.DataFrame(index=normalized.index)
+        )
+        own_close = pd.to_numeric(normalized["close"], errors="coerce").replace(0, np.nan).ffill()
+        own_volume = pd.to_numeric(normalized["volume"], errors="coerce").replace(0, np.nan).ffill().fillna(1.0)
+
+        own_ret_1 = own_close.pct_change().fillna(0.0)
+        own_ret_20 = own_close.pct_change(20).fillna(0.0)
+        own_price_vs_ma20 = (
+            own_close / own_close.rolling(20, min_periods=5).mean().replace(0, np.nan) - 1
+        ).fillna(0.0)
+        own_volume_surprise_20 = (
+            own_volume / own_volume.rolling(20, min_periods=5).mean().replace(0, np.nan) - 1
+        ).fillna(0.0)
+        own_realized_vol_20 = own_ret_1.rolling(20, min_periods=5).std().fillna(0.0)
+
+        peer_ret_1 = peer_close.pct_change().shift(1)
+        peer_ret_5 = peer_close.pct_change(5).shift(1)
+        peer_ret_20 = peer_close.pct_change(20).shift(1)
+        peer_price_vs_ma20 = (
+            peer_close / peer_close.rolling(20, min_periods=5).mean().replace(0, np.nan) - 1
+        ).shift(1)
+        peer_realized_vol_20 = peer_close.pct_change().rolling(20, min_periods=5).std().shift(1)
+
+        if not peer_volume.empty:
+            peer_volume_surprise_20 = (
+                peer_volume / peer_volume.rolling(20, min_periods=5).mean().replace(0, np.nan) - 1
+            ).shift(1)
+        else:
+            peer_volume_surprise_20 = pd.DataFrame(0.0, index=normalized.index, columns=peer_close.columns)
+
+        peer_ret_1_mean = peer_ret_1.mean(axis=1).fillna(0.0)
+        peer_ret_5_mean = peer_ret_5.mean(axis=1).fillna(0.0)
+        peer_ret_20_mean = peer_ret_20.mean(axis=1).fillna(0.0)
+        peer_price_vs_ma20_mean = peer_price_vs_ma20.mean(axis=1).fillna(0.0)
+        peer_volume_surprise_mean = peer_volume_surprise_20.mean(axis=1).fillna(0.0)
+        peer_realized_vol_mean = peer_realized_vol_20.mean(axis=1).fillna(0.0)
+        peer_dispersion_20 = peer_ret_20.std(axis=1).fillna(0.0)
+
+        rolling_corr_20 = own_ret_1.rolling(20, min_periods=5).corr(peer_ret_1_mean).fillna(0.0)
+        beta_num = own_ret_1.rolling(20, min_periods=5).cov(peer_ret_1_mean)
+        beta_den = peer_ret_1_mean.rolling(20, min_periods=5).var().replace(0, np.nan)
+        rolling_beta_20 = (beta_num / beta_den).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+        features = pd.DataFrame(index=normalized.index)
+        features["global_peer_return_1d_lag"] = peer_ret_1_mean
+        features["global_peer_return_5d_lag"] = peer_ret_5_mean
+        features["global_peer_relative_momentum_20"] = own_ret_20 - peer_ret_20_mean
+        features["global_peer_price_extension_gap_20"] = own_price_vs_ma20 - peer_price_vs_ma20_mean
+        features["global_peer_volume_intensity_gap_20"] = own_volume_surprise_20 - peer_volume_surprise_mean
+        features["global_peer_volatility_gap_20"] = own_realized_vol_20 - peer_realized_vol_mean
+        features["global_peer_beta_20"] = rolling_beta_20
+        features["global_peer_correlation_20"] = rolling_corr_20
+        features["global_peer_dispersion_20"] = peer_dispersion_20
+        features["global_peer_spillover_score"] = (
+            0.45 * self._zscore(peer_ret_5_mean)
+            + 0.35 * self._zscore(rolling_beta_20 * rolling_corr_20.clip(lower=0.0))
+            - 0.20 * self._zscore(peer_dispersion_20)
+        )
+        return features.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    @staticmethod
+    def _global_peer_feature_metadata() -> Dict[str, Dict[str, Any]]:
+        """全球同类期货联动特征的说明与公式。"""
+        return {
+            "global_peer_return_1d_lag": {
+                "category": "global_futures_linkage",
+                "family": "peer_return_linkage",
+                "formula": "mean_i(peer_close_i,t-1 / peer_close_i,t-2 - 1)",
+                "financial_meaning": "全球同类期货上一交易日的平均收益，用来刻画海外价格发现对本地合约的隔夜传导。",
+                "required_inputs": ["close", "peer_*_close"],
+            },
+            "global_peer_return_5d_lag": {
+                "category": "global_futures_linkage",
+                "family": "peer_trend_linkage",
+                "formula": "mean_i(peer_close_i,t-1 / peer_close_i,t-6 - 1)",
+                "financial_meaning": "全球同类期货过去 5 日的平均趋势强度，用来刻画海外中短期趋势对本地合约的引导。",
+                "required_inputs": ["close", "peer_*_close"],
+            },
+            "global_peer_relative_momentum_20": {
+                "category": "global_futures_linkage",
+                "family": "peer_relative_strength",
+                "formula": "(close_t / close_t-20 - 1) - mean_i(peer_close_i,t-1 / peer_close_i,t-21 - 1)",
+                "financial_meaning": "本地合约相对全球同类合约的 20 日强弱差，用来衡量国内是否明显跑赢或跑输全球基准。",
+                "required_inputs": ["close", "peer_*_close"],
+            },
+            "global_peer_price_extension_gap_20": {
+                "category": "global_futures_linkage",
+                "family": "peer_price_extension",
+                "formula": "(close_t / MA20_t - 1) - mean_i(peer_close_i,t-1 / peer_MA20_i,t-1 - 1)",
+                "financial_meaning": "本地价格偏离 20 日均线的程度，相对全球同类合约的偏离差，反映局部拥挤或补涨补跌空间。",
+                "required_inputs": ["close", "peer_*_close"],
+            },
+            "global_peer_volume_intensity_gap_20": {
+                "category": "global_futures_linkage",
+                "family": "peer_flow_linkage",
+                "formula": "(volume_t / mean(volume,20)_t - 1) - mean_i(peer_volume_i,t-1 / mean(peer_volume_i,20)_t-1 - 1)",
+                "financial_meaning": "本地成交量强度相对全球同类合约的差值，用来衡量是否出现本地独立资金推动。",
+                "required_inputs": ["volume", "peer_*_volume"],
+            },
+            "global_peer_volatility_gap_20": {
+                "category": "global_futures_linkage",
+                "family": "peer_risk_linkage",
+                "formula": "stdev(ret,20)_t - mean_i(stdev(peer_ret_i,20)_t-1)",
+                "financial_meaning": "本地波动率相对全球同类期货的风险溢价差，用来识别本地是否承受了额外风险定价。",
+                "required_inputs": ["close", "peer_*_close"],
+            },
+            "global_peer_beta_20": {
+                "category": "global_futures_linkage",
+                "family": "peer_beta_linkage",
+                "formula": "cov(ret_t, peer_ret_mean_t-1, 20) / var(peer_ret_mean_t-1, 20)",
+                "financial_meaning": "本地合约对全球同类合约收益的滚动 Beta，衡量价格传导弹性。",
+                "required_inputs": ["close", "peer_*_close"],
+            },
+            "global_peer_correlation_20": {
+                "category": "global_futures_linkage",
+                "family": "peer_correlation_linkage",
+                "formula": "corr(ret_t, peer_ret_mean_t-1, 20)",
+                "financial_meaning": "本地与全球同类合约的 20 日滚动相关性，衡量联动关系是否处于高同步区间。",
+                "required_inputs": ["close", "peer_*_close"],
+            },
+            "global_peer_dispersion_20": {
+                "category": "global_futures_linkage",
+                "family": "peer_dispersion",
+                "formula": "stdev_i(peer_close_i,t-1 / peer_close_i,t-21 - 1)",
+                "financial_meaning": "全球同类合约之间的 20 日收益分歧，分歧越大说明海外信号越不一致。",
+                "required_inputs": ["peer_*_close"],
+            },
+            "global_peer_spillover_score": {
+                "category": "global_futures_linkage",
+                "family": "peer_spillover_composite",
+                "formula": "0.45*zscore(global_peer_return_5d_lag)+0.35*zscore(global_peer_beta_20*max(global_peer_correlation_20,0))-0.20*zscore(global_peer_dispersion_20)",
+                "financial_meaning": "把海外趋势、Beta 传导和海外分歧聚合为一个全球联动强度分数，用来刻画外盘信号对本地期货的综合可传导性。",
+                "required_inputs": ["close", "peer_*_close", "peer_*_volume"],
+            },
+        }
+
     def _compute_causal_quant_factor(
         self,
         df: pd.DataFrame,
@@ -597,6 +824,8 @@ class FactorLibrary:
                     "source_factor_id": spec.source_factor_id,
                 },
             )
+        for factor_name, spec in self._global_peer_feature_metadata().items():
+            metadata.setdefault(factor_name, spec)
         return metadata
 
     def save_factor_metadata(self):

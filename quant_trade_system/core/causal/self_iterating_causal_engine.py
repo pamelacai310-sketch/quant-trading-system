@@ -140,6 +140,14 @@ class SelfIteratingCausalEngine:
                 "payoff_weight": self.objective_config.payoff_weight,
                 "elasticity_weight": self.objective_config.elasticity_weight,
             },
+            "global_futures_linkage": {
+                "enabled": True,
+                "feature_count": len(self.factor_library._global_peer_feature_metadata()),
+                "supported_peers": {
+                    "AU/AG/GOLD": ["COMEX_Gold", "XAUUSD"],
+                    "CU/COPPER": ["LME_Copper", "HG"],
+                },
+            },
             "portfolio_constraints": asdict(self.constraints),
             "quantized_causal_factor_count": len(self.causal_factor_library.get_quantized_factor_ids()),
             "latest_iteration_status": self.latest_iteration.get("status", "idle"),
@@ -150,6 +158,7 @@ class SelfIteratingCausalEngine:
         symbol_datasets: Dict[str, pd.DataFrame],
         benchmark_frame: Optional[pd.DataFrame] = None,
         market_context: Optional[Dict[str, Any]] = None,
+        global_peer_datasets: Optional[Dict[str, Dict[str, pd.DataFrame]]] = None,
     ) -> Dict[str, Any]:
         """运行一次完整自迭代学习。"""
         if not symbol_datasets:
@@ -166,16 +175,22 @@ class SelfIteratingCausalEngine:
 
         for symbol, frame in symbol_datasets.items():
             normalized = self._normalize_ohlcv_frame(frame)
+            peer_frames = (global_peer_datasets or {}).get(symbol, {})
             if len(normalized) < self.selection_policy.min_history:
                 symbol_reports[symbol] = {
                     "status": "insufficient_history",
                     "rows": int(len(normalized)),
+                    "global_peer_count": int(len(peer_frames)),
                     "selected_features": [],
                     "rejected_features": [],
                 }
                 continue
 
-            factor_matrix = self._build_candidate_factor_matrix(normalized)
+            factor_matrix = self._build_candidate_factor_matrix(
+                normalized,
+                symbol=symbol,
+                peer_frames=peer_frames,
+            )
             target_returns = normalized["close"].pct_change(self.selection_policy.target_horizon).shift(
                 -self.selection_policy.target_horizon
             )
@@ -189,6 +204,7 @@ class SelfIteratingCausalEngine:
                 symbol_reports[symbol] = {
                     "status": "no_feature_passed_threshold",
                     "rows": int(len(normalized)),
+                    "global_peer_count": int(len(peer_frames)),
                     "selected_features": [],
                     "rejected_features": [asdict(item) for item in rejected[:15]],
                 }
@@ -218,6 +234,7 @@ class SelfIteratingCausalEngine:
             symbol_reports[symbol] = {
                 "status": "trained",
                 "rows": int(len(normalized)),
+                "global_peer_count": int(len(peer_frames)),
                 "selected_features": [asdict(item) for item in selected],
                 "rejected_features": [asdict(item) for item in rejected[:15]],
                 "factor_weights": ensemble["factor_weights"],
@@ -409,23 +426,43 @@ class SelfIteratingCausalEngine:
         normalized = normalized.dropna(subset=["close"]).reset_index(drop=True)
         return normalized
 
-    def _build_candidate_factor_matrix(self, frame: pd.DataFrame) -> pd.DataFrame:
-        base = pd.DataFrame(index=frame.index)
-        base["base_ret_5"] = frame["close"].pct_change(5)
-        base["base_ret_20"] = frame["close"].pct_change(20)
-        base["base_ret_60"] = frame["close"].pct_change(60)
-        base["base_price_vs_ma20"] = frame["close"] / frame["close"].rolling(20).mean() - 1
-        base["base_volume_surprise_20"] = frame["volume"] / frame["volume"].rolling(20).mean() - 1
-        base["base_drawdown_20"] = frame["close"] / frame["close"].rolling(20).max() - 1
+    def _build_candidate_factor_matrix(
+        self,
+        frame: pd.DataFrame,
+        symbol: str = "",
+        peer_frames: Optional[Dict[str, pd.DataFrame]] = None,
+    ) -> pd.DataFrame:
+        enriched = frame
+        global_peer = pd.DataFrame(index=frame.index)
+        if self._infer_asset_type(symbol) == "futures":
+            enriched = self.factor_library.attach_global_peer_context(frame, peer_frames)
+            global_peer = self.factor_library.compute_global_futures_linkage_factors(enriched)
 
-        technical = self.factor_library.compute_all_technical_factors(frame)
+        base = pd.DataFrame(index=frame.index)
+        base["base_ret_5"] = enriched["close"].pct_change(5)
+        base["base_ret_20"] = enriched["close"].pct_change(20)
+        base["base_ret_60"] = enriched["close"].pct_change(60)
+        base["base_price_vs_ma20"] = enriched["close"] / enriched["close"].rolling(20).mean() - 1
+        base["base_volume_surprise_20"] = enriched["volume"] / enriched["volume"].rolling(20).mean() - 1
+        base["base_drawdown_20"] = enriched["close"] / enriched["close"].rolling(20).max() - 1
+
+        technical = self.factor_library.compute_all_technical_factors(enriched)
         causal_names = self.factor_library.get_factor_list(category="causal_quant")
-        causal = self.factor_library.compute_factor_batch(causal_names, frame, use_polars=False, parallel=False)
-        matrix = pd.concat([base, technical, causal], axis=1)
+        causal = self.factor_library.compute_factor_batch(causal_names, enriched, use_polars=False, parallel=False)
+        matrix = pd.concat([base, global_peer, technical, causal], axis=1)
         matrix = matrix.replace([np.inf, -np.inf], np.nan)
         matrix = matrix.loc[:, matrix.notna().mean() >= self.selection_policy.min_non_null_ratio]
         matrix = matrix.ffill().fillna(0.0)
         return matrix
+
+    def get_global_peer_symbols(self, symbol: str) -> List[str]:
+        """返回某个期货品种应联动参考的全球同类合约。"""
+        token = symbol.upper()
+        if any(key in token for key in ["AU", "AG", "XAU", "GOLD"]):
+            return ["COMEX_Gold", "XAUUSD"]
+        if any(key in token for key in ["CU", "COPPER", "HG", "LME"]):
+            return ["LME_Copper", "HG"]
+        return []
 
     def _train_factor_ensemble(
         self,
