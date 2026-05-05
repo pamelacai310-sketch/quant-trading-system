@@ -167,6 +167,13 @@ class CausalFactorLibrary:
         self._initialize_cross_asset_extensions()
         self._initialize_equity_extensions()
         self._initialize_commodity_extensions()
+        # 扩展到300+个因果因素
+        try:
+            from .causal_factor_library_extension import extend_causal_factor_library_to_300
+            extend_causal_factor_library_to_300(self)
+        except ImportError:
+            # 如果扩展模块不可用，跳过
+            pass
         self.quantized_factors: Dict[str, QuantizedCausalFactor] = self._build_quantized_factor_catalog()
 
     def _bulk_add_factor_specs(self, specs: List[Dict[str, Any]]) -> None:
