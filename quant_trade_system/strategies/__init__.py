@@ -66,6 +66,17 @@ from .enhanced_hybrid_swing_strategy import (
     EnhancedFuturesOpportunity,
     simulate_enhanced_hybrid_strategy,
 )
+from .universe_patch import apply_expanded_universe_patch
+
+# Expand demo strategy universes at import time.  This preserves the existing
+# constructor API while making new strategy instances scan the configured
+# cross-market universe rather than the old sample-only pools.
+apply_expanded_universe_patch(
+    weekly_cls=WeeklySwingStrategy,
+    far_month_cls=FarMonthFuturesStrategy,
+    hybrid_cls=HybridSwingStrategy,
+)
+apply_expanded_universe_patch(hybrid_cls=EnhancedHybridSwingStrategy)
 
 __all__ = [
     # O'Neil CANSLIM
@@ -119,4 +130,6 @@ __all__ = [
     "EnhancedStockOpportunity",
     "EnhancedFuturesOpportunity",
     "simulate_enhanced_hybrid_strategy",
+    # Universe patching
+    "apply_expanded_universe_patch",
 ]
