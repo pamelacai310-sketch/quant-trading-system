@@ -56,8 +56,14 @@ class QuantRequestHandler(SimpleHTTPRequestHandler):
             ("GET", "/api/research"): lambda _query, _payload: self.service.research_summary(),
             ("GET", "/api/datasets"): lambda _query, _payload: self.service.list_datasets(),
             ("GET", "/api/data/series"): lambda q, _payload: self.service.dataset_series(q.get("dataset", ["gold_daily"])[0]),
+            ("GET", "/api/universe"): lambda q, _payload: self.service.universe_summary(
+                include_symbols=q.get("include_symbols", ["true"])[0].lower() != "false"
+            ),
+            ("POST", "/api/screener"): lambda _query, body: self.service.screen_universe(body),
             ("GET", "/api/causal/status"): lambda _query, _payload: self.service.causal_status(),
-            ("POST", "/api/causal/pipeline"): lambda _query, body: self.service.run_causal_pipeline(body.get("symbols")),
+            ("POST", "/api/causal/pipeline"): lambda _query, body: self.service.run_causal_pipeline(
+                body.get("symbols"), body.get("universe"), body.get("limit")
+            ),
             ("GET", "/api/causal/market"): lambda _query, _payload: self.service.get_market_regime_snapshot(),
             ("GET", "/api/causal/decision"): lambda _query, _payload: self.service.get_causal_decision(),
             ("POST", "/api/causal/decision"): lambda _query, body: self.service.get_causal_decision(body.get("market_data")),
