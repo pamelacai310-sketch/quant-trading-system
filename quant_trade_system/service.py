@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -16,6 +16,7 @@ from .models import OrderRequest
 from .risk import RiskManager
 from .storage import Storage
 from .strategy_engine import run_strategy_once
+from .universe_provider import MarketUniverseProvider
 
 
 class QuantTradingService:
@@ -29,6 +30,7 @@ class QuantTradingService:
         self.risk_manager = RiskManager()
         self.paper_broker = PaperBroker(self.storage)
         self.live_broker = WebhookBroker(self.storage)
+        self.universe_provider = MarketUniverseProvider(self.data_dir, prefer_live=True)
         self._seed_default_strategies()
         self.causal_system = CausalTradingSystemV4(
             str(self.base_dir),
@@ -357,6 +359,7 @@ class QuantTradingService:
             "risk_events": risk_events,
             "datasets": self.list_datasets(),
             "causal_status": self.causal_system.get_system_status(),
+            "universe": self.universe_provider.summary(include_symbols=False),
         }
 
     def causal_status(self) -> Dict[str, Any]:
@@ -369,10 +372,38 @@ class QuantTradingService:
             bundle[item["name"]] = self.load_dataset(item["name"])
         return bundle
 
-    def run_causal_pipeline(self, symbols: Optional[List[str]] = None) -> Dict[str, Any]:
+    def universe_summary(self, include_symbols: bool = True) -> Dict[str, Any]:
+        return self.universe_provider.summary(include_symbols=include_symbols)
+
+    def screen_universe(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        universe = payload.get("universe", "default_global")
+        top_n = int(payload.get("top_n", 50))
+        filters = payload.get("filters", {})
+        return self.universe_provider.screen(universe=universe, top_n=top_n, filters=filters)
+
+    def _resolve_pipeline_symbols(self, payload_symbols: Optional[List[str]], universe: Optional[str], limit: Optional[int]) -> List[str]:
+        if payload_symbols:
+            return payload_symbols[:limit] if limit else payload_symbols
+        universe_name = universe or "default_global"
+        return self.universe_provider.get_symbols(universe_name, include_contracts=False, limit=limit or 200)
+
+    def run_causal_pipeline(
+        self,
+        symbols: Optional[List[str]] = None,
+        universe: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
         self._sync_causal_account()
-        symbols = symbols or ["AAPL", "MSFT", "GOOGL", "600000"]
-        return self.causal_system.full_analysis_pipeline_v4(symbols=symbols, raw_datasets=self._dataset_bundle())
+        resolved_symbols = self._resolve_pipeline_symbols(symbols, universe, limit)
+        result = self.causal_system.full_analysis_pipeline_v4(
+            symbols=resolved_symbols,
+            raw_datasets=self._dataset_bundle(),
+        )
+        if isinstance(result, dict):
+            result.setdefault("universe", universe or "explicit_symbols")
+            result.setdefault("symbols_used", resolved_symbols)
+            result.setdefault("symbol_count", len(resolved_symbols))
+        return result
 
     def ecosystem_status(self) -> Dict[str, Any]:
         self._sync_causal_account()
