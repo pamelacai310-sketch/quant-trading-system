@@ -7,12 +7,14 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Tuple
 from urllib.parse import parse_qs, urlparse
 
+from .live_screener import market_data_status, quote_symbols, screen_live_universe
 from .service import QuantTradingService
 
 
 class QuantRequestHandler(SimpleHTTPRequestHandler):
     service: QuantTradingService
     static_dir: str
+    base_dir: str
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, directory=self.static_dir, **kwargs)
@@ -60,6 +62,9 @@ class QuantRequestHandler(SimpleHTTPRequestHandler):
                 include_symbols=q.get("include_symbols", ["true"])[0].lower() != "false"
             ),
             ("POST", "/api/screener"): lambda _query, body: self.service.screen_universe(body),
+            ("GET", "/api/market-data/status"): lambda _query, _payload: market_data_status(),
+            ("POST", "/api/quotes"): lambda _query, body: quote_symbols(body),
+            ("POST", "/api/screener/live"): lambda _query, body: screen_live_universe(self.base_dir, body),
             ("GET", "/api/causal/status"): lambda _query, _payload: self.service.causal_status(),
             ("POST", "/api/causal/pipeline"): lambda _query, body: self.service.run_causal_pipeline(
                 body.get("symbols"), body.get("universe"), body.get("limit")
@@ -104,6 +109,7 @@ def run_server(base_dir: str, host: str = "127.0.0.1", port: int = 8108) -> None
 
     Handler.service = service
     Handler.static_dir = static_dir
+    Handler.base_dir = base_dir
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"Causal AI quant trading system running at http://{host}:{port}")
     server.serve_forever()
