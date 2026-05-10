@@ -384,8 +384,9 @@ class QuantTradingService:
     def _resolve_pipeline_symbols(self, payload_symbols: Optional[List[str]], universe: Optional[str], limit: Optional[int]) -> List[str]:
         if payload_symbols:
             return payload_symbols[:limit] if limit else payload_symbols
-        universe_name = universe or "default_global"
-        return self.universe_provider.get_symbols(universe_name, include_contracts=False, limit=limit or 200)
+        if universe:
+            return self.universe_provider.get_symbols(universe, include_contracts=False, limit=limit or 200)
+        return self.causal_system.get_default_watchlist_symbols(limit=limit or 12)
 
     def run_causal_pipeline(
         self,
@@ -400,10 +401,23 @@ class QuantTradingService:
             raw_datasets=self._dataset_bundle(),
         )
         if isinstance(result, dict):
-            result.setdefault("universe", universe or "explicit_symbols")
+            result.setdefault(
+                "universe",
+                universe or ("explicit_symbols" if symbols else "daily_selection_watchlist"),
+            )
             result.setdefault("symbols_used", resolved_symbols)
             result.setdefault("symbol_count", len(resolved_symbols))
         return result
+
+    def daily_selection(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        self._sync_causal_account()
+        normalized = {
+            "date": (payload or {}).get("date"),
+            "topn": int((payload or {}).get("topn", 20)),
+            "min_price": float((payload or {}).get("min_price", 100.0)),
+            "min_ytd_return": float((payload or {}).get("min_ytd_return", 0.50)),
+        }
+        return self.causal_system.ecosystem.fetch_akshare_daily_selection(normalized)
 
     def ecosystem_status(self) -> Dict[str, Any]:
         self._sync_causal_account()

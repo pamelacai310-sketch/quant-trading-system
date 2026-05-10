@@ -93,6 +93,13 @@ class QuantSystemTests(unittest.TestCase):
                 "calendar": {"date": "20260505", "records": [{"事件": "LPR 公布"}]},
             },
         }
+        causal_system.ecosystem.fetch_akshare_daily_selection = lambda payload: {
+            "anchor_date": "20260505",
+            "nasdaq_top_net_inflow": {"records": [{"ticker": "MSFT"}], "count": 1},
+            "china_futures_top_open_interest": {"records": [{"contract": "CU2506"}], "count": 1},
+            "us_ytd_hot_non_otc": {"records": [{"ticker": "NVDA"}], "count": 1},
+            "default_watchlist": ["MSFT", "NVDA"],
+        }
         causal_system.data_adapter.get_batch_snapshots = lambda symbols: {}
         causal_system.ecosystem.fetch_openbb_market_context = lambda symbols: {}
         market_data = causal_system.build_market_data({})
@@ -102,7 +109,43 @@ class QuantSystemTests(unittest.TestCase):
         self.assertEqual(market_data["valuation_columns"]["A_Share_PE_TTM"]["value"], 11.2)
         self.assertEqual(market_data["holding_columns"]["Northbound_Top5_Holding_Value"]["value"], 240000000.0)
         self.assertEqual(market_data["policy_columns"]["Policy_Event_Count"]["value"], 7.0)
+        self.assertEqual(market_data["selection_logic"]["default_watchlist"], ["MSFT", "NVDA"])
         self.assertIn("akshare_market_context", market_data)
+
+    def test_default_watchlist_uses_daily_selection_logic(self) -> None:
+        causal_system = self.service.causal_system
+        causal_system.ecosystem.fetch_akshare_daily_selection = lambda payload: {
+            "default_watchlist": ["MSFT", "NVDA", "AMD"]
+        }
+        self.assertEqual(
+            causal_system.get_default_watchlist_symbols(limit=3),
+            ["MSFT", "NVDA", "AMD"],
+        )
+
+    def test_run_causal_pipeline_defaults_to_daily_selection_watchlist(self) -> None:
+        self.service.causal_system.get_default_watchlist_symbols = lambda limit=12: ["MSFT", "NVDA", "AMD"][:limit]
+        self.service.causal_system.full_analysis_pipeline_v4 = lambda symbols, raw_datasets: {
+            "symbols_used": symbols,
+            "symbol_count": len(symbols),
+        }
+        result = self.service.run_causal_pipeline()
+        self.assertEqual(result["symbols_used"], ["MSFT", "NVDA", "AMD"])
+        self.assertEqual(result["universe"], "daily_selection_watchlist")
+
+    def test_daily_selection_service_passes_payload_to_bridge(self) -> None:
+        seen = {}
+
+        def fake_fetch(payload):
+            seen["payload"] = payload
+            return {"default_watchlist": ["MSFT"]}
+
+        self.service.causal_system.ecosystem.fetch_akshare_daily_selection = fake_fetch
+        result = self.service.daily_selection({"date": "20260508", "topn": 5, "min_price": 120, "min_ytd_return": 0.6})
+        self.assertEqual(result["default_watchlist"], ["MSFT"])
+        self.assertEqual(
+            seen["payload"],
+            {"date": "20260508", "topn": 5, "min_price": 120.0, "min_ytd_return": 0.6},
+        )
 
     def test_data_adapter_returns_source_column(self) -> None:
         frame = self.service.causal_system.data_adapter.get_symbol_data("AAPL", period="1mo")

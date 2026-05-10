@@ -153,6 +153,10 @@ class EcosystemIntegrationManager:
         data = self._run_bridge("akshare", self.akshare_bridge, "market_context", payload)
         return data or {}
 
+    def fetch_akshare_daily_selection(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        data = self._run_bridge("akshare", self.akshare_bridge, "daily_selection", payload)
+        return data or {}
+
     def price_option(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         data = self._run_bridge("QuantLib", self.quantlib_bridge, "black_scholes", payload)
         return data or {}
