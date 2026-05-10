@@ -62,6 +62,15 @@ class QuantRequestHandler(SimpleHTTPRequestHandler):
                 include_symbols=q.get("include_symbols", ["true"])[0].lower() != "false"
             ),
             ("POST", "/api/screener"): lambda _query, body: self.service.screen_universe(body),
+            ("GET", "/api/selection/daily"): lambda q, _payload: self.service.daily_selection(
+                {
+                    "date": q.get("date", [None])[0],
+                    "topn": q.get("topn", [20])[0],
+                    "min_price": q.get("min_price", [100.0])[0],
+                    "min_ytd_return": q.get("min_ytd_return", [0.50])[0],
+                }
+            ),
+            ("POST", "/api/selection/daily"): lambda _query, body: self.service.daily_selection(body),
             ("GET", "/api/market-data/status"): lambda _query, _payload: market_data_status(),
             ("POST", "/api/quotes"): lambda _query, body: quote_symbols(body),
             ("POST", "/api/screener/live"): lambda _query, body: screen_live_universe(self.base_dir, body),

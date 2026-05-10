@@ -21,6 +21,7 @@ import pandas as pd
 from .ecosystem import EcosystemIntegrationManager
 from .core.causal import CausalFactorLibrary, CrossAssetCausalEngine, SelfIteratingCausalEngine
 from .factors import FactorLibrary
+from .selection_logic import DailySelectionEngine
 
 
 class DataSource(Enum):
@@ -965,8 +966,29 @@ class CausalTradingSystemV4:
             "causal_knowledge_base": self.causal_factor_library.get_factor_coverage_summary(),
             "cross_asset_processing": self.cross_asset_engine.describe_capabilities(),
             "self_iterating_learning": self.self_iterating_engine.describe_capabilities(),
+            "daily_selection_logic": {
+                "nasdaq_top_net_inflow": True,
+                "china_futures_top_open_interest": True,
+                "us_ytd_hot_non_otc": True,
+            },
             "event_calendar": self.trading_agent.event_calendar,
         }
+
+    def get_default_watchlist_symbols(self, limit: int = 8) -> List[str]:
+        selection_logic = self.ecosystem.fetch_akshare_daily_selection(
+            {
+                "date": datetime.now().strftime("%Y%m%d"),
+                "min_price": 100.0,
+                "min_ytd_return": 0.50,
+                "topn": max(limit, 8),
+            }
+        )
+        symbols = selection_logic.get("default_watchlist", []) if isinstance(selection_logic, dict) else []
+        if symbols:
+            symbols = [str(item).strip().upper() for item in symbols if str(item).strip()]
+        else:
+            symbols = DailySelectionEngine.extract_default_watchlist_symbols(selection_logic, limit=limit)
+        return symbols[:limit] or ["AAPL", "MSFT", "GOOGL", "600000"]
 
     @staticmethod
     def _to_numeric(value: Any) -> Optional[float]:
@@ -1044,6 +1066,14 @@ class CausalTradingSystemV4:
                 "hk_symbol": "00700",
                 "inventory_symbols": ["沪铜", "沪金"],
                 "futures_rank_symbols": ["CU", "AU", "RB"],
+            }
+        )
+        selection_logic = self.ecosystem.fetch_akshare_daily_selection(
+            {
+                "date": datetime.now().strftime("%Y%m%d"),
+                "min_price": 100.0,
+                "min_ytd_return": 0.50,
+                "topn": 20,
             }
         )
         macro_context = akshare_context.get("macro", {})
@@ -1146,6 +1176,7 @@ class CausalTradingSystemV4:
             },
         }
         market_data["akshare_market_context"] = akshare_context
+        market_data["selection_logic"] = selection_logic
         finshare_snapshots = self.data_adapter.get_batch_snapshots(["AAPL", "MSFT", "600000"])
         market_data["finshare_snapshots"] = finshare_snapshots
         market_data["openbb_market_context"] = self.ecosystem.fetch_openbb_market_context(["AAPL", "MSFT", "GOOGL"])
@@ -1212,6 +1243,7 @@ class CausalTradingSystemV4:
             raw_datasets = {}
         market_data = self.build_market_data(raw_datasets)
         results["market_data"] = market_data
+        results["selection_logic"] = market_data.get("selection_logic", {})
         learning_inputs = shortlisted_data if shortlisted_data else {
             symbol: frame for symbol, frame in data.items() if len(frame) >= 80
         }
