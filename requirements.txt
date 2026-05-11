@@ -23,6 +23,7 @@ QuantLib-Python>=1.25
 # 可选实时/准实时行情源
 # 这些依赖不会被核心流程强制使用；未安装或缺少 API token 时会自动降级。
 akshare>=1.14.0
+yfinance>=0.2.0
 tushare>=1.4.0
 polygon-api-client>=1.13.0
 ib-insync>=0.9.86
