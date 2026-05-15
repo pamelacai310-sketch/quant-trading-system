@@ -35,6 +35,12 @@ HK_CORE_UNIVERSE = [
 
 SHFE_CORE_UNIVERSE = ["CU0", "AU0", "AG0", "RB0"]
 
+HK_TAIL_HEDGE_SYMBOL = "02840.HK"
+HK_SAFE_RESERVE_SYMBOL = "HKD_CASH"
+SHFE_TAIL_HEDGE_SYMBOL = "AU0"
+SHFE_SAFE_RESERVE_SYMBOL = "CNY_CASH"
+HK_EXECUTION_SUPPORT_UNIVERSE = [HK_TAIL_HEDGE_SYMBOL]
+
 
 @dataclass
 class MarketValidation:
@@ -160,11 +166,18 @@ def _next_weekday(day: date) -> date:
     return cursor
 
 
-def _fetch_hk_data(ak: Any, symbols: Iterable[str]) -> Dict[str, pd.DataFrame]:
+def _cash_price_snapshot(target_date: str) -> Dict[str, Any]:
+    return {"date": target_date, "close": 1.0}
+
+
+def _fetch_hk_data(ak: Any, symbols: Iterable[str], end_date: Optional[str] = None) -> Dict[str, pd.DataFrame]:
     data: Dict[str, pd.DataFrame] = {}
     for symbol in symbols:
         code = symbol.split(".")[0]
-        data[symbol] = _normalize_live_frame(ak.stock_hk_daily(symbol=code)).tail(126).reset_index(drop=True)
+        frame = _normalize_live_frame(ak.stock_hk_daily(symbol=code))
+        if end_date:
+            frame = frame.loc[frame["date"] <= end_date]
+        data[symbol] = frame.tail(126).reset_index(drop=True)
     return data
 
 
@@ -243,10 +256,13 @@ def _resolve_shfe_settle(ak: Any, target_day: date, max_lookback: int = 10) -> t
     )
 
 
-def _fetch_shfe_data(ak: Any, symbols: Iterable[str]) -> Dict[str, pd.DataFrame]:
+def _fetch_shfe_data(ak: Any, symbols: Iterable[str], end_date: Optional[str] = None) -> Dict[str, pd.DataFrame]:
     data: Dict[str, pd.DataFrame] = {}
     for symbol in symbols:
-        data[symbol] = _normalize_live_frame(ak.futures_zh_daily_sina(symbol=symbol)).tail(126).reset_index(drop=True)
+        frame = _normalize_live_frame(ak.futures_zh_daily_sina(symbol=symbol))
+        if end_date:
+            frame = frame.loc[frame["date"] <= end_date]
+        data[symbol] = frame.tail(126).reset_index(drop=True)
     return data
 
 
@@ -321,6 +337,167 @@ def _latest_price_map(data: Dict[str, pd.DataFrame]) -> Dict[str, Dict[str, Any]
     return result
 
 
+def _price_on_or_before(frame: pd.DataFrame, target_date: str) -> Optional[Dict[str, Any]]:
+    if frame.empty:
+        return None
+    filtered = frame.loc[frame["date"] <= target_date]
+    if filtered.empty:
+        return None
+    row = filtered.iloc[-1]
+    return {"date": str(row["date"]), "close": float(row["close"])}
+
+
+def _materialize_execution_actions(
+    actions: List[Dict[str, Any]],
+    market: str,
+    price_map: Dict[str, Dict[str, Any]],
+    target_date: str,
+) -> List[Dict[str, Any]]:
+    execution_actions: List[Dict[str, Any]] = []
+    market_upper = market.upper()
+    for action in actions:
+        action_name = str(action.get("action"))
+        target_weight = float(action.get("target_weight", 0.0))
+        if action_name == "TAIL_HEDGE":
+            symbol = HK_TAIL_HEDGE_SYMBOL if market_upper == "HK" else SHFE_TAIL_HEDGE_SYMBOL
+            snapshot = price_map.get(symbol)
+            execution_actions.append(
+                {
+                    "market": market_upper,
+                    "bucket_action": action_name,
+                    "action": "LONG",
+                    "symbol": symbol,
+                    "target_weight": target_weight,
+                    "stop_loss_pct": 0.03,
+                    "take_profit_pct": 0.06,
+                    "reference_close": float(snapshot.get("close", 0.0)) if snapshot else 0.0,
+                    "reference_date": str(snapshot.get("date")) if snapshot else target_date,
+                    "return_model": "close_to_close",
+                    "reason": action.get("reason", ""),
+                }
+            )
+            continue
+        if action_name == "SAFE_RESERVE":
+            symbol = HK_SAFE_RESERVE_SYMBOL if market_upper == "HK" else SHFE_SAFE_RESERVE_SYMBOL
+            execution_actions.append(
+                {
+                    "market": market_upper,
+                    "bucket_action": action_name,
+                    "action": "HOLD",
+                    "symbol": symbol,
+                    "target_weight": target_weight,
+                    "reference_close": 1.0,
+                    "reference_date": target_date,
+                    "return_model": "cash_flat",
+                    "reason": action.get("reason", ""),
+                }
+            )
+            continue
+        symbol = str(action.get("symbol"))
+        snapshot = price_map.get(symbol)
+        execution_actions.append(
+            {
+                "market": market_upper,
+                "bucket_action": action_name,
+                **action,
+                "reference_close": float(snapshot.get("close", 0.0)) if snapshot else 0.0,
+                "reference_date": str(snapshot.get("date")) if snapshot else target_date,
+                "return_model": "close_to_close",
+            }
+        )
+    return execution_actions
+
+
+def _build_execution_instruction(action: Dict[str, Any]) -> str:
+    action_name = str(action.get("action"))
+    symbol = str(action.get("symbol"))
+    if action_name == "HOLD":
+        return (
+            f"{action.get('bucket_action')} -> HOLD {symbol} 参考价 {float(action.get('reference_close', 1.0)):.4f}，"
+            f"目标权重 {float(action.get('target_weight', 0.0)) * 100:.1f}%。"
+        )
+    line = _build_instruction(action, float(action.get("reference_close", 0.0)))
+    return f"{action.get('bucket_action')} -> {line}"
+
+
+def _execution_price_map(report: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    price_map: Dict[str, Dict[str, Any]] = {}
+    price_map.update(report.get("hk_last", {}))
+    price_map.update(report.get("shfe_last", {}))
+    for symbol in [HK_SAFE_RESERVE_SYMBOL, SHFE_SAFE_RESERVE_SYMBOL]:
+        price_map.setdefault(symbol, _cash_price_snapshot(report.get("report_date", "")))
+    return price_map
+
+
+def _compute_execution_action_return(action: Dict[str, Any], current_prices: Dict[str, Dict[str, Any]]) -> Optional[float]:
+    action_name = str(action.get("action"))
+    if action.get("return_model") == "cash_flat" or action_name == "HOLD":
+        return 0.0
+    reference_close = float(action.get("reference_close", 0.0) or 0.0)
+    if reference_close <= 0:
+        return None
+    current_close = current_prices.get(str(action.get("symbol")), {}).get("close")
+    if current_close in {None, 0}:
+        return None
+    current_close = float(current_close)
+    if action_name == "LONG":
+        return current_close / reference_close - 1.0
+    if action_name == "SHORT":
+        return reference_close / current_close - 1.0
+    return 0.0
+
+
+def _evaluate_execution_actions(
+    actions: List[Dict[str, Any]],
+    current_prices: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    details: List[Dict[str, Any]] = []
+    weighted_return = 0.0
+    gross_weight = 0.0
+    futures_weight = 0.0
+    realized_returns: List[float] = []
+    for action in actions:
+        pnl = _compute_execution_action_return(action, current_prices)
+        weight = float(action.get("target_weight", 0.0))
+        symbol = str(action.get("symbol"))
+        is_cash = action.get("return_model") == "cash_flat" or symbol.endswith("_CASH")
+        if pnl is None:
+            continue
+        weighted_return += weight * pnl
+        if not is_cash:
+            gross_weight += weight
+            if str(action.get("market")) == "SHFE":
+                futures_weight += weight
+            realized_returns.append(pnl)
+        details.append(
+            {
+                "symbol": symbol,
+                "action": action.get("action"),
+                "bucket_action": action.get("bucket_action"),
+                "target_weight": weight,
+                "reference_close": float(action.get("reference_close", 0.0)),
+                "current_close": float(current_prices.get(symbol, {}).get("close", action.get("reference_close", 0.0))),
+                "return_pct": round(pnl, 6),
+            }
+        )
+    wins = [item for item in realized_returns if item > 0]
+    losses = [item for item in realized_returns if item < 0]
+    payoff_ratio = (
+        float(sum(wins) / len(wins)) / abs(float(sum(losses) / len(losses)))
+        if wins and losses
+        else (float("inf") if wins else 0.0)
+    )
+    return {
+        "portfolio_return": round(weighted_return, 6),
+        "gross_weight": round(gross_weight, 6),
+        "futures_weight": round(futures_weight, 6),
+        "risk_asset_count": len(realized_returns),
+        "win_rate": round(len(wins) / len(realized_returns), 6) if realized_returns else 0.0,
+        "payoff_ratio": round(payoff_ratio, 6) if payoff_ratio != float("inf") else 999.0,
+        "details": details,
+    }
+
+
 def _find_previous_report(report_dir: Path, target_day: date) -> Optional[Path]:
     candidates = sorted(report_dir.glob("*.json"))
     previous = None
@@ -356,7 +533,7 @@ def _build_recap(previous_report: Optional[Dict[str, Any]], current_prices: Dict
         return ["上一份夜报不存在，今晚无法做可比口径复盘。"]
 
     previous_date = previous_report.get("report_date")
-    previous_actions = previous_report.get("primary_actions", [])
+    previous_actions = previous_report.get("execution_actions") or previous_report.get("primary_actions", [])
     if not previous_actions:
         return [f"{previous_date} 没有主动方向单，仅有安全端/尾部保护。"]
 
@@ -364,15 +541,15 @@ def _build_recap(previous_report: Optional[Dict[str, Any]], current_prices: Dict
     for action in previous_actions:
         symbol = action.get("symbol")
         action_name = action.get("action")
-        previous_close = action.get("reference_close")
-        current_close = current_prices.get(symbol, {}).get("close")
-        if action_name not in {"LONG", "SHORT"}:
-            lines.append(f"{previous_date} 的 {symbol} 属于非方向性动作 `{action_name}`，不做单边盈亏复盘。")
+        if action_name == "SAFE_RESERVE":
+            lines.append(f"{previous_date} 的 {symbol} {action_name} 按现金缓冲口径复盘：+0.00% (1.0000 -> 1.0000)。")
             continue
-        if previous_close in {None, 0} or current_close in {None, 0}:
+        pnl = _compute_execution_action_return(action, current_prices)
+        if pnl is None:
             lines.append(f"{previous_date} 的 {symbol} 无法取得可比收盘价，跳过复盘。")
             continue
-        pnl = _compute_close_to_close_return(float(previous_close), float(current_close), str(action_name))
+        previous_close = float(action.get("reference_close", 0.0))
+        current_close = float(current_prices.get(symbol, {}).get("close", previous_close))
         lines.append(
             f"{previous_date} 的 {symbol} {action_name} 按收盘到收盘代理口径复盘：{pnl * 100:+.2f}% "
             f"({previous_close:.4f} -> {current_close:.4f})。"
@@ -443,6 +620,10 @@ def _format_action_bucket(actions: List[Dict[str, Any]]) -> List[str]:
     return lines
 
 
+def _format_execution_bucket(actions: List[Dict[str, Any]]) -> List[str]:
+    return [_build_execution_instruction(action) for action in actions]
+
+
 def _next_market_day_text(target_day: date) -> str:
     next_day = _next_weekday(target_day)
     return f"按周历推算，下一个交易日预计为 {next_day.strftime('%Y-%m-%d')}；若遇交易所节假日调整，以官方日历为准。"
@@ -459,11 +640,12 @@ def generate_report(target_day: date) -> Dict[str, Any]:
     repo_status = _repo_status(repo_root)
     target_date = target_day.strftime("%Y-%m-%d")
 
-    hk_data = _fetch_hk_data(ak, HK_CORE_UNIVERSE)
+    hk_data = _fetch_hk_data(ak, HK_CORE_UNIVERSE, end_date=target_date)
     hk_validation = _validate_hk_close(hk_data, target_date)
+    hk_execution_data = _fetch_hk_data(ak, HK_EXECUTION_SUPPORT_UNIVERSE, end_date=target_date)
 
     shfe_settle, shfe_validation = _resolve_shfe_settle(ak, target_day)
-    shfe_data = _fetch_shfe_data(ak, SHFE_CORE_UNIVERSE)
+    shfe_data = _fetch_shfe_data(ak, SHFE_CORE_UNIVERSE, end_date=target_date)
 
     report: Dict[str, Any] = {
         "status": "failed_validation",
@@ -474,6 +656,7 @@ def generate_report(target_day: date) -> Dict[str, Any]:
         "shfe_validation": asdict(shfe_validation),
         "hk_last": _latest_price_map(hk_data),
         "shfe_last": _latest_price_map(shfe_data),
+        "hk_execution_last": _latest_price_map(hk_execution_data),
         "recap_lines": [],
         "primary_actions": [],
         "report_text": "",
@@ -482,7 +665,10 @@ def generate_report(target_day: date) -> Dict[str, Any]:
     previous_report = _load_json(_find_previous_report(report_dir, target_day))
     current_price_map = {}
     current_price_map.update(report["hk_last"])
+    current_price_map.update(report["hk_execution_last"])
     current_price_map.update(report["shfe_last"])
+    current_price_map[HK_SAFE_RESERVE_SYMBOL] = _cash_price_snapshot(target_date)
+    current_price_map[SHFE_SAFE_RESERVE_SYMBOL] = _cash_price_snapshot(target_date)
     report["recap_lines"] = _build_recap(previous_report, current_price_map)
 
     if not hk_validation.passed or not shfe_validation.passed:
@@ -539,6 +725,11 @@ def generate_report(target_day: date) -> Dict[str, Any]:
 
     hk_primary_lines, hk_primary_actions = _classify_primary_actions(report["hk_actions"], report["hk_last"])
     shfe_primary_lines, shfe_primary_actions = _classify_primary_actions(report["shfe_actions"], report["shfe_last"])
+    hk_execution_price_map = {**report["hk_last"], **report["hk_execution_last"], HK_SAFE_RESERVE_SYMBOL: _cash_price_snapshot(target_date)}
+    shfe_execution_price_map = {**report["shfe_last"], SHFE_SAFE_RESERVE_SYMBOL: _cash_price_snapshot(target_date)}
+    report["hk_execution_actions"] = _materialize_execution_actions(report["hk_actions"], "HK", hk_execution_price_map, target_date)
+    report["shfe_execution_actions"] = _materialize_execution_actions(report["shfe_actions"], "SHFE", shfe_execution_price_map, target_date)
+    report["execution_actions"] = [*report["hk_execution_actions"], *report["shfe_execution_actions"]]
     report["primary_actions"] = [
         {
             **action,
@@ -550,6 +741,8 @@ def generate_report(target_day: date) -> Dict[str, Any]:
     report["shfe_primary_lines"] = shfe_primary_lines
     report["hk_secondary_lines"] = _format_action_bucket([item for item in report["hk_actions"] if item.get("action") not in {"LONG", "SHORT"}])
     report["shfe_secondary_lines"] = _format_action_bucket([item for item in report["shfe_actions"] if item.get("action") not in {"LONG", "SHORT"}])
+    report["hk_execution_lines"] = _format_execution_bucket(report["hk_execution_actions"])
+    report["shfe_execution_lines"] = _format_execution_bucket(report["shfe_execution_actions"])
     report["hk_observations"] = _observation_lines(report["hk_reports"], report["hk_last"])
     report["shfe_observations"] = _observation_lines(report["shfe_reports"], report["shfe_last"])
     report["legacy_lines"] = [
@@ -634,6 +827,12 @@ def render_report_text(report: Dict[str, Any]) -> str:
         lines.append(f"- 港股组合：{line}")
     for line in report.get("shfe_secondary_lines", []):
         lines.append(f"- SHFE组合：{line}")
+    lines.append("")
+    lines.append("执行映射：")
+    for line in report.get("hk_execution_lines", []):
+        lines.append(f"- 港股执行：{line}")
+    for line in report.get("shfe_execution_lines", []):
+        lines.append(f"- SHFE执行：{line}")
 
     lines.append("")
     lines.append("观察名单：")
@@ -650,6 +849,149 @@ def render_report_text(report: Dict[str, Any]) -> str:
             lines.append(f"- {line}")
 
     return "\n".join(lines)
+
+
+def _load_report_files(report_dir: Path, week_start: date, week_end: date) -> List[Dict[str, Any]]:
+    reports: List[Dict[str, Any]] = []
+    for path in sorted(report_dir.glob("*.json")):
+        try:
+            stamp = datetime.strptime(path.stem, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if week_start <= stamp <= week_end:
+            reports.append(json.loads(path.read_text(encoding="utf-8")))
+    reports.sort(key=lambda item: str(item.get("report_date")))
+    return reports
+
+
+def _fetch_historical_price_maps(target_date: str, hk_symbols: Iterable[str], shfe_symbols: Iterable[str]) -> Dict[str, Dict[str, Any]]:
+    ak = _require_module("akshare")
+    price_map: Dict[str, Dict[str, Any]] = {
+        HK_SAFE_RESERVE_SYMBOL: _cash_price_snapshot(target_date),
+        SHFE_SAFE_RESERVE_SYMBOL: _cash_price_snapshot(target_date),
+    }
+    for symbol in hk_symbols:
+        if symbol.endswith("_CASH"):
+            continue
+        code = symbol.split(".")[0]
+        frame = _normalize_live_frame(ak.stock_hk_daily(symbol=code))
+        snapshot = _price_on_or_before(frame, target_date)
+        if snapshot:
+            price_map[symbol] = snapshot
+    for symbol in shfe_symbols:
+        if symbol.endswith("_CASH"):
+            continue
+        frame = _normalize_live_frame(ak.futures_zh_daily_sina(symbol=symbol))
+        snapshot = _price_on_or_before(frame, target_date)
+        if snapshot:
+            price_map[symbol] = snapshot
+    return price_map
+
+
+def generate_weekly_execution_review(
+    week_start: date,
+    week_end: date,
+    evaluation_date: Optional[date] = None,
+) -> Dict[str, Any]:
+    repo_root = _repo_root()
+    report_dir = _state_dir(repo_root)
+    reports = _load_report_files(report_dir, week_start, week_end)
+    evaluation_date = evaluation_date or week_end
+
+    if not reports:
+        return {
+            "week_start": week_start.isoformat(),
+            "week_end": week_end.isoformat(),
+            "evaluation_date": evaluation_date.isoformat(),
+            "report_count": 0,
+            "days": [],
+            "combined_nav_end": 1.0,
+            "combined_return": 0.0,
+        }
+
+    hk_nav = 1.0
+    shfe_nav = 1.0
+    combined_nav = 1.0
+    nav_curve = [1.0]
+    day_reviews: List[Dict[str, Any]] = []
+    constraint_checks = {
+        "max_single_weight_ok": True,
+        "max_futures_weight_ok": True,
+        "max_gross_weight_ok": True,
+    }
+
+    for index, report in enumerate(reports):
+        next_report = reports[index + 1] if index + 1 < len(reports) else None
+        mark_date = str(next_report.get("report_date")) if next_report else evaluation_date.isoformat()
+
+        execution_actions = report.get("execution_actions")
+        if not execution_actions:
+            hk_price_map = {**report.get("hk_last", {}), **report.get("hk_execution_last", {}), HK_SAFE_RESERVE_SYMBOL: _cash_price_snapshot(str(report.get("report_date")))}
+            shfe_price_map = {**report.get("shfe_last", {}), SHFE_SAFE_RESERVE_SYMBOL: _cash_price_snapshot(str(report.get("report_date")))}
+            execution_actions = [
+                *_materialize_execution_actions(report.get("hk_actions", []), "HK", hk_price_map, str(report.get("report_date"))),
+                *_materialize_execution_actions(report.get("shfe_actions", []), "SHFE", shfe_price_map, str(report.get("report_date"))),
+            ]
+
+        hk_symbols = sorted({str(item.get("symbol")) for item in execution_actions if str(item.get("market")) == "HK"})
+        shfe_symbols = sorted({str(item.get("symbol")) for item in execution_actions if str(item.get("market")) == "SHFE"})
+        current_prices = _fetch_historical_price_maps(mark_date, hk_symbols, shfe_symbols)
+        hk_actions = [item for item in execution_actions if str(item.get("market")) == "HK"]
+        shfe_actions = [item for item in execution_actions if str(item.get("market")) == "SHFE"]
+        hk_eval = _evaluate_execution_actions(hk_actions, current_prices)
+        shfe_eval = _evaluate_execution_actions(shfe_actions, current_prices)
+
+        for bucket in [hk_actions, shfe_actions]:
+            for action in bucket:
+                weight = float(action.get("target_weight", 0.0))
+                is_cash = action.get("return_model") == "cash_flat" or str(action.get("symbol")).endswith("_CASH")
+                if not is_cash:
+                    constraint_checks["max_single_weight_ok"] &= weight <= 0.20 + 1e-9
+        constraint_checks["max_futures_weight_ok"] &= shfe_eval["gross_weight"] <= 0.50 + 1e-9
+        constraint_checks["max_gross_weight_ok"] &= hk_eval["gross_weight"] <= 1.00 + 1e-9 and shfe_eval["gross_weight"] <= 1.00 + 1e-9
+
+        hk_nav *= 1.0 + float(hk_eval["portfolio_return"])
+        shfe_nav *= 1.0 + float(shfe_eval["portfolio_return"])
+        combined_daily_return = 0.5 * float(hk_eval["portfolio_return"]) + 0.5 * float(shfe_eval["portfolio_return"])
+        combined_nav *= 1.0 + combined_daily_return
+        nav_curve.append(combined_nav)
+
+        day_reviews.append(
+            {
+                "report_date": report.get("report_date"),
+                "mark_date": mark_date,
+                "hk": hk_eval,
+                "shfe": shfe_eval,
+                "combined_return": round(combined_daily_return, 6),
+                "combined_nav": round(combined_nav, 6),
+            }
+        )
+
+    peaks: List[float] = []
+    rolling_peak = 1.0
+    max_drawdown = 0.0
+    for nav in nav_curve:
+        rolling_peak = max(rolling_peak, nav)
+        peaks.append(rolling_peak)
+        drawdown = nav / rolling_peak - 1.0
+        max_drawdown = min(max_drawdown, drawdown)
+
+    return {
+        "week_start": week_start.isoformat(),
+        "week_end": week_end.isoformat(),
+        "evaluation_date": evaluation_date.isoformat(),
+        "report_count": len(reports),
+        "aggregation_assumption": "HK 与 SHFE 两个子组合按 50/50 等权聚合；SAFE_RESERVE 现金腿按 0 收益计。",
+        "days": day_reviews,
+        "hk_nav_end": round(hk_nav, 6),
+        "shfe_nav_end": round(shfe_nav, 6),
+        "combined_nav_end": round(combined_nav, 6),
+        "hk_return": round(hk_nav - 1.0, 6),
+        "shfe_return": round(shfe_nav - 1.0, 6),
+        "combined_return": round(combined_nav - 1.0, 6),
+        "max_drawdown": round(max_drawdown, 6),
+        "constraint_checks": constraint_checks,
+    }
 
 
 def main(argv: Optional[List[str]] = None) -> int:

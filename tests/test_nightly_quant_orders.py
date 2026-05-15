@@ -8,6 +8,8 @@ import pandas as pd
 from quant_trade_system.nightly_quant_orders import (
     _build_instruction,
     _build_recap,
+    _evaluate_execution_actions,
+    _materialize_execution_actions,
     _next_weekday,
     _observation_lines,
     _validate_hk_close,
@@ -100,6 +102,45 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         lines = _observation_lines(reports, latest)
         self.assertIn("00700.HK", lines[0])
         self.assertIn("rsi_6", lines[0])
+
+    def test_materialize_execution_actions_maps_tail_and_cash(self) -> None:
+        actions = [
+            {"action": "TAIL_HEDGE", "symbol": "TAIL_RISK_PROTECTION", "target_weight": 0.1, "reason": "hedge"},
+            {"action": "SAFE_RESERVE", "symbol": "SAFE_ASSET_BUCKET", "target_weight": 0.9, "reason": "cash"},
+        ]
+        price_map = {"02840.HK": {"date": "2026-05-11", "close": 100.0}}
+        execution = _materialize_execution_actions(actions, "HK", price_map, "2026-05-11")
+        self.assertEqual(execution[0]["symbol"], "02840.HK")
+        self.assertEqual(execution[0]["action"], "LONG")
+        self.assertEqual(execution[1]["symbol"], "HKD_CASH")
+        self.assertEqual(execution[1]["action"], "HOLD")
+
+    def test_evaluate_execution_actions_quantifies_nav(self) -> None:
+        actions = [
+            {
+                "market": "HK",
+                "bucket_action": "TAIL_HEDGE",
+                "action": "LONG",
+                "symbol": "02840.HK",
+                "target_weight": 0.1,
+                "reference_close": 100.0,
+                "return_model": "close_to_close",
+            },
+            {
+                "market": "HK",
+                "bucket_action": "SAFE_RESERVE",
+                "action": "HOLD",
+                "symbol": "HKD_CASH",
+                "target_weight": 0.9,
+                "reference_close": 1.0,
+                "return_model": "cash_flat",
+            },
+        ]
+        current_prices = {"02840.HK": {"close": 110.0}, "HKD_CASH": {"close": 1.0}}
+        summary = _evaluate_execution_actions(actions, current_prices)
+        self.assertAlmostEqual(summary["portfolio_return"], 0.01)
+        self.assertAlmostEqual(summary["gross_weight"], 0.1)
+        self.assertEqual(summary["risk_asset_count"], 1)
 
 
 if __name__ == "__main__":
