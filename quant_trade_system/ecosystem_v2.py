@@ -181,7 +181,16 @@ class EcosystemIntegrationManagerV2:
                 "name": "Microsoft Qlib",
                 "description": "AI驱动的量化投资平台",
                 "available": self.qlib_bridge.available if self.qlib_bridge else False,
-                "capabilities": ["ml_models", "backtesting", "portfolio_management", "factor_analysis"],
+                "capabilities": [
+                    "workflow_config",
+                    "data_handler_spec",
+                    "recorder_artifacts",
+                    "shadow_backtest",
+                    "ml_models",
+                    "backtesting",
+                    "portfolio_management",
+                    "factor_analysis",
+                ],
                 "version": self.qlib_bridge.get_version() if self.qlib_bridge and self.qlib_bridge.available else None,
             },
             "finrl_x": {
@@ -214,33 +223,58 @@ class EcosystemIntegrationManagerV2:
         start_date: str,
         end_date: str,
         features: Optional[List[str]] = None,
+        market_data: Optional[Dict[str, pd.DataFrame]] = None,
+        model_type: str = "lightgbm",
+        benchmark: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """使用Qlib进行分析"""
-        if not self.qlib_bridge or not self.qlib_bridge.available:
+        """使用Qlib风格工作流进行分析。
+
+        pyqlib 未安装时仍会生成 workflow spec/config 与 shadow recorder，
+        但 promotion_status 只能停留在 shadow_only/shadow_candidate。
+        """
+        if not self.qlib_bridge:
             return {
                 "success": False,
-                "error": "Qlib is not available",
+                "error": "Qlib bridge is not available",
             }
 
         try:
-            # 获取数据
-            data = self.qlib_bridge.get_data(
-                instrument=instrument,
+            workflow_spec = self.qlib_bridge.build_workflow_spec(
+                universe=[instrument],
                 start_date=start_date,
                 end_date=end_date,
-                fields=features or ["$open", "$high", "$low", "$close", "$volume"],
+                features=features,
+                model_type=model_type,
+                benchmark=benchmark,
             )
-
-            # 创建模型（简化版）
-            model = self.qlib_bridge.create_model(
-                model_type="mlp",
-                features=features or ["$open", "$high", "$low", "$close", "$volume"],
+            workflow_result = self.qlib_bridge.run_workflow_config(
+                workflow_spec,
+                market_data=market_data or {},
+                persist=True,
             )
-
+            qlib_data = None
+            qlib_model = None
+            if self.qlib_bridge.available:
+                qlib_data = self.qlib_bridge.get_data(
+                    instrument=instrument,
+                    start_date=start_date,
+                    end_date=end_date,
+                    fields=features or ["$open", "$high", "$low", "$close", "$volume"],
+                )
+                qlib_model = self.qlib_bridge.create_model(
+                    model_type=model_type,
+                    features=features or ["$open", "$high", "$low", "$close", "$volume"],
+                )
             return {
                 "success": True,
-                "data": data,
-                "model": model,
+                "available": self.qlib_bridge.available,
+                "data": qlib_data,
+                "model": qlib_model,
+                "workflow": workflow_result,
+                "promotion_status": workflow_result.get("promotion_status"),
+                "metrics": workflow_result.get("metrics"),
+                "backtest": workflow_result.get("backtest"),
+                "leakage_report": workflow_result.get("leakage_report"),
                 "framework": "qlib",
             }
         except Exception as e:

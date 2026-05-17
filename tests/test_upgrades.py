@@ -13,6 +13,8 @@ import unittest
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 # 添加项目路径
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
@@ -52,6 +54,99 @@ class TestQlibBridge(unittest.TestCase):
         # 如果Python 3.11可用，应该被检测到
         if self.bridge.python:
             self.assertTrue(Path(self.bridge.python).exists())
+
+    def test_workflow_config_generation_is_deterministic(self):
+        """Qlib-style workflow config should be stable for identical inputs."""
+        spec_a = self.bridge.build_workflow_spec(
+            universe=["BBB", "AAA"],
+            start_date="2026-01-01",
+            end_date="2026-03-31",
+            benchmark="QQQ",
+        )
+        spec_b = self.bridge.build_workflow_spec(
+            universe=["AAA", "BBB"],
+            start_date="2026-01-01",
+            end_date="2026-03-31",
+            benchmark="QQQ",
+        )
+        self.assertEqual(spec_a["workflow_id"], spec_b["workflow_id"])
+        self.assertEqual(self.bridge.build_workflow_config(spec_a), self.bridge.build_workflow_config(spec_b))
+        self.assertIn("feature_registry", spec_a)
+        self.assertIn("leakage_policy", spec_a)
+
+    def test_workflow_runs_without_pyqlib_as_shadow_config(self):
+        """pyqlib is optional; the bridge must still create an auditable workflow."""
+        spec = self.bridge.build_workflow_spec(
+            universe=["AAA"],
+            start_date="2026-01-01",
+            end_date="2026-02-28",
+        )
+        original_available = self.bridge.available
+        self.bridge.available = False
+        try:
+            result = self.bridge.run_workflow_config(spec, persist=False)
+        finally:
+            self.bridge.available = original_available
+        self.assertTrue(result["success"])
+        self.assertFalse(result["available"])
+        self.assertEqual(result["mode"], "shadow_config_only")
+        self.assertEqual(result["metrics"]["status"], "no_market_data")
+        self.assertTrue(result["leakage_report"]["passed"])
+
+    def test_shadow_workflow_with_synthetic_data_outputs_predictions_and_backtest(self):
+        """Synthetic OHLCV data should produce predictions, metrics and a shadow backtest."""
+        dates = pd.date_range("2026-01-01", periods=80, freq="D")
+        base = pd.Series(range(80), dtype=float)
+        frame_a = pd.DataFrame(
+            {
+                "date": dates,
+                "open": 100 + base * 0.2,
+                "high": 101 + base * 0.2,
+                "low": 99 + base * 0.2,
+                "close": 100 + base * 0.25,
+                "volume": 1_000_000 + base * 1000,
+            }
+        )
+        frame_b = pd.DataFrame(
+            {
+                "date": dates,
+                "open": 80 + base * 0.05,
+                "high": 81 + base * 0.05,
+                "low": 79 + base * 0.05,
+                "close": 80 + base * 0.03,
+                "volume": 800_000 + base * 500,
+            }
+        )
+        spec = self.bridge.build_workflow_spec(
+            universe=["AAA", "BBB"],
+            start_date="2026-01-01",
+            end_date="2026-03-21",
+        )
+        result = self.bridge.run_workflow_config(
+            spec,
+            market_data={"AAA": frame_a, "BBB": frame_b},
+            persist=False,
+        )
+        self.assertTrue(result["success"])
+        self.assertGreater(len(result["predictions"]), 0)
+        self.assertEqual(result["metrics"]["status"], "evaluated")
+        self.assertEqual(result["backtest"]["status"], "evaluated")
+        self.assertTrue(result["leakage_report"]["label_excluded_from_inference"])
+        self.assertEqual(result["leakage_report"]["future_feature_formulas"], [])
+
+    def test_export_predictions_and_recorder_listing(self):
+        """Recorder artifacts should be discoverable after a persisted shadow run."""
+        spec = self.bridge.build_workflow_spec(
+            universe=["AAA"],
+            start_date="2026-01-01",
+            end_date="2026-01-15",
+        )
+        result = self.bridge.run_workflow_config(spec, persist=True)
+        exported = self.bridge.export_predictions(result)
+        artifacts = self.bridge.get_recorder_artifacts(spec["workflow_id"])
+        self.assertTrue(Path(exported["path"]).exists())
+        self.assertTrue(artifacts["exists"])
+        self.assertTrue(any(path.endswith("workflow_spec.json") for path in artifacts["files"]))
 
 
 class TestFinRLBridge(unittest.TestCase):
@@ -195,6 +290,33 @@ class TestEcosystemV2(unittest.TestCase):
         self.assertIsNotNone(self.ecosystem.finrl_bridge)
         self.assertIsNotNone(self.ecosystem.hftbacktest_bridge)
         self.assertIsNotNone(self.ecosystem.bloomberg_bridge)
+
+    def test_run_qlib_analysis_returns_workflow_result(self):
+        """Ecosystem Qlib entrypoint should expose workflow artifacts and audit metrics."""
+        dates = pd.date_range("2026-01-01", periods=45, freq="D")
+        frame = pd.DataFrame(
+            {
+                "date": dates,
+                "open": [100 + idx * 0.1 for idx in range(45)],
+                "high": [101 + idx * 0.1 for idx in range(45)],
+                "low": [99 + idx * 0.1 for idx in range(45)],
+                "close": [100 + idx * 0.15 for idx in range(45)],
+                "volume": [1_000_000 + idx * 1000 for idx in range(45)],
+            }
+        )
+        result = self.ecosystem.run_qlib_analysis(
+            instrument="AAA",
+            start_date="2026-01-01",
+            end_date="2026-02-14",
+            market_data={"AAA": frame},
+            benchmark="QQQ",
+        )
+        self.assertTrue(result["success"])
+        self.assertEqual(result["framework"], "qlib")
+        self.assertIn("workflow", result)
+        self.assertIn("workflow_config", result["workflow"])
+        self.assertIn("promotion_status", result)
+        self.assertTrue(result["leakage_report"]["label_excluded_from_inference"])
 
 
 class TestIntegration(unittest.TestCase):
