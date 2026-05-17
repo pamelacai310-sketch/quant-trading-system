@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 from .ecosystem import EcosystemIntegrationManager
-from .core.causal import CausalFactorLibrary, CrossAssetCausalEngine, SelfIteratingCausalEngine
+from .core.causal import CausalFactorLibrary, CrossAssetCausalEngine, GameCausalAnalysisEngine, SelfIteratingCausalEngine
 from .factors import FactorLibrary
 from .selection_logic import DailySelectionEngine
 
@@ -918,12 +918,39 @@ class EnhancedCausalTradingAgent:
         us_debt = market_data.get("US_Debt", {}).get("value", 0)
         central_bank_gold = market_data.get("Central_Bank_Gold_Purchase", {}).get("value", 0)
         on_rrp = market_data.get("ON_RRP_Balance", {}).get("value", 0)
-        return bool(us_debt > 38_000_000_000_000 or central_bank_gold > 83.33 or on_rrp < 500_000_000_000)
+        game_analysis = market_data.get("game_causal_analysis", {})
+        geo_score = game_analysis.get("risk_scores", {}).get("geopolitical_energy", {}).get("score", 0.0)
+        gold_logic = self._dominant_logic_for_asset(market_data, "gold")
+        game_trigger = (
+            geo_score >= 0.55
+            or (
+                gold_logic.get("expected_direction") == "bullish_gold"
+                and gold_logic.get("confidence", 0.0) >= 0.58
+            )
+        )
+        return bool(
+            us_debt > 38_000_000_000_000
+            or central_bank_gold > 83.33
+            or on_rrp < 500_000_000_000
+            or game_trigger
+        )
 
     def _check_copper_causal_trigger(self, market_data: Dict[str, Any]) -> bool:
         lme_inventory = market_data.get("LME_Inventory_Days", {}).get("value", 0)
         ai_capex = market_data.get("AI_DataCenter_Capex", {}).get("growth", 0)
-        return bool(lme_inventory < 3 or ai_capex > 0.2)
+        copper_logic = self._dominant_logic_for_asset(market_data, "copper")
+        game_trigger = (
+            copper_logic.get("expected_direction") == "bullish_copper"
+            and copper_logic.get("confidence", 0.0) >= 0.58
+        )
+        return bool(lme_inventory < 3 or ai_capex > 0.2 or game_trigger)
+
+    @staticmethod
+    def _dominant_logic_for_asset(market_data: Dict[str, Any], asset: str) -> Dict[str, Any]:
+        for item in market_data.get("dominant_game_logics", []):
+            if item.get("asset") == asset:
+                return item
+        return {}
 
 
 class CausalTradingSystemV4:
@@ -942,6 +969,7 @@ class CausalTradingSystemV4:
         self.trading_agent = EnhancedCausalTradingAgent(self.account_monitor, use_causal_ai_agent=True)
         self.causal_factor_library = CausalFactorLibrary()
         self.cross_asset_engine = CrossAssetCausalEngine(self.causal_factor_library)
+        self.game_causal_engine = GameCausalAnalysisEngine()
         self.factor_library = FactorLibrary(cache_dir=str(self.base_dir / "state" / "factor_cache"))
         self.self_iterating_engine = SelfIteratingCausalEngine(
             factor_library=self.factor_library,
@@ -965,6 +993,7 @@ class CausalTradingSystemV4:
             "ecosystem": self.ecosystem.status(),
             "causal_knowledge_base": self.causal_factor_library.get_factor_coverage_summary(),
             "cross_asset_processing": self.cross_asset_engine.describe_capabilities(),
+            "game_causal_analysis": self.game_causal_engine.describe_capabilities(),
             "self_iterating_learning": self.self_iterating_engine.describe_capabilities(),
             "daily_selection_logic": {
                 "nasdaq_top_net_inflow": True,
@@ -1044,6 +1073,19 @@ class CausalTradingSystemV4:
                 total += numeric
                 found = True
         return round(total, 4) if found else None
+
+    def _collect_news_records(self, datasets: Dict[str, pd.DataFrame], akshare_context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        records: List[Dict[str, Any]] = []
+        payloads: List[Any] = [
+            datasets.get("news_events"),
+            datasets.get("news"),
+            datasets.get("geopolitical_news"),
+            akshare_context.get("news") if isinstance(akshare_context, dict) else None,
+        ]
+        for payload in payloads:
+            for event in self.game_causal_engine.ingest_news(payload):
+                records.append(dict(event.__dict__))
+        return records
 
     def build_market_data(self, datasets: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
         gold = datasets.get("gold_daily")
@@ -1175,6 +1217,31 @@ class CausalTradingSystemV4:
                 "confidence": regime_snapshot.confidence,
             },
         }
+        news_records = self._collect_news_records(datasets, akshare_context)
+        policy_records = policy_context.get("calendar", {}).get("records", [])
+        game_context = {
+            "growth": growth_signal,
+            "inflation": inflation_signal,
+            "liquidity": liquidity_signal,
+            "cross_asset_regime": market_data["cross_asset_regime"],
+            "ai_capex_growth": market_data["AI_DataCenter_Capex"]["growth"],
+            "copper_inventory_days": market_data["LME_Inventory_Days"]["value"],
+            "AI_DataCenter_Capex": market_data["AI_DataCenter_Capex"],
+            "LME_Inventory_Days": market_data["LME_Inventory_Days"],
+        }
+        game_analysis = self.game_causal_engine.analyze(
+            news_items=news_records,
+            policy_records=policy_records,
+            market_context=game_context,
+        )
+        market_data["game_causal_analysis"] = game_analysis
+        market_data["geopolitical_risk"] = {
+            "value": game_analysis.get("risk_scores", {}).get("geopolitical_energy", {}).get("score", 0.0),
+            "source": "game_causal_analysis",
+        }
+        market_data["event_driven_causal_chains"] = game_analysis.get("event_causal_chains", [])
+        market_data["dominant_game_logics"] = game_analysis.get("dominant_game_logics", [])
+        market_data["game_relation_reports"] = game_analysis.get("game_relation_reports", [])
         market_data["akshare_market_context"] = akshare_context
         market_data["selection_logic"] = selection_logic
         finshare_snapshots = self.data_adapter.get_batch_snapshots(["AAPL", "MSFT", "600000"])
@@ -1263,12 +1330,16 @@ class CausalTradingSystemV4:
                     "volume": "volume",
                 }
             )
+        game_analysis = market_data.get("game_causal_analysis", {})
+        aggregate_event_risk = self._to_numeric(game_analysis.get("aggregate_risk_score")) or 0.0
         learning_cycle = self.self_iterating_engine.run_learning_cycle(
             learning_inputs,
             benchmark_frame=benchmark_frame,
             market_context={
-                "crisis_probability": 0.15,
+                "crisis_probability": max(0.15, aggregate_event_risk),
                 "cross_asset_regime": market_data.get("cross_asset_regime", {}),
+                "game_causal_analysis": game_analysis,
+                "dominant_game_logics": market_data.get("dominant_game_logics", []),
             },
             global_peer_datasets=global_peer_datasets,
         )

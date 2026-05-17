@@ -49,6 +49,7 @@ class QuantSystemTests(unittest.TestCase):
         self.assertEqual(status["system_name"], "因果AI量化交易系统")
         self.assertIn("github_projects", status)
         self.assertIn("self_iterating_learning", status)
+        self.assertIn("game_causal_analysis", status)
 
     def test_causal_pipeline_runs(self) -> None:
         result = self.service.run_causal_pipeline(["AAPL", "MSFT", "GOOGL"])
@@ -90,7 +91,10 @@ class QuantSystemTests(unittest.TestCase):
             },
             "policy": {
                 "event_count": {"value": 7},
-                "calendar": {"date": "20260505", "records": [{"事件": "LPR 公布"}]},
+                "calendar": {
+                    "date": "20260505",
+                    "records": [{"事件": "伊朗战争风险推升霍尔木兹海峡能源供应中断担忧"}],
+                },
             },
         }
         causal_system.ecosystem.fetch_akshare_daily_selection = lambda payload: {
@@ -111,6 +115,11 @@ class QuantSystemTests(unittest.TestCase):
         self.assertEqual(market_data["policy_columns"]["Policy_Event_Count"]["value"], 7.0)
         self.assertEqual(market_data["selection_logic"]["default_watchlist"], ["MSFT", "NVDA"])
         self.assertIn("akshare_market_context", market_data)
+        self.assertIn("game_causal_analysis", market_data)
+        self.assertGreaterEqual(market_data["geopolitical_risk"]["value"], 0.2)
+        self.assertTrue(market_data["event_driven_causal_chains"])
+        self.assertTrue(market_data["dominant_game_logics"])
+        self.assertTrue(market_data["game_relation_reports"])
 
     def test_default_watchlist_uses_daily_selection_logic(self) -> None:
         causal_system = self.service.causal_system

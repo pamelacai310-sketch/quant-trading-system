@@ -4,6 +4,7 @@ import argparse
 import json
 import subprocess
 import sys
+from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -15,30 +16,22 @@ import pandas as pd
 from .causal_ai import AccountHealthMonitor, EnhancedCausalTradingAgent
 from .core.causal import CausalFactorLibrary, CrossAssetCausalEngine, SelfIteratingCausalEngine
 from .factors.factor_library import FactorLibrary
+from .universe_provider import MarketUniverseProvider
 
 
 CHINA_TZ = ZoneInfo("Asia/Shanghai")
 STATE_DIRNAME = "nightly_reports"
 
-HK_CORE_UNIVERSE = [
-    "00700.HK",
-    "03690.HK",
-    "09988.HK",
-    "09618.HK",
-    "00005.HK",
-    "00941.HK",
-    "00388.HK",
-    "02318.HK",
-    "00981.HK",
-    "01211.HK",
-]
-
-SHFE_CORE_UNIVERSE = ["CU0", "AU0", "AG0", "RB0"]
-
+CN_FUTURES_EXCHANGES = ["SHFE", "INE", "DCE", "CZCE", "CFFEX", "GFEX"]
+US_TAIL_HEDGE_SYMBOL = "GLD"
+US_SAFE_RESERVE_SYMBOL = "USD_CASH"
 HK_TAIL_HEDGE_SYMBOL = "02840.HK"
 HK_SAFE_RESERVE_SYMBOL = "HKD_CASH"
-SHFE_TAIL_HEDGE_SYMBOL = "AU0"
-SHFE_SAFE_RESERVE_SYMBOL = "CNY_CASH"
+CN_FUTURES_TAIL_HEDGE_SYMBOL = "AU0"
+CN_FUTURES_SAFE_RESERVE_SYMBOL = "CNY_CASH"
+SHFE_TAIL_HEDGE_SYMBOL = CN_FUTURES_TAIL_HEDGE_SYMBOL
+SHFE_SAFE_RESERVE_SYMBOL = CN_FUTURES_SAFE_RESERVE_SYMBOL
+US_EXECUTION_SUPPORT_UNIVERSE = [US_TAIL_HEDGE_SYMBOL]
 HK_EXECUTION_SUPPORT_UNIVERSE = [HK_TAIL_HEDGE_SYMBOL]
 
 
@@ -61,6 +54,30 @@ def _require_module(name: str):
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
+
+
+def _market_provider(prefer_live: bool = False) -> MarketUniverseProvider:
+    return MarketUniverseProvider(data_dir=_repo_root() / "data", prefer_live=prefer_live)
+
+
+def _us_core_universe() -> List[str]:
+    return _market_provider(prefer_live=False).get_symbols("us_core", include_contracts=False)
+
+
+def _hk_universe() -> List[str]:
+    return _market_provider(prefer_live=False).get_symbols("hk_hsi", include_contracts=False)
+
+
+def _cn_futures_exchange_universe() -> Dict[str, List[str]]:
+    grouped: Dict[str, List[str]] = defaultdict(list)
+    for item in _market_provider(prefer_live=False).get_universe("cn_futures_products", include_contracts=False):
+        exchange = str(item.exchange)
+        grouped[exchange].append(f"{item.symbol}0")
+    return {
+        exchange: sorted(symbols)
+        for exchange, symbols in grouped.items()
+        if exchange in CN_FUTURES_EXCHANGES
+    }
 
 
 def _state_dir(repo_root: Path) -> Path:
@@ -166,28 +183,48 @@ def _next_weekday(day: date) -> date:
     return cursor
 
 
+def _previous_weekday(day: date) -> date:
+    cursor = day - timedelta(days=1)
+    while cursor.weekday() >= 5:
+        cursor -= timedelta(days=1)
+    return cursor
+
+
 def _cash_price_snapshot(target_date: str) -> Dict[str, Any]:
     return {"date": target_date, "close": 1.0}
+
+
+def _latest_sample_date(data: Dict[str, pd.DataFrame]) -> tuple[Optional[str], int]:
+    last_dates: List[str] = []
+    for frame in data.values():
+        if frame.empty:
+            continue
+        last_dates.append(str(frame["date"].iloc[-1]))
+    if not last_dates:
+        return None, 0
+    actual_date = max(set(last_dates), key=last_dates.count)
+    return actual_date, len(last_dates)
 
 
 def _fetch_hk_data(ak: Any, symbols: Iterable[str], end_date: Optional[str] = None) -> Dict[str, pd.DataFrame]:
     data: Dict[str, pd.DataFrame] = {}
     for symbol in symbols:
         code = symbol.split(".")[0]
-        frame = _normalize_live_frame(ak.stock_hk_daily(symbol=code))
+        try:
+            frame = _normalize_live_frame(ak.stock_hk_daily(symbol=code))
+        except Exception:
+            continue
         if end_date:
             frame = frame.loc[frame["date"] <= end_date]
+        if frame.empty:
+            continue
         data[symbol] = frame.tail(126).reset_index(drop=True)
     return data
 
 
 def _validate_hk_close(hk_data: Dict[str, pd.DataFrame], target_date: str) -> MarketValidation:
-    last_dates = []
-    for frame in hk_data.values():
-        if frame.empty:
-            continue
-        last_dates.append(str(frame["date"].iloc[-1]))
-    if not last_dates:
+    actual_date, sample_count = _latest_sample_date(hk_data)
+    if not actual_date:
         return MarketValidation(
             market="HK",
             requested_date=target_date,
@@ -196,7 +233,6 @@ def _validate_hk_close(hk_data: Dict[str, pd.DataFrame], target_date: str) -> Ma
             reason="港股样本日线为空，无法验证 T 日收盘。",
             sample_count=0,
         )
-    actual_date = max(set(last_dates), key=last_dates.count)
     if actual_date == target_date:
         return MarketValidation(
             market="HK",
@@ -204,7 +240,7 @@ def _validate_hk_close(hk_data: Dict[str, pd.DataFrame], target_date: str) -> Ma
             actual_date=actual_date,
             passed=True,
             reason="港股核心样本最新日线一致落在 T 日收盘。",
-            sample_count=len(last_dates),
+            sample_count=sample_count,
         )
     reason = (
         f"港股未能证明 T 日收盘；核心样本最新日期为 {actual_date}。"
@@ -219,27 +255,102 @@ def _validate_hk_close(hk_data: Dict[str, pd.DataFrame], target_date: str) -> Ma
         actual_date=actual_date,
         passed=False,
         reason=reason,
-        sample_count=len(last_dates),
+        sample_count=sample_count,
     )
 
 
-def _resolve_shfe_settle(ak: Any, target_day: date, max_lookback: int = 10) -> tuple[pd.DataFrame, MarketValidation]:
-    for offset in range(max_lookback + 1):
-        probe_day = target_day - timedelta(days=offset)
+def _fetch_us_data(yf: Any, symbols: Iterable[str], end_date: Optional[str] = None) -> Dict[str, pd.DataFrame]:
+    data: Dict[str, pd.DataFrame] = {}
+    for symbol in symbols:
         try:
-            frame = ak.futures_settle_shfe(date=_compact_date(probe_day))
+            frame = yf.download(
+                symbol,
+                period="6mo",
+                interval="1d",
+                auto_adjust=False,
+                progress=False,
+            )
         except Exception:
             continue
         if frame is None or frame.empty:
             continue
-        actual_date = str(frame["date"].iloc[0])
+        normalized = _normalize_yfinance_frame(frame)
+        if end_date:
+            normalized = normalized.loc[normalized["date"] <= end_date]
+        if normalized.empty:
+            continue
+        data[symbol] = normalized.tail(126).reset_index(drop=True)
+    return data
+
+
+def _validate_us_close(us_data: Dict[str, pd.DataFrame], target_day: date, max_lookback: int = 4) -> MarketValidation:
+    target_date = target_day.strftime("%Y-%m-%d")
+    actual_date, sample_count = _latest_sample_date(us_data)
+    if not actual_date:
+        return MarketValidation(
+            market="US",
+            requested_date=target_date,
+            actual_date=None,
+            passed=False,
+            reason="美股样本日线为空，无法验证最近完整收盘。",
+            sample_count=0,
+        )
+
+    expected_date = _previous_weekday(target_day)
+    if actual_date == expected_date.strftime("%Y-%m-%d"):
+        return MarketValidation(
+            market="US",
+            requested_date=target_date,
+            actual_date=actual_date,
+            passed=True,
+            reason="美股样本最新日线与 T 日晚间可用的最近完整美股收盘一致。",
+            sample_count=sample_count,
+        )
+
+    allowed_dates: List[str] = []
+    cursor = expected_date
+    while len(allowed_dates) < max_lookback:
+        if cursor.weekday() < 5:
+            allowed_dates.append(cursor.strftime("%Y-%m-%d"))
+        cursor -= timedelta(days=1)
+    if actual_date in allowed_dates:
+        return MarketValidation(
+            market="US",
+            requested_date=target_date,
+            actual_date=actual_date,
+            passed=True,
+            reason=f"美股按最近有效交易日回退校验，实际使用数据日期为 {actual_date}。",
+            sample_count=sample_count,
+        )
+    return MarketValidation(
+        market="US",
+        requested_date=target_date,
+        actual_date=actual_date,
+        passed=False,
+        reason=(
+            "美股未能验证最近完整收盘；"
+            f"预期日期不晚于 {expected_date.strftime('%Y-%m-%d')}，实际样本最新日期为 {actual_date}。"
+        ),
+        sample_count=sample_count,
+    )
+
+
+def _resolve_futures_settle(ak: Any, exchange: str, target_day: date, max_lookback: int = 10) -> tuple[pd.DataFrame, MarketValidation]:
+    for offset in range(max_lookback + 1):
+        probe_day = target_day - timedelta(days=offset)
+        try:
+            frame = ak.futures_settle(date=_compact_date(probe_day), market=exchange)
+        except Exception:
+            continue
+        if frame is None or frame.empty:
+            continue
         passed = offset == 0
         if passed:
-            reason = "SHFE 结算表直接命中 T 日。"
+            reason = f"{exchange} 结算参数直接命中 T 日。"
         else:
-            reason = f"SHFE T 日无结算表，最近有效交易日回退到 {probe_day.strftime('%Y-%m-%d')}。"
+            reason = f"{exchange} T 日无结算参数，最近有效交易日回退到 {probe_day.strftime('%Y-%m-%d')}。"
         return frame, MarketValidation(
-            market="SHFE",
+            market=exchange,
             requested_date=target_day.strftime("%Y-%m-%d"),
             actual_date=probe_day.strftime("%Y-%m-%d"),
             passed=True,
@@ -247,23 +358,83 @@ def _resolve_shfe_settle(ak: Any, target_day: date, max_lookback: int = 10) -> t
             sample_count=int(len(frame)),
         )
     return pd.DataFrame(), MarketValidation(
-        market="SHFE",
+        market=exchange,
         requested_date=target_day.strftime("%Y-%m-%d"),
         actual_date=None,
         passed=False,
-        reason="SHFE 在回看窗口内都没有可验证的结算表。",
+        reason=f"{exchange} 在回看窗口内都没有可验证的结算参数。",
         sample_count=0,
     )
 
 
-def _fetch_shfe_data(ak: Any, symbols: Iterable[str], end_date: Optional[str] = None) -> Dict[str, pd.DataFrame]:
+def _fetch_futures_data(ak: Any, symbols: Iterable[str], end_date: Optional[str] = None) -> Dict[str, pd.DataFrame]:
     data: Dict[str, pd.DataFrame] = {}
     for symbol in symbols:
-        frame = _normalize_live_frame(ak.futures_zh_daily_sina(symbol=symbol))
+        try:
+            frame = _normalize_live_frame(ak.futures_zh_daily_sina(symbol=symbol))
+        except Exception:
+            continue
         if end_date:
             frame = frame.loc[frame["date"] <= end_date]
+        if frame.empty:
+            continue
         data[symbol] = frame.tail(126).reset_index(drop=True)
     return data
+
+
+def _validate_futures_close(
+    exchange: str,
+    futures_data: Dict[str, pd.DataFrame],
+    settle_validation: MarketValidation,
+) -> MarketValidation:
+    if not settle_validation.passed or settle_validation.actual_date is None:
+        return settle_validation
+    actual_date, sample_count = _latest_sample_date(futures_data)
+    if not actual_date:
+        return MarketValidation(
+            market=exchange,
+            requested_date=settle_validation.requested_date,
+            actual_date=None,
+            passed=False,
+            reason=f"{exchange} 主力连续合约样本为空，无法与结算参数交叉校验。",
+            sample_count=0,
+        )
+    if actual_date == settle_validation.actual_date:
+        return MarketValidation(
+            market=exchange,
+            requested_date=settle_validation.requested_date,
+            actual_date=actual_date,
+            passed=True,
+            reason=f"{settle_validation.reason} {exchange} 主力连续合约日线与该日期一致。",
+            sample_count=sample_count,
+        )
+    return MarketValidation(
+        market=exchange,
+        requested_date=settle_validation.requested_date,
+        actual_date=actual_date,
+        passed=False,
+        reason=(
+            f"{exchange} 结算参数有效日期为 {settle_validation.actual_date}，"
+            f"但主力连续合约最新日线为 {actual_date}，时间戳不一致。"
+        ),
+        sample_count=sample_count,
+    )
+
+
+def _build_futures_peer_datasets(
+    futures_data: Dict[str, pd.DataFrame],
+    gold_peer: pd.DataFrame,
+    copper_peer: pd.DataFrame,
+) -> Dict[str, Dict[str, pd.DataFrame]]:
+    peer_datasets: Dict[str, Dict[str, pd.DataFrame]] = {}
+    for symbol in futures_data:
+        upper = symbol.upper()
+        if any(token in upper for token in ["CU", "BC", "COPPER", "HG"]):
+            peer_datasets[symbol] = {"HG": copper_peer}
+            continue
+        if any(token in upper for token in ["AU", "AG", "GOLD"]):
+            peer_datasets[symbol] = {"COMEX_Gold": gold_peer}
+    return peer_datasets
 
 
 def _build_market_context(cross_asset_engine: CrossAssetCausalEngine, qqq: pd.DataFrame, gold: pd.DataFrame, copper: pd.DataFrame) -> tuple[Dict[str, Any], Dict[str, Any]]:
@@ -355,11 +526,20 @@ def _materialize_execution_actions(
 ) -> List[Dict[str, Any]]:
     execution_actions: List[Dict[str, Any]] = []
     market_upper = market.upper()
+    if market_upper == "HK":
+        tail_hedge_symbol = HK_TAIL_HEDGE_SYMBOL
+        safe_reserve_symbol = HK_SAFE_RESERVE_SYMBOL
+    elif market_upper == "US":
+        tail_hedge_symbol = US_TAIL_HEDGE_SYMBOL
+        safe_reserve_symbol = US_SAFE_RESERVE_SYMBOL
+    else:
+        tail_hedge_symbol = CN_FUTURES_TAIL_HEDGE_SYMBOL
+        safe_reserve_symbol = CN_FUTURES_SAFE_RESERVE_SYMBOL
     for action in actions:
         action_name = str(action.get("action"))
         target_weight = float(action.get("target_weight", 0.0))
         if action_name == "TAIL_HEDGE":
-            symbol = HK_TAIL_HEDGE_SYMBOL if market_upper == "HK" else SHFE_TAIL_HEDGE_SYMBOL
+            symbol = tail_hedge_symbol
             snapshot = price_map.get(symbol)
             execution_actions.append(
                 {
@@ -378,7 +558,7 @@ def _materialize_execution_actions(
             )
             continue
         if action_name == "SAFE_RESERVE":
-            symbol = HK_SAFE_RESERVE_SYMBOL if market_upper == "HK" else SHFE_SAFE_RESERVE_SYMBOL
+            symbol = safe_reserve_symbol
             execution_actions.append(
                 {
                     "market": market_upper,
@@ -422,9 +602,14 @@ def _build_execution_instruction(action: Dict[str, Any]) -> str:
 
 def _execution_price_map(report: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     price_map: Dict[str, Dict[str, Any]] = {}
+    price_map.update(report.get("us_last", {}))
+    price_map.update(report.get("us_execution_last", {}))
     price_map.update(report.get("hk_last", {}))
-    price_map.update(report.get("shfe_last", {}))
-    for symbol in [HK_SAFE_RESERVE_SYMBOL, SHFE_SAFE_RESERVE_SYMBOL]:
+    price_map.update(report.get("hk_execution_last", {}))
+    for bucket in report.get("futures_last", {}).values():
+        price_map.update(bucket)
+    price_map.update(report.get("futures_execution_last", {}))
+    for symbol in [US_SAFE_RESERVE_SYMBOL, HK_SAFE_RESERVE_SYMBOL, CN_FUTURES_SAFE_RESERVE_SYMBOL]:
         price_map.setdefault(symbol, _cash_price_snapshot(report.get("report_date", "")))
     return price_map
 
@@ -629,6 +814,55 @@ def _next_market_day_text(target_day: date) -> str:
     return f"按周历推算，下一个交易日预计为 {next_day.strftime('%Y-%m-%d')}；若遇交易所节假日调整，以官方日历为准。"
 
 
+def _build_cycle_payload(
+    market: str,
+    cycle: Dict[str, Any],
+    price_map: Dict[str, Dict[str, Any]],
+    execution_price_map: Dict[str, Dict[str, Any]],
+    target_date: str,
+) -> Dict[str, Any]:
+    actions = cycle.get("trade_actions", [])
+    reports = {symbol: _summarize_symbol_report(item) for symbol, item in cycle.get("symbols", {}).items()}
+    primary_lines, primary_actions = _classify_primary_actions(actions, price_map)
+    execution_actions = _materialize_execution_actions(actions, market, execution_price_map, target_date)
+    return {
+        "cycle_status": cycle.get("status"),
+        "actions": actions,
+        "reports": reports,
+        "primary_lines": primary_lines,
+        "primary_actions": primary_actions,
+        "secondary_lines": _format_action_bucket([item for item in actions if item.get("action") not in {"LONG", "SHORT"}]),
+        "execution_actions": execution_actions,
+        "execution_lines": _format_execution_bucket(execution_actions),
+        "observations": _observation_lines(reports, price_map),
+    }
+
+
+def _append_market_summary(
+    report: Dict[str, Any],
+    label: str,
+    prefix: str,
+    section_lines: List[str],
+) -> None:
+    primary_key = f"{prefix}_primary_lines"
+    secondary_key = f"{prefix}_secondary_lines"
+    execution_key = f"{prefix}_execution_lines"
+    observation_key = f"{prefix}_observations"
+
+    if report.get(primary_key):
+        section_lines.append(f"- {label}：")
+        section_lines.extend([f"  {line}" for line in report.get(primary_key, [])])
+    else:
+        section_lines.append(f"- {label}：没有通过 `RS>70 且 R²>0.7` 的主动仓信号。")
+
+    for line in report.get(secondary_key, []):
+        section_lines.append(f"- {label}安全端：{line}")
+    for line in report.get(execution_key, []):
+        section_lines.append(f"- {label}执行：{line}")
+    for line in report.get(observation_key, []):
+        section_lines.append(f"- {label}观察：{line}")
+
+
 def generate_report(target_day: date) -> Dict[str, Any]:
     repo_root = _repo_root()
     report_dir = _state_dir(repo_root)
@@ -639,24 +873,49 @@ def generate_report(target_day: date) -> Dict[str, Any]:
 
     repo_status = _repo_status(repo_root)
     target_date = target_day.strftime("%Y-%m-%d")
+    us_universe = _us_core_universe()
+    hk_universe = _hk_universe()
+    futures_universe_by_exchange = _cn_futures_exchange_universe()
 
-    hk_data = _fetch_hk_data(ak, HK_CORE_UNIVERSE, end_date=target_date)
+    us_data = _fetch_us_data(yf, us_universe, end_date=target_date)
+    us_validation = _validate_us_close(us_data, target_day)
+    us_execution_data = _fetch_us_data(yf, US_EXECUTION_SUPPORT_UNIVERSE, end_date=target_date)
+
+    hk_data = _fetch_hk_data(ak, hk_universe, end_date=target_date)
     hk_validation = _validate_hk_close(hk_data, target_date)
     hk_execution_data = _fetch_hk_data(ak, HK_EXECUTION_SUPPORT_UNIVERSE, end_date=target_date)
 
-    shfe_settle, shfe_validation = _resolve_shfe_settle(ak, target_day)
-    shfe_data = _fetch_shfe_data(ak, SHFE_CORE_UNIVERSE, end_date=target_date)
+    futures_market_data: Dict[str, Dict[str, Any]] = {}
+    futures_last: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for exchange, symbols in futures_universe_by_exchange.items():
+        _, settle_validation = _resolve_futures_settle(ak, exchange, target_day)
+        exchange_data = _fetch_futures_data(ak, symbols, end_date=target_date)
+        validation = _validate_futures_close(exchange, exchange_data, settle_validation)
+        futures_market_data[exchange] = {
+            "validation": validation,
+            "data": exchange_data,
+        }
+        futures_last[exchange] = _latest_price_map(exchange_data)
+    futures_execution_data = _fetch_futures_data(ak, [CN_FUTURES_TAIL_HEDGE_SYMBOL], end_date=target_date)
+    futures_execution_last = _latest_price_map(futures_execution_data)
 
     report: Dict[str, Any] = {
         "status": "failed_validation",
         "report_date": target_date,
         "generated_at": datetime.now(CHINA_TZ).isoformat(timespec="seconds"),
         "repo": repo_status,
+        "us_validation": asdict(us_validation),
         "hk_validation": asdict(hk_validation),
-        "shfe_validation": asdict(shfe_validation),
+        "futures_validations": {
+            exchange: asdict(item["validation"])
+            for exchange, item in futures_market_data.items()
+        },
+        "us_last": _latest_price_map(us_data),
         "hk_last": _latest_price_map(hk_data),
-        "shfe_last": _latest_price_map(shfe_data),
+        "futures_last": futures_last,
+        "us_execution_last": _latest_price_map(us_execution_data),
         "hk_execution_last": _latest_price_map(hk_execution_data),
+        "futures_execution_last": futures_execution_last,
         "recap_lines": [],
         "primary_actions": [],
         "report_text": "",
@@ -664,14 +923,21 @@ def generate_report(target_day: date) -> Dict[str, Any]:
 
     previous_report = _load_json(_find_previous_report(report_dir, target_day))
     current_price_map = {}
+    current_price_map.update(report["us_last"])
+    current_price_map.update(report["us_execution_last"])
     current_price_map.update(report["hk_last"])
     current_price_map.update(report["hk_execution_last"])
-    current_price_map.update(report["shfe_last"])
+    for exchange_prices in report["futures_last"].values():
+        current_price_map.update(exchange_prices)
+    current_price_map.update(report["futures_execution_last"])
+    current_price_map[US_SAFE_RESERVE_SYMBOL] = _cash_price_snapshot(target_date)
     current_price_map[HK_SAFE_RESERVE_SYMBOL] = _cash_price_snapshot(target_date)
-    current_price_map[SHFE_SAFE_RESERVE_SYMBOL] = _cash_price_snapshot(target_date)
+    current_price_map[CN_FUTURES_SAFE_RESERVE_SYMBOL] = _cash_price_snapshot(target_date)
     report["recap_lines"] = _build_recap(previous_report, current_price_map)
 
-    if not hk_validation.passed or not shfe_validation.passed:
+    if not us_validation.passed or not hk_validation.passed or not all(
+        item["validation"].passed for item in futures_market_data.values()
+    ):
         report["report_text"] = render_report_text(report)
         _save_report(report_dir, report)
         return report
@@ -687,24 +953,36 @@ def generate_report(target_day: date) -> Dict[str, Any]:
     qqq = _normalize_yfinance_frame(yf.download("QQQ", period="6mo", interval="1d", auto_adjust=False, progress=False))
     gold = _normalize_yfinance_frame(yf.download("GC=F", period="6mo", interval="1d", auto_adjust=False, progress=False))
     copper_peer = _normalize_yfinance_frame(yf.download("HG=F", period="6mo", interval="1d", auto_adjust=False, progress=False))
-
-    market_context, market_data = _build_market_context(cross_asset_engine, qqq, gold, shfe_data["CU0"])
+    copper_proxy = next(
+        (
+            item["data"]["CU0"]
+            for item in futures_market_data.values()
+            if "CU0" in item["data"]
+        ),
+        copper_peer,
+    )
+    market_context, market_data = _build_market_context(cross_asset_engine, qqq, gold, copper_proxy)
+    us_cycle = self_iterating_engine.run_learning_cycle(
+        us_data,
+        benchmark_frame=qqq,
+        market_context=market_context,
+        global_peer_datasets={},
+    )
     hk_cycle = self_iterating_engine.run_learning_cycle(
         hk_data,
         benchmark_frame=None,
         market_context=market_context,
         global_peer_datasets={},
     )
-    shfe_cycle = self_iterating_engine.run_learning_cycle(
-        shfe_data,
-        benchmark_frame=None,
-        market_context=market_context,
-        global_peer_datasets={
-            "CU0": {"HG": copper_peer},
-            "AU0": {"COMEX_Gold": gold},
-            "AG0": {"COMEX_Gold": gold},
-        },
-    )
+    futures_cycles: Dict[str, Dict[str, Any]] = {}
+    for exchange, payload in futures_market_data.items():
+        exchange_data = payload["data"]
+        futures_cycles[exchange] = self_iterating_engine.run_learning_cycle(
+            exchange_data,
+            benchmark_frame=None,
+            market_context=market_context,
+            global_peer_datasets=_build_futures_peer_datasets(exchange_data, gold, copper_peer),
+        )
     legacy = trading_agent.execute_decision(current_date=target_date, market_data=market_data)
 
     report.update(
@@ -712,39 +990,112 @@ def generate_report(target_day: date) -> Dict[str, Any]:
             "status": "ok",
             "market_context": market_context,
             "market_data": market_data,
+            "us_cycle_status": us_cycle.get("status"),
             "hk_cycle_status": hk_cycle.get("status"),
-            "shfe_cycle_status": shfe_cycle.get("status"),
+            "futures_cycle_status": {
+                exchange: cycle.get("status")
+                for exchange, cycle in futures_cycles.items()
+            },
+            "us_actions": us_cycle.get("trade_actions", []),
             "hk_actions": hk_cycle.get("trade_actions", []),
-            "shfe_actions": shfe_cycle.get("trade_actions", []),
             "legacy_actions": legacy.get("actions", []),
+            "us_reports": {symbol: _summarize_symbol_report(item) for symbol, item in us_cycle.get("symbols", {}).items()},
             "hk_reports": {symbol: _summarize_symbol_report(item) for symbol, item in hk_cycle.get("symbols", {}).items()},
-            "shfe_reports": {symbol: _summarize_symbol_report(item) for symbol, item in shfe_cycle.get("symbols", {}).items()},
+            "futures_reports": {
+                exchange: {
+                    symbol: _summarize_symbol_report(item)
+                    for symbol, item in cycle.get("symbols", {}).items()
+                }
+                for exchange, cycle in futures_cycles.items()
+            },
             "calendar_note": _next_market_day_text(target_day),
         }
     )
 
-    hk_primary_lines, hk_primary_actions = _classify_primary_actions(report["hk_actions"], report["hk_last"])
-    shfe_primary_lines, shfe_primary_actions = _classify_primary_actions(report["shfe_actions"], report["shfe_last"])
+    us_execution_price_map = {
+        **report["us_last"],
+        **report["us_execution_last"],
+        US_SAFE_RESERVE_SYMBOL: _cash_price_snapshot(target_date),
+    }
     hk_execution_price_map = {**report["hk_last"], **report["hk_execution_last"], HK_SAFE_RESERVE_SYMBOL: _cash_price_snapshot(target_date)}
-    shfe_execution_price_map = {**report["shfe_last"], SHFE_SAFE_RESERVE_SYMBOL: _cash_price_snapshot(target_date)}
-    report["hk_execution_actions"] = _materialize_execution_actions(report["hk_actions"], "HK", hk_execution_price_map, target_date)
-    report["shfe_execution_actions"] = _materialize_execution_actions(report["shfe_actions"], "SHFE", shfe_execution_price_map, target_date)
-    report["execution_actions"] = [*report["hk_execution_actions"], *report["shfe_execution_actions"]]
-    report["primary_actions"] = [
+    report.update(
         {
-            **action,
-            "reference_close": float(report["hk_last"].get(action["symbol"], report["shfe_last"].get(action["symbol"], {})).get("close", 0.0)),
+            f"us_{key}": value
+            for key, value in _build_cycle_payload(
+                "US",
+                us_cycle,
+                report["us_last"],
+                us_execution_price_map,
+                target_date,
+            ).items()
         }
-        for action in [*hk_primary_actions, *shfe_primary_actions]
+    )
+    report.update(
+        {
+            f"hk_{key}": value
+            for key, value in _build_cycle_payload(
+                "HK",
+                hk_cycle,
+                report["hk_last"],
+                hk_execution_price_map,
+                target_date,
+            ).items()
+        }
+    )
+
+    futures_execution_actions: List[Dict[str, Any]] = []
+    futures_primary_actions: List[Dict[str, Any]] = []
+    for exchange, cycle in futures_cycles.items():
+        exchange_price_map = report["futures_last"].get(exchange, {})
+        execution_price_map = {
+            **exchange_price_map,
+            **report["futures_execution_last"],
+            CN_FUTURES_SAFE_RESERVE_SYMBOL: _cash_price_snapshot(target_date),
+        }
+        payload = _build_cycle_payload(exchange, cycle, exchange_price_map, execution_price_map, target_date)
+        report[f"{exchange.lower()}_actions"] = payload["actions"]
+        report[f"{exchange.lower()}_reports"] = payload["reports"]
+        report[f"{exchange.lower()}_primary_lines"] = payload["primary_lines"]
+        report[f"{exchange.lower()}_secondary_lines"] = payload["secondary_lines"]
+        report[f"{exchange.lower()}_execution_actions"] = payload["execution_actions"]
+        report[f"{exchange.lower()}_execution_lines"] = payload["execution_lines"]
+        report[f"{exchange.lower()}_observations"] = payload["observations"]
+        futures_execution_actions.extend(payload["execution_actions"])
+        futures_primary_actions.extend(
+            [
+                {
+                    **action,
+                    "market": exchange,
+                    "reference_close": float(exchange_price_map.get(action["symbol"], {}).get("close", 0.0)),
+                }
+                for action in payload["primary_actions"]
+            ]
+        )
+
+    report["execution_actions"] = [
+        *report["us_execution_actions"],
+        *report["hk_execution_actions"],
+        *futures_execution_actions,
     ]
-    report["hk_primary_lines"] = hk_primary_lines
-    report["shfe_primary_lines"] = shfe_primary_lines
-    report["hk_secondary_lines"] = _format_action_bucket([item for item in report["hk_actions"] if item.get("action") not in {"LONG", "SHORT"}])
-    report["shfe_secondary_lines"] = _format_action_bucket([item for item in report["shfe_actions"] if item.get("action") not in {"LONG", "SHORT"}])
-    report["hk_execution_lines"] = _format_execution_bucket(report["hk_execution_actions"])
-    report["shfe_execution_lines"] = _format_execution_bucket(report["shfe_execution_actions"])
-    report["hk_observations"] = _observation_lines(report["hk_reports"], report["hk_last"])
-    report["shfe_observations"] = _observation_lines(report["shfe_reports"], report["shfe_last"])
+    report["primary_actions"] = [
+        *[
+            {
+                **action,
+                "market": "US",
+                "reference_close": float(report["us_last"].get(action["symbol"], {}).get("close", 0.0)),
+            }
+            for action in report["us_primary_actions"]
+        ],
+        *[
+            {
+                **action,
+                "market": "HK",
+                "reference_close": float(report["hk_last"].get(action["symbol"], {}).get("close", 0.0)),
+            }
+            for action in report["hk_primary_actions"]
+        ],
+        *futures_primary_actions,
+    ]
     report["legacy_lines"] = [
         f"{action.get('action')} {action.get('symbol')}：{action.get('reason')}，置信度 {float(action.get('confidence', 0.0)):.2f}"
         for action in report["legacy_actions"]
@@ -773,18 +1124,25 @@ def render_report_text(report: Dict[str, Any]) -> str:
     if repo.get("sync_error"):
         lines.append(f"同步备注：{repo.get('sync_error')}")
 
+    us_validation = report.get("us_validation", {})
     hk_validation = report.get("hk_validation", {})
-    shfe_validation = report.get("shfe_validation", {})
+    futures_validations = report.get("futures_validations", {})
     lines.append("")
     lines.append("数据校验：")
+    lines.append(
+        f"美股：passed={us_validation.get('passed')} requested={us_validation.get('requested_date')} "
+        f"actual={us_validation.get('actual_date')}；{us_validation.get('reason')}"
+    )
     lines.append(
         f"港股：passed={hk_validation.get('passed')} requested={hk_validation.get('requested_date')} "
         f"actual={hk_validation.get('actual_date')}；{hk_validation.get('reason')}"
     )
-    lines.append(
-        f"SHFE：passed={shfe_validation.get('passed')} requested={shfe_validation.get('requested_date')} "
-        f"actual={shfe_validation.get('actual_date')}；{shfe_validation.get('reason')}"
-    )
+    for exchange in CN_FUTURES_EXCHANGES:
+        validation = futures_validations.get(exchange, {})
+        lines.append(
+            f"{exchange}：passed={validation.get('passed')} requested={validation.get('requested_date')} "
+            f"actual={validation.get('actual_date')}；{validation.get('reason')}"
+        )
 
     lines.append("")
     lines.append("复盘：")
@@ -793,7 +1151,7 @@ def render_report_text(report: Dict[str, Any]) -> str:
     if report.get("status") != "ok":
         lines.append("")
         lines.append("结果：")
-        lines.append("- 本次任务因时间戳校验未全部通过，按硬规则直接失败退出，不生成新的港股/SHFE 交易指令。")
+        lines.append("- 本次任务因至少一个市场或期货交易所校验未全部通过，按硬规则直接失败退出，不生成新的美股/港股/中国期货交易指令。")
         return "\n".join(lines)
 
     regime = report.get("market_context", {}).get("cross_asset_regime", {})
@@ -808,38 +1166,10 @@ def render_report_text(report: Dict[str, Any]) -> str:
 
     lines.append("")
     lines.append("主决策：")
-    hk_primary = report.get("hk_primary_lines", [])
-    shfe_primary = report.get("shfe_primary_lines", [])
-    if hk_primary:
-        lines.append("- 港股：")
-        lines.extend([f"  {line}" for line in hk_primary])
-    else:
-        lines.append("- 港股：没有通过 `RS>70 且 R²>0.7` 的主动仓信号。")
-    if shfe_primary:
-        lines.append("- SHFE：")
-        lines.extend([f"  {line}" for line in shfe_primary])
-    else:
-        lines.append("- SHFE：没有通过 `RS>70 且 R²>0.7` 的主动仓信号。")
-
-    lines.append("")
-    lines.append("安全端 / 尾部保护：")
-    for line in report.get("hk_secondary_lines", []):
-        lines.append(f"- 港股组合：{line}")
-    for line in report.get("shfe_secondary_lines", []):
-        lines.append(f"- SHFE组合：{line}")
-    lines.append("")
-    lines.append("执行映射：")
-    for line in report.get("hk_execution_lines", []):
-        lines.append(f"- 港股执行：{line}")
-    for line in report.get("shfe_execution_lines", []):
-        lines.append(f"- SHFE执行：{line}")
-
-    lines.append("")
-    lines.append("观察名单：")
-    for line in report.get("hk_observations", []):
-        lines.append(f"- 港股：{line}")
-    for line in report.get("shfe_observations", []):
-        lines.append(f"- SHFE：{line}")
+    _append_market_summary(report, "美股", "us", lines)
+    _append_market_summary(report, "港股", "hk", lines)
+    for exchange in CN_FUTURES_EXCHANGES:
+        _append_market_summary(report, exchange, exchange.lower(), lines)
 
     legacy_lines = report.get("legacy_lines", [])
     if legacy_lines:

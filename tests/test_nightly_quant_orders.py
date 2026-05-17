@@ -13,6 +13,7 @@ from quant_trade_system.nightly_quant_orders import (
     _next_weekday,
     _observation_lines,
     _validate_hk_close,
+    _validate_us_close,
 )
 
 
@@ -40,6 +41,15 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertTrue(passed.passed)
         self.assertFalse(failed.passed)
         self.assertEqual(failed.actual_date, "2026-05-08")
+
+    def test_validate_us_close_accepts_latest_completed_session(self) -> None:
+        direct = _validate_us_close({"AAPL": _frame("2026-05-11", 215.0)}, date(2026, 5, 12))
+        fallback = _validate_us_close({"AAPL": _frame("2026-05-08", 215.0)}, date(2026, 5, 12))
+        stale = _validate_us_close({"AAPL": _frame("2026-05-04", 215.0)}, date(2026, 5, 12))
+        self.assertTrue(direct.passed)
+        self.assertTrue(fallback.passed)
+        self.assertFalse(stale.passed)
+        self.assertEqual(fallback.actual_date, "2026-05-08")
 
     def test_build_instruction_uses_reference_close(self) -> None:
         long_line = _build_instruction(
@@ -113,6 +123,18 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertEqual(execution[0]["symbol"], "02840.HK")
         self.assertEqual(execution[0]["action"], "LONG")
         self.assertEqual(execution[1]["symbol"], "HKD_CASH")
+        self.assertEqual(execution[1]["action"], "HOLD")
+
+    def test_materialize_execution_actions_maps_us_tail_and_cash(self) -> None:
+        actions = [
+            {"action": "TAIL_HEDGE", "symbol": "TAIL_RISK_PROTECTION", "target_weight": 0.2, "reason": "hedge"},
+            {"action": "SAFE_RESERVE", "symbol": "SAFE_ASSET_BUCKET", "target_weight": 0.8, "reason": "cash"},
+        ]
+        price_map = {"GLD": {"date": "2026-05-11", "close": 300.0}}
+        execution = _materialize_execution_actions(actions, "US", price_map, "2026-05-11")
+        self.assertEqual(execution[0]["symbol"], "GLD")
+        self.assertEqual(execution[0]["action"], "LONG")
+        self.assertEqual(execution[1]["symbol"], "USD_CASH")
         self.assertEqual(execution[1]["action"], "HOLD")
 
     def test_evaluate_execution_actions_quantifies_nav(self) -> None:
