@@ -40,6 +40,19 @@ from .self_iterating_causal_engine import (
     SelfIteratingCausalEngine,
     SignalAllocation,
 )
+from .game_causal_analysis import (
+    ContextRule,
+    EventCausalChain,
+    GameCausalAnalysisEngine,
+    GameDominance,
+    GameForce,
+    GameRelationReport,
+    GameRelationSpec,
+    GameSideSpec,
+    NewsEvent,
+    PricingAssetRule,
+    create_game_causal_analysis_engine,
+)
 
 # 新增：因果发现引擎
 try:
@@ -112,6 +125,17 @@ __all__ = [
     "SelectedFeature",
     "SelfIteratingCausalEngine",
     "SignalAllocation",
+    "NewsEvent",
+    "EventCausalChain",
+    "GameForce",
+    "GameDominance",
+    "PricingAssetRule",
+    "ContextRule",
+    "GameSideSpec",
+    "GameRelationSpec",
+    "GameRelationReport",
+    "GameCausalAnalysisEngine",
+    "create_game_causal_analysis_engine",
 ]
 
 # 新增导出

@@ -781,6 +781,18 @@ class SelfIteratingCausalEngine:
 
     def _extract_tail_risk_score(self, market_context: Dict[str, Any]) -> float:
         crisis_probability = float(market_context.get("crisis_probability", 0.15))
+        game_analysis = market_context.get("game_causal_analysis", {})
+        if isinstance(game_analysis, dict):
+            crisis_probability = max(
+                crisis_probability,
+                float(game_analysis.get("aggregate_risk_score", 0.0) or 0.0),
+                float(
+                    game_analysis.get("risk_scores", {})
+                    .get("geopolitical_energy", {})
+                    .get("score", 0.0)
+                    or 0.0
+                ),
+            )
         regime = market_context.get("regime") or market_context.get("cross_asset_regime", {}).get("regime", "")
         if isinstance(regime, dict):
             regime = regime.get("regime", "")
