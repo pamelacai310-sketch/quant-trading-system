@@ -19,6 +19,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+import pandas as pd
+
 
 def _clip(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
     return max(lower, min(upper, float(value)))
@@ -163,10 +165,62 @@ class GameRelationReport:
     market_pricing_forecast: Dict[str, Any]
     key_reversal_signals: List[str]
     observation_checklist: List[str]
+    identification_status: Dict[str, Any] = field(default_factory=dict)
+    actionability: str = "observe_only"
+
+
+@dataclass
+class EventWindowSnapshot:
+    event_id: str
+    asset: str
+    event_timestamp: str
+    pre_days: int
+    post_days: int
+    pre_return: float
+    post_return: float
+    event_to_latest_return: float
+    volatility_ratio: float
+    volume_ratio: float
+    observed_direction: str
+    usable_for_learning: bool
+
+
+@dataclass
+class PriceConfirmationMemoryRecord:
+    relation_id: str
+    side_id: str
+    asset: str
+    expected_direction: str
+    learned_weight: float
+    reliability: float
+    sample_count: int
+    avg_lead_lag_days: float
+    last_updated: str
 
 
 class GameCausalAnalysisEngine:
     """Quantify event-driven causal games and logic dominance."""
+
+    def __init__(
+        self,
+        price_confirmation_memory: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    ) -> None:
+        self.price_confirmation_memory: Dict[str, PriceConfirmationMemoryRecord] = {}
+        for key, value in (price_confirmation_memory or {}).items():
+            if isinstance(value, PriceConfirmationMemoryRecord):
+                self.price_confirmation_memory[key] = value
+            elif isinstance(value, Mapping):
+                self.price_confirmation_memory[key] = PriceConfirmationMemoryRecord(
+                    relation_id=str(value.get("relation_id", "")),
+                    side_id=str(value.get("side_id", "")),
+                    asset=str(value.get("asset", "")),
+                    expected_direction=str(value.get("expected_direction", "")),
+                    learned_weight=_to_float(value.get("learned_weight"), 1.0),
+                    reliability=_to_float(value.get("reliability"), 0.5),
+                    sample_count=int(_to_float(value.get("sample_count"), 0.0)),
+                    avg_lead_lag_days=_to_float(value.get("avg_lead_lag_days"), 0.0),
+                    last_updated=str(value.get("last_updated", datetime.utcnow().isoformat())),
+                )
 
     DOMAIN_ONTOLOGY: Dict[str, Dict[str, Any]] = {
         "geopolitical_energy": {
@@ -320,6 +374,16 @@ class GameCausalAnalysisEngine:
                 for domain, spec in self.DOMAIN_ONTOLOGY.items()
             },
             "event_driven_causal_chains": True,
+            "event_windows": {
+                "enabled": True,
+                "default_window": "T-5_to_T+10",
+                "fields": ["return", "volume", "volatility", "direction"],
+            },
+            "price_confirmation_learning": {
+                "enabled": True,
+                "memory_records": len(self.price_confirmation_memory),
+                "contract": "historical confirmation reliability reweights sensitive asset votes",
+            },
             "dynamic_game_dominance": [
                 "gold_safe_haven_vs_real_rate_vs_inflation",
                 "crude_geo_supply_vs_opec_vs_demand",
@@ -359,12 +423,22 @@ class GameCausalAnalysisEngine:
         """Run the complete game-causal analysis layer."""
         events = self.ingest_news(news_items)
         events.extend(self.ingest_policy_records(policy_records))
+        market_context = market_context or {}
+        event_windows = self.build_event_windows(
+            events,
+            market_context.get("pricing_asset_panels", {}),
+            pre_days=int(_to_float(market_context.get("event_pre_days"), 5)),
+            post_days=int(_to_float(market_context.get("event_post_days"), 10)),
+        )
+        learned_records = self.learn_price_confirmation_weights(
+            market_context.get("price_confirmation_history", [])
+        )
         risk_scores = self.quantify_risks(events)
         event_chains = self.build_event_causal_chains(events, risk_scores)
-        dominance = self.evaluate_game_dominance(risk_scores, market_context or {}, event_chains)
+        dominance = self.evaluate_game_dominance(risk_scores, market_context, event_chains)
         relation_reports = self.analyze_game_relations(
             risk_scores=risk_scores,
-            market_context=market_context or {},
+            market_context=market_context,
             event_chains=event_chains,
         )
         aggregate_score = self._aggregate_risk_score(risk_scores)
@@ -372,6 +446,11 @@ class GameCausalAnalysisEngine:
             "status": "active" if events else "no_events",
             "event_count": len(events),
             "events": [asdict(event) for event in events[:25]],
+            "event_windows": [asdict(item) for item in event_windows],
+            "price_confirmation_learning": {
+                "updated_records": [asdict(item) for item in learned_records],
+                "memory_size": len(self.price_confirmation_memory),
+            },
             "risk_scores": risk_scores,
             "aggregate_risk_score": round(aggregate_score, 6),
             "event_causal_chains": [asdict(chain) for chain in event_chains],
@@ -389,12 +468,29 @@ class GameCausalAnalysisEngine:
         reports: List[GameRelationReport] = []
         chain_ids = {chain.chain_id for chain in event_chains}
         for spec in self._build_relation_specs():
-            side_a_price = self._score_price_confirmations(spec.side_a.price_confirmations, market_context)
-            side_b_price = self._score_price_confirmations(spec.side_b.price_confirmations, market_context)
+            side_a_price = self._score_price_confirmations(
+                spec.side_a.price_confirmations,
+                market_context,
+                relation_id=spec.relation_id,
+                side_id=spec.side_a.side_id,
+            )
+            side_b_price = self._score_price_confirmations(
+                spec.side_b.price_confirmations,
+                market_context,
+                relation_id=spec.relation_id,
+                side_id=spec.side_b.side_id,
+            )
             side_a_score = self._score_relation_side(spec.side_a, risk_scores, market_context, side_a_price, chain_ids)
             side_b_score = self._score_relation_side(spec.side_b, risk_scores, market_context, side_b_price, chain_ids)
             winner, confidence, judgement = self._relation_judgement(spec, side_a_score, side_b_score)
             layer_winners = self._layer_winners(spec, risk_scores, market_context, side_a_score, side_b_score)
+            identification = self._relation_identification_status(
+                spec=spec,
+                side_a_price=side_a_price,
+                side_b_price=side_b_price,
+                risk_scores=risk_scores,
+                chain_ids=chain_ids,
+            )
             reports.append(
                 GameRelationReport(
                     relation_id=spec.relation_id,
@@ -440,6 +536,8 @@ class GameCausalAnalysisEngine:
                     },
                     key_reversal_signals=sorted(set(spec.side_a.reversal_signals + spec.side_b.reversal_signals)),
                     observation_checklist=spec.observation_checklist,
+                    identification_status=identification,
+                    actionability="trade_allowed" if identification.get("can_trade") else "observe_only",
                 )
             )
         return reports
@@ -453,6 +551,113 @@ class GameCausalAnalysisEngine:
     def ingest_policy_records(self, policy_records: Optional[Any]) -> List[NewsEvent]:
         records = self._records_from_any(policy_records)
         return [self._normalize_event(record, fallback_source="policy_calendar") for record in records]
+
+    def build_event_windows(
+        self,
+        events: Sequence[NewsEvent],
+        pricing_asset_panels: Optional[Mapping[str, Any]],
+        pre_days: int = 5,
+        post_days: int = 10,
+    ) -> List[EventWindowSnapshot]:
+        """Create T-pre to T+post asset reaction windows for event studies."""
+        if not events or not isinstance(pricing_asset_panels, Mapping):
+            return []
+        snapshots: List[EventWindowSnapshot] = []
+        for asset, raw_panel in pricing_asset_panels.items():
+            frame = self._normalize_price_panel(raw_panel)
+            if frame.empty:
+                continue
+            for event in events:
+                event_time = pd.to_datetime(event.timestamp, errors="coerce")
+                if pd.isna(event_time):
+                    continue
+                frame_before = frame[frame["date"] <= event_time]
+                if frame_before.empty:
+                    continue
+                event_idx = int(frame_before.index[-1])
+                pre_start = max(0, event_idx - pre_days)
+                post_end = min(len(frame) - 1, event_idx + post_days)
+                pre_slice = frame.iloc[pre_start : event_idx + 1]
+                post_slice = frame.iloc[event_idx : post_end + 1]
+                if pre_slice.empty or post_slice.empty:
+                    continue
+                pre_return = self._safe_return(pre_slice["close"].iloc[0], pre_slice["close"].iloc[-1])
+                post_return = self._safe_return(post_slice["close"].iloc[0], post_slice["close"].iloc[-1])
+                latest_return = self._safe_return(frame["close"].iloc[event_idx], frame["close"].iloc[-1])
+                pre_vol = float(pre_slice["close"].pct_change().std() or 0.0)
+                post_vol = float(post_slice["close"].pct_change().std() or 0.0)
+                pre_volume = float(pre_slice.get("volume", pd.Series([1.0])).mean() or 1.0)
+                post_volume = float(post_slice.get("volume", pd.Series([1.0])).mean() or 1.0)
+                direction_basis = post_return if len(post_slice) > 1 else latest_return
+                snapshots.append(
+                    EventWindowSnapshot(
+                        event_id=event.event_id,
+                        asset=str(asset),
+                        event_timestamp=event.timestamp,
+                        pre_days=int(len(pre_slice) - 1),
+                        post_days=int(len(post_slice) - 1),
+                        pre_return=round(float(pre_return), 6),
+                        post_return=round(float(post_return), 6),
+                        event_to_latest_return=round(float(latest_return), 6),
+                        volatility_ratio=round(float(post_vol / max(pre_vol, 1e-8)), 6),
+                        volume_ratio=round(float(post_volume / max(pre_volume, 1e-8)), 6),
+                        observed_direction="up" if direction_basis > 0 else ("down" if direction_basis < 0 else "flat"),
+                        usable_for_learning=bool(len(post_slice) - 1 >= max(2, post_days // 3)),
+                    )
+                )
+        return snapshots
+
+    def learn_price_confirmation_weights(
+        self,
+        history: Optional[Any],
+    ) -> List[PriceConfirmationMemoryRecord]:
+        """Learn which sensitive assets reliably confirm each X-vs-Y side."""
+        records = self._records_from_any(history)
+        grouped: Dict[Tuple[str, str, str, str], List[Mapping[str, Any]]] = {}
+        for record in records:
+            relation_id = str(record.get("relation_id", "")).strip()
+            side_id = str(record.get("side_id", record.get("side", ""))).strip()
+            asset = str(record.get("asset", "")).strip()
+            expected_direction = str(record.get("expected_direction", "")).strip()
+            if not relation_id or not side_id or not asset or not expected_direction:
+                continue
+            grouped.setdefault((relation_id, side_id, asset, expected_direction), []).append(record)
+
+        updated: List[PriceConfirmationMemoryRecord] = []
+        for (relation_id, side_id, asset, expected_direction), rows in grouped.items():
+            reliabilities: List[float] = []
+            lead_lags: List[float] = []
+            for row in rows:
+                observed = {
+                    "direction": row.get("observed_direction", row.get("direction", "")),
+                    "return": row.get("realized_return", row.get("event_return", row.get("post_return", 0.0))),
+                }
+                confirmation_score = self._direction_confirmation_score(observed, expected_direction)
+                outcome = str(row.get("outcome", "")).lower()
+                if outcome in {"success", "win", "true", "1"}:
+                    outcome_score = 1.0
+                elif outcome in {"failure", "loss", "false", "0"}:
+                    outcome_score = 0.0
+                else:
+                    outcome_score = confirmation_score
+                reliabilities.append(0.65 * confirmation_score + 0.35 * outcome_score)
+                lead_lags.append(_to_float(row.get("lead_lag_days", row.get("lag_days", 0.0)), 0.0))
+            reliability = float(sum(reliabilities) / max(len(reliabilities), 1))
+            learned_weight = float(_clip(0.45 + reliability * 1.35, 0.20, 1.80))
+            memory = PriceConfirmationMemoryRecord(
+                relation_id=relation_id,
+                side_id=side_id,
+                asset=asset,
+                expected_direction=expected_direction,
+                learned_weight=round(learned_weight, 6),
+                reliability=round(reliability, 6),
+                sample_count=len(rows),
+                avg_lead_lag_days=round(float(sum(lead_lags) / max(len(lead_lags), 1)), 6),
+                last_updated=datetime.utcnow().isoformat(),
+            )
+            self.price_confirmation_memory[self._memory_key(relation_id, side_id, asset, expected_direction)] = memory
+            updated.append(memory)
+        return updated
 
     def quantify_risks(self, events: Sequence[NewsEvent]) -> Dict[str, Dict[str, Any]]:
         scores: Dict[str, Dict[str, Any]] = {}
@@ -1212,16 +1417,24 @@ class GameCausalAnalysisEngine:
         self,
         rules: Sequence[PricingAssetRule],
         market_context: Mapping[str, Any],
+        relation_id: str = "",
+        side_id: str = "",
     ) -> Dict[str, Any]:
         confirmations: List[Dict[str, Any]] = []
         total = 0.0
         score = 0.0
         for rule in rules:
             signal = self._asset_signal(market_context, rule.asset)
+            memory = self._price_memory(relation_id, side_id, rule.asset, rule.expected_direction)
+            effective_weight = rule.weight * (memory.learned_weight if memory else 1.0)
             item = {
                 "asset": rule.asset,
                 "expected_direction": rule.expected_direction,
                 "weight": rule.weight,
+                "effective_weight": round(float(effective_weight), 6),
+                "learned_reliability": memory.reliability if memory else None,
+                "learned_sample_count": memory.sample_count if memory else 0,
+                "avg_lead_lag_days": memory.avg_lead_lag_days if memory else None,
                 "data_available": bool(signal),
                 "score": 0.0,
                 "observed": signal,
@@ -1229,13 +1442,55 @@ class GameCausalAnalysisEngine:
             }
             if signal:
                 item["score"] = self._direction_confirmation_score(signal, rule.expected_direction)
-                total += rule.weight
-                score += item["score"] * rule.weight
+                total += effective_weight
+                score += item["score"] * effective_weight
             confirmations.append(item)
         return {
             "score": round(_clip(score / max(total, 1e-9)) if total else 0.0, 6),
             "data_available": bool(total),
             "confirmations": confirmations,
+        }
+
+    def _relation_identification_status(
+        self,
+        spec: GameRelationSpec,
+        side_a_price: Mapping[str, Any],
+        side_b_price: Mapping[str, Any],
+        risk_scores: Mapping[str, Mapping[str, Any]],
+        chain_ids: set[str],
+    ) -> Dict[str, Any]:
+        price_available = bool(side_a_price.get("data_available") or side_b_price.get("data_available"))
+        price_score = max(_to_float(side_a_price.get("score"), 0.0), _to_float(side_b_price.get("score"), 0.0))
+        category_risk = max(
+            self._risk(risk_scores, domain)
+            for domain in ["geopolitical_energy", "monetary_inflation", "ai_technology", "trade_credit", "market_sentiment"]
+        )
+        chain_present = bool(chain_ids)
+        learned_samples = sum(
+            int(item.get("learned_sample_count") or 0)
+            for side in [side_a_price, side_b_price]
+            for item in side.get("confirmations", [])
+        )
+        stability_proxy = _clip(0.45 * price_score + 0.25 * min(learned_samples / 12.0, 1.0) + 0.30 * (1.0 if chain_present else 0.0))
+
+        if price_available and price_score >= 0.55 and (chain_present or learned_samples >= 4):
+            status = "identifiable"
+        elif price_available and price_score >= 0.30:
+            status = "weak_identifiable"
+        elif category_risk >= 0.20 or chain_present:
+            status = "correlation_only"
+        else:
+            status = "unavailable"
+        return {
+            "relation_id": spec.relation_id,
+            "identification_status": status,
+            "can_trade": status in {"identifiable", "weak_identifiable"},
+            "price_confirmation_available": price_available,
+            "best_price_confirmation_score": round(float(price_score), 6),
+            "event_chain_present": chain_present,
+            "learned_confirmation_samples": learned_samples,
+            "stability_proxy": round(float(stability_proxy), 6),
+            "rule": "trade_allowed only when sensitive assets provide price confirmation; pure narratives remain observe_only",
         }
 
     @staticmethod
@@ -1385,6 +1640,76 @@ class GameCausalAnalysisEngine:
         if isinstance(payload, list):
             return [item if isinstance(item, Mapping) else {"title": str(item)} for item in payload]
         return [{"title": str(payload)}]
+
+    @staticmethod
+    def _normalize_price_panel(raw_panel: Any) -> pd.DataFrame:
+        if raw_panel is None:
+            return pd.DataFrame()
+        if isinstance(raw_panel, pd.DataFrame):
+            frame = raw_panel.copy()
+        else:
+            records = raw_panel
+            if isinstance(raw_panel, Mapping) and "records" in raw_panel:
+                records = raw_panel["records"]
+            try:
+                frame = pd.DataFrame(records)
+            except Exception:
+                return pd.DataFrame()
+        if frame.empty:
+            return pd.DataFrame()
+        rename = {}
+        for column in frame.columns:
+            lower = str(column).lower()
+            if lower in {"date", "datetime", "timestamp", "time"}:
+                rename[column] = "date"
+            elif lower in {"close", "last", "settle", "price"}:
+                rename[column] = "close"
+            elif lower in {"volume", "vol"}:
+                rename[column] = "volume"
+        frame = frame.rename(columns=rename)
+        if "date" not in frame.columns or "close" not in frame.columns:
+            return pd.DataFrame()
+        frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+        frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
+        if "volume" not in frame.columns:
+            frame["volume"] = 1.0
+        frame["volume"] = pd.to_numeric(frame["volume"], errors="coerce").fillna(1.0)
+        frame = frame.dropna(subset=["date", "close"]).sort_values("date").reset_index(drop=True)
+        return frame
+
+    @staticmethod
+    def _safe_return(start: Any, end: Any) -> float:
+        start_value = _to_float(start, 0.0)
+        end_value = _to_float(end, 0.0)
+        if start_value == 0.0:
+            return 0.0
+        return end_value / start_value - 1.0
+
+    @staticmethod
+    def _memory_key(relation_id: str, side_id: str, asset: str, expected_direction: str) -> str:
+        return "|".join([relation_id, side_id, asset.lower(), expected_direction.lower()])
+
+    def _price_memory(
+        self,
+        relation_id: str,
+        side_id: str,
+        asset: str,
+        expected_direction: str,
+    ) -> Optional[PriceConfirmationMemoryRecord]:
+        exact = self._memory_key(relation_id, side_id, asset, expected_direction)
+        if exact in self.price_confirmation_memory:
+            return self.price_confirmation_memory[exact]
+        relation_asset = [
+            record
+            for record in self.price_confirmation_memory.values()
+            if record.relation_id == relation_id
+            and record.asset.lower() == asset.lower()
+            and record.expected_direction.lower() == expected_direction.lower()
+        ]
+        if relation_asset:
+            return max(relation_asset, key=lambda item: (item.sample_count, item.reliability))
+        fallback = self._memory_key("", "", asset, expected_direction)
+        return self.price_confirmation_memory.get(fallback)
 
     def _normalize_event(self, record: Mapping[str, Any], fallback_source: str) -> NewsEvent:
         title = self._first_text(record, ["title", "headline", "event", "事件", "内容", "指标", "name"]) or self._record_text(record)

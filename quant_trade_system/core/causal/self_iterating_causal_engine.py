@@ -23,6 +23,12 @@ import pandas as pd
 
 from ...factors.factor_library import FactorLibrary
 from .causal_factor_library import AssetClass, CausalFactorLibrary
+from .research_governance import (
+    CausalValidationLoop,
+    ExperimentRegistry,
+    FeatureStore,
+    ModelRegistry,
+)
 
 
 @dataclass
@@ -67,6 +73,9 @@ class SelectedFeature:
     direction: int
     selected: bool
     objective_score: float = 0.0
+    identification_status: str = "unvalidated"
+    validation_score: float = 0.0
+    can_trade: bool = False
     rejection_reason: Optional[str] = None
 
 
@@ -106,6 +115,10 @@ class PortfolioPlan:
     projected_objective_score: float = 0.0
     barbell_ratio: float = 0.0
     residual_cash_weight: float = 0.0
+    estimated_cost_penalty: float = 0.0
+    estimated_impact_penalty: float = 0.0
+    estimated_margin_penalty: float = 0.0
+    estimated_tail_risk_penalty: float = 0.0
 
 
 class SelfIteratingCausalEngine:
@@ -124,6 +137,10 @@ class SelfIteratingCausalEngine:
         self.selection_policy = selection_policy or FeatureSelectionPolicy()
         self.objective_config = objective_config or LearningObjectiveConfig()
         self.constraints = constraints or PortfolioConstraintConfig()
+        self.causal_validation_loop = CausalValidationLoop(min_observations=self.selection_policy.min_history)
+        self.feature_store = FeatureStore()
+        self.experiment_registry = ExperimentRegistry()
+        self.model_registry = ModelRegistry()
         self.latest_iteration: Dict[str, Any] = {}
 
     def describe_capabilities(self) -> Dict[str, Any]:
@@ -149,6 +166,12 @@ class SelfIteratingCausalEngine:
                 },
             },
             "portfolio_constraints": asdict(self.constraints),
+            "research_governance": {
+                "causal_validation_gate": "validated_or_weak_identifiable_edges_only_for_position_sizing",
+                "feature_store_enabled": True,
+                "experiment_registry_enabled": True,
+                "model_registry_enabled": True,
+            },
             "quantized_causal_factor_count": len(self.causal_factor_library.get_quantized_factor_ids()),
             "latest_iteration_status": self.latest_iteration.get("status", "idle"),
         }
@@ -172,6 +195,7 @@ class SelfIteratingCausalEngine:
         benchmark_returns = self._build_benchmark_returns(symbol_datasets, benchmark_frame)
         symbol_reports: Dict[str, Any] = {}
         signal_candidates: List[Dict[str, Any]] = []
+        all_validation_records: List[Dict[str, Any]] = []
 
         for symbol, frame in symbol_datasets.items():
             normalized = self._normalize_ohlcv_frame(frame)
@@ -210,10 +234,31 @@ class SelfIteratingCausalEngine:
                 }
                 continue
 
+            tradable_selected, validation_records = self._validate_selected_features(
+                symbol=symbol,
+                factor_matrix=factor_matrix,
+                target_returns=target_returns,
+                selected_features=selected,
+                benchmark_returns=benchmark_returns,
+            )
+            all_validation_records.extend(validation_records)
+
+            if not tradable_selected:
+                symbol_reports[symbol] = {
+                    "status": "no_validated_causal_edge",
+                    "rows": int(len(normalized)),
+                    "global_peer_count": int(len(peer_frames)),
+                    "selected_features": [asdict(item) for item in selected],
+                    "rejected_features": [asdict(item) for item in rejected[:15]],
+                    "causal_validation": validation_records,
+                    "validation_gate": "未通过 identifiable/weak_identifiable，因子保留观察但不得提高仓位。",
+                }
+                continue
+
             ensemble = self._train_factor_ensemble(
                 factor_matrix,
                 target_returns,
-                selected,
+                tradable_selected,
                 benchmark_returns=benchmark_returns,
             )
             latest_score = ensemble["latest_signal_score"]
@@ -227,7 +272,7 @@ class SelfIteratingCausalEngine:
                         "raw_score": latest_score,
                         "confidence": latest_confidence,
                         "objective_score": ensemble["objective_metrics"].objective_score,
-                        "selected_features": [item.factor_name for item in selected],
+                        "selected_features": [item.factor_name for item in tradable_selected],
                     }
                 )
 
@@ -236,7 +281,9 @@ class SelfIteratingCausalEngine:
                 "rows": int(len(normalized)),
                 "global_peer_count": int(len(peer_frames)),
                 "selected_features": [asdict(item) for item in selected],
+                "tradable_feature_count": int(len(tradable_selected)),
                 "rejected_features": [asdict(item) for item in rejected[:15]],
+                "causal_validation": validation_records,
                 "factor_weights": ensemble["factor_weights"],
                 "objective_metrics": asdict(ensemble["objective_metrics"]),
                 "latest_signal_score": latest_score,
@@ -244,6 +291,18 @@ class SelfIteratingCausalEngine:
             }
 
         portfolio_plan = self.optimize_portfolio(signal_candidates, market_context or {})
+        experiment_record = self._record_learning_experiment(
+            symbol_datasets=symbol_datasets,
+            signal_candidates=signal_candidates,
+            symbol_reports=symbol_reports,
+            portfolio_plan=portfolio_plan,
+            validation_records=all_validation_records,
+        )
+        model_record = self._register_cycle_model(
+            symbol_reports=symbol_reports,
+            portfolio_plan=portfolio_plan,
+            validation_records=all_validation_records,
+        )
         result = {
             "status": "trained" if signal_candidates else "no_actionable_signals",
             "symbols": symbol_reports,
@@ -251,6 +310,10 @@ class SelfIteratingCausalEngine:
             "trade_actions": self._portfolio_to_actions(portfolio_plan),
             "selection_policy": asdict(self.selection_policy),
             "constraints": asdict(self.constraints),
+            "causal_validation_summary": self._summarize_validation_records(all_validation_records),
+            "experiment_record": asdict(experiment_record),
+            "model_registry_record": asdict(model_record),
+            "feature_store_records": self.feature_store.latest_records(limit=25),
         }
         self.latest_iteration = result
         return result
@@ -384,7 +447,9 @@ class SelfIteratingCausalEngine:
                     tail_weight=tail_weight,
                     safe_weight=safe_weight,
                     tail_risk=tail_risk,
+                    market_context=market_context,
                 )
+                penalties = self._portfolio_penalties(allocations, tail_weight, market_context)
                 if projected_score > best_score:
                     best_score = projected_score
                     best_plan = PortfolioPlan(
@@ -395,6 +460,10 @@ class SelfIteratingCausalEngine:
                         projected_objective_score=round(projected_score, 6),
                         barbell_ratio=round(hedge_ratio, 6),
                         residual_cash_weight=0.0,
+                        estimated_cost_penalty=round(penalties["transaction_cost"], 6),
+                        estimated_impact_penalty=round(penalties["impact_cost"], 6),
+                        estimated_margin_penalty=round(penalties["margin_penalty"], 6),
+                        estimated_tail_risk_penalty=round(penalties["tail_risk_penalty"], 6),
                     )
 
         return best_plan or PortfolioPlan(
@@ -406,6 +475,150 @@ class SelfIteratingCausalEngine:
             barbell_ratio=0.10,
             residual_cash_weight=0.0,
         )
+
+    def _validate_selected_features(
+        self,
+        symbol: str,
+        factor_matrix: pd.DataFrame,
+        target_returns: pd.Series,
+        selected_features: List[SelectedFeature],
+        benchmark_returns: Optional[pd.Series] = None,
+    ) -> tuple[List[SelectedFeature], List[Dict[str, Any]]]:
+        tradable: List[SelectedFeature] = []
+        records: List[Dict[str, Any]] = []
+        for feature in selected_features:
+            validation = self.causal_validation_loop.validate_feature(
+                feature_name=feature.factor_name,
+                factor_series=factor_matrix[feature.factor_name],
+                target_returns=target_returns,
+                benchmark_returns=benchmark_returns,
+            )
+            feature.identification_status = validation.identification_status
+            feature.validation_score = validation.validation_score
+            feature.can_trade = validation.can_trade
+            record = asdict(validation)
+            record["symbol"] = symbol
+            records.append(record)
+
+            self.feature_store.register_feature(
+                name=feature.factor_name,
+                financial_meaning=feature.financial_meaning,
+                formula=feature.formula,
+                data_lineage={
+                    "symbol": symbol,
+                    "source": "self_iterating_candidate_factor_matrix",
+                    "rows": int(len(factor_matrix)),
+                    "target_horizon": self.selection_policy.target_horizon,
+                },
+                leakage_check={
+                    "forward_target_shift_days": self.selection_policy.target_horizon,
+                    "uses_only_information_available_at_or_before_signal_time": True,
+                    "purged_cv_required_before_promotion": True,
+                },
+                validation_status=record,
+            )
+            if validation.can_trade:
+                tradable.append(feature)
+        return tradable, records
+
+    def _record_learning_experiment(
+        self,
+        symbol_datasets: Dict[str, pd.DataFrame],
+        signal_candidates: List[Dict[str, Any]],
+        symbol_reports: Dict[str, Any],
+        portfolio_plan: PortfolioPlan,
+        validation_records: List[Dict[str, Any]],
+    ):
+        row_counts = {
+            symbol: int(len(frame))
+            for symbol, frame in symbol_datasets.items()
+        }
+        validation_summary = self._summarize_validation_records(validation_records)
+        failure_reasons = sorted(
+            {
+                str(report.get("status"))
+                for report in symbol_reports.values()
+                if str(report.get("status")) not in {"trained"}
+            }
+        )
+        return self.experiment_registry.record_experiment(
+            name="self_iterating_causal_learning_cycle",
+            data_version={
+                "symbols": sorted(symbol_datasets.keys()),
+                "row_counts": row_counts,
+                "feature_policy": asdict(self.selection_policy),
+            },
+            training_window={
+                "target_horizon": self.selection_policy.target_horizon,
+                "min_history": self.selection_policy.min_history,
+                "walk_forward_required": True,
+                "purged_cv_required": True,
+                "embargo_required": True,
+            },
+            test_window={
+                "mode": "latest_split_shadow_gate",
+                "oos_proxy": "second_half_correlation",
+            },
+            metrics={
+                "signal_candidate_count": len(signal_candidates),
+                "projected_objective_score": portfolio_plan.projected_objective_score,
+                "active_weight": portfolio_plan.active_weight,
+                "validation_summary": validation_summary,
+            },
+            failure_reasons=failure_reasons,
+            status="completed",
+        )
+
+    def _register_cycle_model(
+        self,
+        symbol_reports: Dict[str, Any],
+        portfolio_plan: PortfolioPlan,
+        validation_records: List[Dict[str, Any]],
+    ):
+        validation_summary = self._summarize_validation_records(validation_records)
+        passed_symbols = [
+            symbol
+            for symbol, report in symbol_reports.items()
+            if report.get("status") == "trained"
+        ]
+        if passed_symbols and validation_summary["tradable_edge_count"] > 0:
+            promotion_status = "nightly_candidate"
+            promotion_reason = "至少一个符号具备可交易因果边并通过组合约束。"
+        else:
+            promotion_status = "shadow_only"
+            promotion_reason = "缺少通过验证的因果边，保留为观察/影子模型。"
+        return self.model_registry.register_model(
+            name="self_iterating_causal_factor_ensemble",
+            training_window={
+                "target_horizon": self.selection_policy.target_horizon,
+                "min_history": self.selection_policy.min_history,
+                "symbol_count": len(symbol_reports),
+            },
+            validation_summary={
+                **validation_summary,
+                "projected_objective_score": portfolio_plan.projected_objective_score,
+                "estimated_cost_penalty": portfolio_plan.estimated_cost_penalty,
+                "estimated_impact_penalty": portfolio_plan.estimated_impact_penalty,
+            },
+            promotion_status=promotion_status,
+            promotion_reason=promotion_reason,
+        )
+
+    @staticmethod
+    def _summarize_validation_records(validation_records: List[Dict[str, Any]]) -> Dict[str, Any]:
+        counts: Dict[str, int] = {}
+        for record in validation_records:
+            status = str(record.get("identification_status", "unknown"))
+            counts[status] = counts.get(status, 0) + 1
+        scores = [float(record.get("validation_score", 0.0) or 0.0) for record in validation_records]
+        tradable_count = sum(1 for record in validation_records if record.get("can_trade"))
+        return {
+            "edge_count": len(validation_records),
+            "tradable_edge_count": tradable_count,
+            "status_counts": counts,
+            "avg_validation_score": round(float(np.mean(scores)), 6) if scores else 0.0,
+            "gate": "only identifiable or weak_identifiable edges can increase position size",
+        }
 
     def _normalize_ohlcv_frame(self, frame: pd.DataFrame) -> pd.DataFrame:
         rename_map = {}
@@ -767,9 +980,12 @@ class SelfIteratingCausalEngine:
         tail_weight: float,
         safe_weight: float,
         tail_risk: float,
+        market_context: Optional[Dict[str, Any]] = None,
     ) -> float:
+        market_context = market_context or {}
+        penalties = self._portfolio_penalties(allocations, tail_weight, market_context)
         if not allocations:
-            return safe_weight * 0.02 + tail_weight * max(tail_risk, 0.10)
+            return safe_weight * 0.02 + tail_weight * max(tail_risk, 0.10) - penalties["tail_risk_penalty"]
         expected_signal_score = sum(item.target_weight * item.objective_score for item in allocations)
         concentration = sum(item.target_weight ** 2 for item in allocations) / max(
             sum(item.target_weight for item in allocations), 1e-6
@@ -777,7 +993,37 @@ class SelfIteratingCausalEngine:
         desired_tail_ratio = float(np.clip(0.10 + tail_risk * 0.60, 0.10, 0.45))
         actual_tail_ratio = tail_weight / max(tail_weight + safe_weight, 1e-6)
         hedge_alignment = 1.0 - abs(actual_tail_ratio - desired_tail_ratio)
-        return float(expected_signal_score + 0.08 * hedge_alignment - 0.10 * concentration)
+        return float(
+            expected_signal_score
+            + 0.08 * hedge_alignment
+            - 0.10 * concentration
+            - penalties["transaction_cost"]
+            - penalties["impact_cost"]
+            - penalties["margin_penalty"]
+            - penalties["tail_risk_penalty"]
+        )
+
+    def _portfolio_penalties(
+        self,
+        allocations: List[SignalAllocation],
+        tail_weight: float,
+        market_context: Dict[str, Any],
+    ) -> Dict[str, float]:
+        gross_weight = sum(abs(item.target_weight) for item in allocations)
+        futures_weight = sum(abs(item.target_weight) for item in allocations if item.asset_type == "futures")
+        turnover_estimate = float(market_context.get("turnover_estimate", gross_weight))
+        transaction_bps = float(market_context.get("transaction_cost_bps", 8.0))
+        impact_bps = float(market_context.get("impact_cost_bps", 12.0))
+        liquidity_penalty = float(market_context.get("liquidity_penalty", 0.0))
+        margin_penalty_rate = float(market_context.get("margin_penalty_rate", 0.018))
+        tail_risk = self._extract_tail_risk_score(market_context)
+        unhedged_tail = max(0.0, tail_risk - tail_weight)
+        return {
+            "transaction_cost": turnover_estimate * transaction_bps / 10000.0,
+            "impact_cost": gross_weight * impact_bps / 10000.0 + liquidity_penalty,
+            "margin_penalty": futures_weight * margin_penalty_rate,
+            "tail_risk_penalty": unhedged_tail * 0.035,
+        }
 
     def _extract_tail_risk_score(self, market_context: Dict[str, Any]) -> float:
         crisis_probability = float(market_context.get("crisis_probability", 0.15))
@@ -808,6 +1054,10 @@ class SelfIteratingCausalEngine:
             "projected_objective_score": plan.projected_objective_score,
             "barbell_ratio": plan.barbell_ratio,
             "residual_cash_weight": plan.residual_cash_weight,
+            "estimated_cost_penalty": plan.estimated_cost_penalty,
+            "estimated_impact_penalty": plan.estimated_impact_penalty,
+            "estimated_margin_penalty": plan.estimated_margin_penalty,
+            "estimated_tail_risk_penalty": plan.estimated_tail_risk_penalty,
             "signal_allocations": [asdict(item) for item in plan.signal_allocations],
         }
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 
+import pandas as pd
+
 from quant_trade_system.core.causal import GameCausalAnalysisEngine
 
 
@@ -124,6 +126,72 @@ class GameCausalAnalysisEngineTests(unittest.TestCase):
             report["layer_winners"]["risk_assets"]["winner"],
             "risk_appetite_looks_through_tail_risk",
         )
+
+    def test_event_windows_are_created_from_pricing_asset_panels(self) -> None:
+        panel = pd.DataFrame(
+            {
+                "date": pd.date_range("2026-05-01", periods=20, freq="D"),
+                "close": [100 + i for i in range(20)],
+                "volume": [1000 + i * 10 for i in range(20)],
+            }
+        )
+        result = self.engine.analyze(
+            news_items=[
+                {
+                    "timestamp": "2026-05-10",
+                    "title": "OPEC supply disruption raises crude oil risk",
+                    "source": "unit_test",
+                }
+            ],
+            market_context={"pricing_asset_panels": {"Brent": panel}},
+        )
+
+        self.assertTrue(result["event_windows"])
+        window = result["event_windows"][0]
+        self.assertEqual(window["asset"], "Brent")
+        self.assertEqual(window["observed_direction"], "up")
+        self.assertTrue(window["usable_for_learning"])
+
+    def test_price_confirmation_learning_reweights_reliable_assets(self) -> None:
+        result = self.engine.analyze(
+            news_items=[
+                {
+                    "title": "Iran war risk threatens Hormuz Strait oil supply disruption",
+                    "source": "unit_test",
+                }
+            ],
+            market_context={
+                "price_confirmation_history": [
+                    {
+                        "relation_id": "geopolitical_risk_vs_risk_appetite",
+                        "side_id": "geo_risk",
+                        "asset": "Brent",
+                        "expected_direction": "up",
+                        "observed_direction": "up",
+                        "outcome": "success",
+                        "lead_lag_days": 1,
+                    },
+                    {
+                        "relation_id": "geopolitical_risk_vs_risk_appetite",
+                        "side_id": "geo_risk",
+                        "asset": "Brent",
+                        "expected_direction": "up",
+                        "observed_direction": "up",
+                        "outcome": "success",
+                        "lead_lag_days": 2,
+                    },
+                ],
+                "asset_signals": {"Brent": {"direction": "up"}},
+            },
+        )
+
+        report = self._relation(result, "geopolitical_risk_vs_risk_appetite")
+        brent_confirmation = next(
+            item for item in report["price_confirmation"]["A"]["confirmations"] if item["asset"] == "Brent"
+        )
+        self.assertGreater(brent_confirmation["effective_weight"], brent_confirmation["weight"])
+        self.assertGreaterEqual(brent_confirmation["learned_sample_count"], 2)
+        self.assertIn(report["actionability"], {"trade_allowed", "observe_only"})
 
     @staticmethod
     def _dominance(result: dict, asset: str) -> dict:

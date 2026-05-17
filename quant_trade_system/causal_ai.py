@@ -1087,6 +1087,20 @@ class CausalTradingSystemV4:
                 records.append(dict(event.__dict__))
         return records
 
+    @staticmethod
+    def _directional_asset_signal(momentum: float, deadband: float = 0.005) -> Dict[str, Any]:
+        if momentum > deadband:
+            direction = "up"
+        elif momentum < -deadband:
+            direction = "down"
+        else:
+            direction = "flat"
+        return {
+            "direction": direction,
+            "return": round(float(momentum), 6),
+            "momentum": round(float(momentum), 6),
+        }
+
     def build_market_data(self, datasets: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
         gold = datasets.get("gold_daily")
         copper = datasets.get("copper_daily")
@@ -1228,6 +1242,22 @@ class CausalTradingSystemV4:
             "copper_inventory_days": market_data["LME_Inventory_Days"]["value"],
             "AI_DataCenter_Capex": market_data["AI_DataCenter_Capex"],
             "LME_Inventory_Days": market_data["LME_Inventory_Days"],
+            "asset_signals": {
+                "gold": self._directional_asset_signal(gold_mom),
+                "copper": self._directional_asset_signal(copper_mom),
+                "Nasdaq": self._directional_asset_signal(nasdaq_mom),
+                "SOX": self._directional_asset_signal(nasdaq_mom),
+                "risk_assets": self._directional_asset_signal(nasdaq_mom),
+            },
+            "pricing_asset_panels": {
+                asset: panel
+                for asset, panel in {
+                    "gold": gold,
+                    "copper": copper,
+                    "Nasdaq": nasdaq,
+                }.items()
+                if panel is not None and not panel.empty
+            },
         }
         game_analysis = self.game_causal_engine.analyze(
             news_items=news_records,

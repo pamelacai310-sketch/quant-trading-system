@@ -43,6 +43,7 @@ from .self_iterating_causal_engine import (
 from .game_causal_analysis import (
     ContextRule,
     EventCausalChain,
+    EventWindowSnapshot,
     GameCausalAnalysisEngine,
     GameDominance,
     GameForce,
@@ -51,7 +52,22 @@ from .game_causal_analysis import (
     GameSideSpec,
     NewsEvent,
     PricingAssetRule,
+    PriceConfirmationMemoryRecord,
     create_game_causal_analysis_engine,
+)
+from .research_governance import (
+    CORRELATION_ONLY,
+    IDENTIFIABLE,
+    UNAVAILABLE,
+    WEAK_IDENTIFIABLE,
+    CausalEdgeValidationSnapshot,
+    CausalValidationLoop,
+    ExperimentRecord,
+    ExperimentRegistry,
+    FeatureRecord,
+    FeatureStore,
+    ModelRecord,
+    ModelRegistry,
 )
 
 # 新增：因果发现引擎
@@ -127,15 +143,29 @@ __all__ = [
     "SignalAllocation",
     "NewsEvent",
     "EventCausalChain",
+    "EventWindowSnapshot",
     "GameForce",
     "GameDominance",
     "PricingAssetRule",
+    "PriceConfirmationMemoryRecord",
     "ContextRule",
     "GameSideSpec",
     "GameRelationSpec",
     "GameRelationReport",
     "GameCausalAnalysisEngine",
     "create_game_causal_analysis_engine",
+    "IDENTIFIABLE",
+    "WEAK_IDENTIFIABLE",
+    "CORRELATION_ONLY",
+    "UNAVAILABLE",
+    "CausalEdgeValidationSnapshot",
+    "CausalValidationLoop",
+    "FeatureRecord",
+    "FeatureStore",
+    "ExperimentRecord",
+    "ExperimentRegistry",
+    "ModelRecord",
+    "ModelRegistry",
 ]
 
 # 新增导出

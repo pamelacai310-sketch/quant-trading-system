@@ -121,6 +121,10 @@ class SelfIteratingCausalEngineTests(unittest.TestCase):
         self.assertIn("TEST", result["symbols"])
         self.assertIn("portfolio_plan", result)
         self.assertIn("trade_actions", result)
+        self.assertIn("causal_validation_summary", result)
+        self.assertIn("experiment_record", result)
+        self.assertIn("model_registry_record", result)
+        self.assertIn("feature_store_records", result)
 
     def test_futures_candidate_matrix_includes_global_peer_linkage_features(self) -> None:
         rows = 140
@@ -201,6 +205,19 @@ class SelfIteratingCausalEngineTests(unittest.TestCase):
         )
         self.assertIn("CU2608", result["symbols"])
         self.assertEqual(result["symbols"]["CU2608"]["global_peer_count"], 1)
+
+    def test_validation_gate_marks_unstable_features_observation_only(self) -> None:
+        idx = pd.RangeIndex(80)
+        feature = pd.Series(np.r_[np.linspace(0, 1, 40), np.linspace(1, 0, 40)], index=idx)
+        target = pd.Series(np.r_[np.linspace(0, 1, 40), np.linspace(0, 1, 40)], index=idx)
+        validation = self.engine.causal_validation_loop.validate_feature(
+            "unstable_factor",
+            feature,
+            target,
+        )
+        self.assertIn(validation.identification_status, {"correlation_only", "unavailable", "weak_identifiable"})
+        if validation.identification_status in {"correlation_only", "unavailable"}:
+            self.assertFalse(validation.can_trade)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import unittest
 import pandas as pd
 
 from quant_trade_system.nightly_quant_orders import (
+    _build_evidence_snapshot,
     _build_instruction,
     _build_recap,
     _evaluate_execution_actions,
@@ -163,6 +164,45 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertAlmostEqual(summary["portfolio_return"], 0.01)
         self.assertAlmostEqual(summary["gross_weight"], 0.1)
         self.assertEqual(summary["risk_asset_count"], 1)
+        self.assertIn("elasticity", summary)
+
+    def test_evidence_snapshot_links_models_features_and_confirmations(self) -> None:
+        report = {
+            "report_date": "2026-05-11",
+            "generated_at": "2026-05-11T20:00:00+08:00",
+            "repo": {"head": "abc123"},
+            "us_validation": {"passed": True, "actual_date": "2026-05-08"},
+            "hk_validation": {"passed": True, "actual_date": "2026-05-11"},
+            "futures_validations": {"SHFE": {"passed": True, "actual_date": "2026-05-11"}},
+            "market_data": {
+                "game_causal_analysis": {
+                    "events": [{"event_id": "evt1"}],
+                    "event_windows": [{"event_id": "evt1", "asset": "gold"}],
+                    "event_causal_chains": [{"chain_id": "geo_energy_supply_shock"}],
+                    "game_relation_reports": [
+                        {
+                            "relation_id": "geopolitical_risk_vs_risk_appetite",
+                            "current_judgement": {"winner": "geopolitical_risk_premium", "confidence": 0.8},
+                            "price_confirmation": {"A": {"score": 1.0}},
+                            "identification_status": {"identification_status": "identifiable"},
+                            "actionability": "trade_allowed",
+                        }
+                    ],
+                }
+            },
+        }
+        cycles = {
+            "HK": {
+                "causal_validation_summary": {"edge_count": 3, "tradable_edge_count": 1},
+                "model_registry_record": {"version": "v1"},
+                "feature_store_records": [{"name": "f1"}],
+                "constraints": {"max_single_weight": 0.2},
+            }
+        }
+        snapshot = _build_evidence_snapshot(report, cycles)
+        self.assertEqual(snapshot["causal_validation"]["HK"]["tradable_edge_count"], 1)
+        self.assertEqual(snapshot["model_versions"]["HK"]["version"], "v1")
+        self.assertEqual(snapshot["sensitive_asset_confirmations"][0]["actionability"], "trade_allowed")
 
 
 if __name__ == "__main__":

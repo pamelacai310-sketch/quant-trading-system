@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from .causal_ai import AccountHealthMonitor, EnhancedCausalTradingAgent
-from .core.causal import CausalFactorLibrary, CrossAssetCausalEngine, SelfIteratingCausalEngine
+from .core.causal import CausalFactorLibrary, CrossAssetCausalEngine, GameCausalAnalysisEngine, SelfIteratingCausalEngine
 from .factors.factor_library import FactorLibrary
 from .universe_provider import MarketUniverseProvider
 
@@ -459,7 +459,20 @@ def _build_market_context(cross_asset_engine: CrossAssetCausalEngine, qqq: pd.Da
             "liquidity": regime.liquidity,
             "confidence": regime.confidence,
         },
+        "asset_signals": {
+            "Nasdaq": _directional_signal(qqq_mom),
+            "SOX": _directional_signal(qqq_mom),
+            "risk_assets": _directional_signal(qqq_mom),
+            "gold": _directional_signal(gold_mom),
+            "copper": _directional_signal(copper_mom),
+        },
     }
+    game_analysis = GameCausalAnalysisEngine().analyze(
+        news_items=[],
+        policy_records=[],
+        market_context=market_context,
+    )
+    market_context["game_causal_analysis"] = game_analysis
     market_data = {
         "US_Debt": {"value": 38_500_000_000_000},
         "Central_Bank_Gold_Purchase": {"value": round(78 + max(gold_mom, 0.0) * 120, 2)},
@@ -469,8 +482,26 @@ def _build_market_context(cross_asset_engine: CrossAssetCausalEngine, qqq: pd.Da
         "LME_Inventory_Days": {"value": round(max(1.5, min(12.0, 5.5 - max(copper_mom, 0.0) * 14)), 2)},
         "AI_DataCenter_Capex": {"growth": round(max(0.08, 0.12 + max(qqq_mom, 0.0) * 0.9), 4)},
         "cross_asset_regime": market_context["cross_asset_regime"],
+        "asset_signals": market_context["asset_signals"],
+        "game_causal_analysis": game_analysis,
+        "dominant_game_logics": game_analysis.get("dominant_game_logics", []),
+        "game_relation_reports": game_analysis.get("game_relation_reports", []),
     }
     return market_context, market_data
+
+
+def _directional_signal(momentum: float, deadband: float = 0.005) -> Dict[str, Any]:
+    if momentum > deadband:
+        direction = "up"
+    elif momentum < -deadband:
+        direction = "down"
+    else:
+        direction = "flat"
+    return {
+        "direction": direction,
+        "return": round(float(momentum), 6),
+        "momentum": round(float(momentum), 6),
+    }
 
 
 def _summarize_symbol_report(report: Dict[str, Any]) -> Dict[str, Any]:
@@ -672,6 +703,8 @@ def _evaluate_execution_actions(
         if wins and losses
         else (float("inf") if wins else 0.0)
     )
+    avg_abs_return = float(sum(abs(item) for item in realized_returns) / len(realized_returns)) if realized_returns else 0.0
+    elasticity = avg_abs_return / max(abs(weighted_return), 1e-9) if realized_returns and abs(weighted_return) > 1e-9 else 0.0
     return {
         "portfolio_return": round(weighted_return, 6),
         "gross_weight": round(gross_weight, 6),
@@ -679,6 +712,10 @@ def _evaluate_execution_actions(
         "risk_asset_count": len(realized_returns),
         "win_rate": round(len(wins) / len(realized_returns), 6) if realized_returns else 0.0,
         "payoff_ratio": round(payoff_ratio, 6) if payoff_ratio != float("inf") else 999.0,
+        "elasticity": round(float(elasticity), 6),
+        "slippage_bps": 0.0,
+        "execution_quality": "close_to_close_proxy",
+        "failure_attribution": "not_evaluated" if realized_returns else "no_directional_fill",
         "details": details,
     }
 
@@ -838,6 +875,78 @@ def _build_cycle_payload(
     }
 
 
+def _build_evidence_snapshot(
+    report: Dict[str, Any],
+    cycles: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    market_data = report.get("market_data", {})
+    game_analysis = market_data.get("game_causal_analysis", {})
+    relation_reports = game_analysis.get("game_relation_reports", [])
+    top_relations = sorted(
+        relation_reports,
+        key=lambda item: float(item.get("current_judgement", {}).get("confidence", 0.0) or 0.0),
+        reverse=True,
+    )[:6]
+    model_records = {
+        name: cycle.get("model_registry_record", {})
+        for name, cycle in cycles.items()
+    }
+    validation_summaries = {
+        name: cycle.get("causal_validation_summary", {})
+        for name, cycle in cycles.items()
+    }
+    feature_records = {
+        name: cycle.get("feature_store_records", [])[:8]
+        for name, cycle in cycles.items()
+    }
+    return {
+        "report_date": report.get("report_date"),
+        "generated_at": report.get("generated_at"),
+        "repo": report.get("repo", {}),
+        "data_timestamps": {
+            "US": report.get("us_validation", {}),
+            "HK": report.get("hk_validation", {}),
+            "CN_FUTURES": report.get("futures_validations", {}),
+        },
+        "input_events": game_analysis.get("events", [])[:12],
+        "event_windows": game_analysis.get("event_windows", [])[:12],
+        "event_driven_causal_chains": game_analysis.get("event_causal_chains", [])[:10],
+        "sensitive_asset_confirmations": [
+            {
+                "relation_id": item.get("relation_id"),
+                "winner": item.get("current_judgement", {}).get("winner"),
+                "confidence": item.get("current_judgement", {}).get("confidence"),
+                "price_confirmation": item.get("price_confirmation"),
+                "identification_status": item.get("identification_status"),
+                "actionability": item.get("actionability"),
+            }
+            for item in top_relations
+        ],
+        "causal_validation": validation_summaries,
+        "model_versions": model_records,
+        "feature_lineage": feature_records,
+        "position_constraints": {
+            name: cycle.get("constraints", {})
+            for name, cycle in cycles.items()
+        },
+        "execution_assumptions": {
+            "price_basis": "latest_valid_close",
+            "return_model": "close_to_close_for_review",
+            "tail_hedge_mapping": {
+                "US": US_TAIL_HEDGE_SYMBOL,
+                "HK": HK_TAIL_HEDGE_SYMBOL,
+                "CN_FUTURES": CN_FUTURES_TAIL_HEDGE_SYMBOL,
+            },
+            "safe_reserve_mapping": {
+                "US": US_SAFE_RESERVE_SYMBOL,
+                "HK": HK_SAFE_RESERVE_SYMBOL,
+                "CN_FUTURES": CN_FUTURES_SAFE_RESERVE_SYMBOL,
+            },
+        },
+        "audit_contract": "Every actionable order must trace to data timestamp, causal validation, model version, constraints and execution assumptions.",
+    }
+
+
 def _append_market_summary(
     report: Dict[str, Any],
     label: str,
@@ -938,6 +1047,7 @@ def generate_report(target_day: date) -> Dict[str, Any]:
     if not us_validation.passed or not hk_validation.passed or not all(
         item["validation"].passed for item in futures_market_data.values()
     ):
+        report["evidence_snapshot"] = _build_evidence_snapshot(report, {})
         report["report_text"] = render_report_text(report)
         _save_report(report_dir, report)
         return report
@@ -1096,6 +1206,12 @@ def generate_report(target_day: date) -> Dict[str, Any]:
         ],
         *futures_primary_actions,
     ]
+    all_cycles = {
+        "US": us_cycle,
+        "HK": hk_cycle,
+        **{exchange: cycle for exchange, cycle in futures_cycles.items()},
+    }
+    report["evidence_snapshot"] = _build_evidence_snapshot(report, all_cycles)
     report["legacy_lines"] = [
         f"{action.get('action')} {action.get('symbol')}：{action.get('reason')}，置信度 {float(action.get('confidence', 0.0)):.2f}"
         for action in report["legacy_actions"]
@@ -1163,6 +1279,22 @@ def render_report_text(report: Dict[str, Any]) -> str:
         f"confidence={regime.get('confidence'):.4f}"
     )
     lines.append(f"- {report.get('calendar_note')}")
+
+    snapshot = report.get("evidence_snapshot", {})
+    if snapshot:
+        causal_validation = snapshot.get("causal_validation", {})
+        validation_text = "; ".join(
+            f"{market}:edges={item.get('edge_count', 0)} tradable={item.get('tradable_edge_count', 0)}"
+            for market, item in causal_validation.items()
+        )
+        lines.append("")
+        lines.append("证据快照：")
+        lines.append(f"- 因果验证：{validation_text or '本次无可交易因果边'}")
+        lines.append(
+            f"- 博弈确认：chains={len(snapshot.get('event_driven_causal_chains', []))} "
+            f"relations={len(snapshot.get('sensitive_asset_confirmations', []))}，"
+            f"审计规则={snapshot.get('audit_contract')}"
+        )
 
     lines.append("")
     lines.append("主决策：")
@@ -1244,6 +1376,7 @@ def generate_weekly_execution_review(
     combined_nav = 1.0
     nav_curve = [1.0]
     day_reviews: List[Dict[str, Any]] = []
+    quality_rows: List[Dict[str, float]] = []
     constraint_checks = {
         "max_single_weight_ok": True,
         "max_futures_weight_ok": True,
@@ -1270,6 +1403,7 @@ def generate_weekly_execution_review(
         shfe_actions = [item for item in execution_actions if str(item.get("market")) == "SHFE"]
         hk_eval = _evaluate_execution_actions(hk_actions, current_prices)
         shfe_eval = _evaluate_execution_actions(shfe_actions, current_prices)
+        quality_rows.extend([hk_eval, shfe_eval])
 
         for bucket in [hk_actions, shfe_actions]:
             for action in bucket:
@@ -1321,6 +1455,34 @@ def generate_weekly_execution_review(
         "combined_return": round(combined_nav - 1.0, 6),
         "max_drawdown": round(max_drawdown, 6),
         "constraint_checks": constraint_checks,
+        "quality_metrics": _aggregate_weekly_quality_metrics(quality_rows),
+    }
+
+
+def _aggregate_weekly_quality_metrics(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    active = [row for row in rows if int(row.get("risk_asset_count", 0) or 0) > 0]
+    if not active:
+        return {
+            "win_rate": 0.0,
+            "payoff_ratio": 0.0,
+            "elasticity": 0.0,
+            "slippage_bps": 0.0,
+            "execution_quality": "no_directional_fill",
+            "failure_attribution": ["no_directional_actions"],
+        }
+    weights = [int(row.get("risk_asset_count", 0) or 0) for row in active]
+    total_weight = sum(weights) or 1
+    win_rate = sum(float(row.get("win_rate", 0.0)) * weight for row, weight in zip(active, weights)) / total_weight
+    payoff = sum(float(row.get("payoff_ratio", 0.0)) * weight for row, weight in zip(active, weights)) / total_weight
+    elasticity = sum(float(row.get("elasticity", 0.0)) * weight for row, weight in zip(active, weights)) / total_weight
+    failures = sorted({str(row.get("failure_attribution")) for row in active if row.get("failure_attribution")})
+    return {
+        "win_rate": round(float(win_rate), 6),
+        "payoff_ratio": round(float(payoff), 6),
+        "elasticity": round(float(elasticity), 6),
+        "slippage_bps": 0.0,
+        "execution_quality": "close_to_close_proxy_until_broker_fills_are_connected",
+        "failure_attribution": failures,
     }
 
 
