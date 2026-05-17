@@ -26,6 +26,8 @@ from enum import Enum
 import warnings
 warnings.filterwarnings('ignore')
 
+from ..futures_specs import calculate_futures_margin, calculate_futures_notional, futures_contract_multiplier
+
 
 class PositionSide(Enum):
     """持仓方向"""
@@ -47,6 +49,32 @@ class FuturesContract:
     open_interest: float = 0.0  # 持仓量
     current_price: float = 0.0
     margin_rate: float = 0.15  # 保证金比例（默认15%）
+    contract_multiplier: float = 0.0  # 交易乘数，例如 CU=5吨/手
+
+    def __post_init__(self) -> None:
+        if not self.contract_multiplier or self.contract_multiplier <= 0:
+            self.contract_multiplier = futures_contract_multiplier(self.symbol or self.underlying)
+
+    def notional_value(self, contracts_count: int = 1, price: Optional[float] = None) -> float:
+        """合约名义价值 = 最新价 * 交易乘数 * 手数。"""
+        effective_price = self.current_price if price is None else price
+        return calculate_futures_notional(
+            self.symbol or self.underlying,
+            effective_price,
+            lots=contracts_count,
+            multiplier=self.contract_multiplier,
+        )
+
+    def margin_requirement(self, contracts_count: int = 1, price: Optional[float] = None) -> float:
+        """保证金 = 最新价 * 交易乘数 * 手数 * 保证金率。"""
+        effective_price = self.current_price if price is None else price
+        return calculate_futures_margin(
+            self.symbol or self.underlying,
+            effective_price,
+            lots=contracts_count,
+            margin_rate=self.margin_rate,
+            multiplier=self.contract_multiplier,
+        )
 
     @property
     def delivery_date(self) -> str:
@@ -88,8 +116,8 @@ class FuturesPosition:
     def current_value(self) -> float:
         """当前市值"""
         if self.exit_price:
-            return self.exit_price * self.contracts * self.contract.margin_rate
-        return self.entry_price * self.contracts * self.contract.margin_rate
+            return self.contract.notional_value(self.contracts, price=self.exit_price)
+        return self.contract.notional_value(self.contracts, price=self.entry_price)
 
     @property
     def pnl(self) -> float:
@@ -101,7 +129,7 @@ class FuturesPosition:
         if self.side == PositionSide.SHORT:
             price_diff = -price_diff
 
-        return price_diff * self.contracts
+        return price_diff * self.contracts * self.contract.contract_multiplier
 
     @property
     def pnl_pct(self) -> float:
@@ -382,11 +410,8 @@ class FarMonthFuturesStrategy:
         返回:
             (保证金需求, 预留资金)
         """
-        # 计算合约价值
-        contract_value = contract.current_price * contracts_count
-
-        # 计算保证金
-        margin_required = contract_value * contract.margin_rate
+        # 计算保证金：最新价 * 交易乘数 * 手数 * 保证金率
+        margin_required = contract.margin_requirement(contracts_count)
 
         # 预留资金 = 保证金（1倍）
         reserve_capital = margin_required
@@ -399,8 +424,8 @@ class FarMonthFuturesStrategy:
             # 调整到正好50%风险度
             target_reserve = margin_required
             target_total = margin_required / self.max_risk_level
-            adjusted_contracts = int((target_total * contract.margin_rate) / contract.current_price)
-            margin_required = contract.current_price * adjusted_contracts * contract.margin_rate
+            adjusted_contracts = int((target_total * contract.margin_rate) / (contract.current_price * contract.contract_multiplier))
+            margin_required = contract.margin_requirement(adjusted_contracts)
             reserve_capital = margin_required
             contracts_count = adjusted_contracts
 
@@ -533,7 +558,7 @@ class FarMonthFuturesStrategy:
             合约数量
         """
         # 计算单个合约保证金
-        single_contract_margin = contract.current_price * contract.margin_rate
+        single_contract_margin = contract.margin_requirement(1)
 
         # 可用保证金（50%风险度）
         available_margin = available_capital * 0.50
@@ -541,7 +566,7 @@ class FarMonthFuturesStrategy:
         # 计算合约数量
         contracts = int(available_margin / single_contract_margin)
 
-        return max(1, contracts)
+        return max(0, contracts)
 
     def enter_position(self, contract: FuturesContract, side: PositionSide,
                       entry_date: datetime, capital: float) -> FuturesPosition:
@@ -559,6 +584,11 @@ class FarMonthFuturesStrategy:
         """
         # 计算合约数量
         contracts = self.calculate_position_size(contract, capital)
+        if contracts <= 0:
+            raise ValueError(
+                f"资金不足，无法开 1 手 {contract.symbol}: "
+                f"需要保证金 {contract.margin_requirement(1):,.2f}，可用资金 {capital:,.2f}"
+            )
 
         # 计算保证金和预留资金
         margin_used, reserve_capital = self.calculate_margin_requirement(

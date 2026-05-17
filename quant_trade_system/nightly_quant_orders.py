@@ -16,6 +16,7 @@ import pandas as pd
 from .causal_ai import AccountHealthMonitor, EnhancedCausalTradingAgent
 from .core.causal import CausalFactorLibrary, CrossAssetCausalEngine, GameCausalAnalysisEngine, SelfIteratingCausalEngine
 from .factors.factor_library import FactorLibrary
+from .futures_specs import build_one_lot_margin_table
 from .universe_provider import MarketUniverseProvider
 
 
@@ -572,6 +573,7 @@ def _materialize_execution_actions(
         if action_name == "TAIL_HEDGE":
             symbol = tail_hedge_symbol
             snapshot = price_map.get(symbol)
+            reference_close = float(snapshot.get("close", 0.0)) if snapshot else 0.0
             execution_actions.append(
                 {
                     "market": market_upper,
@@ -581,10 +583,11 @@ def _materialize_execution_actions(
                     "target_weight": target_weight,
                     "stop_loss_pct": 0.03,
                     "take_profit_pct": 0.06,
-                    "reference_close": float(snapshot.get("close", 0.0)) if snapshot else 0.0,
+                    "reference_close": reference_close,
                     "reference_date": str(snapshot.get("date")) if snapshot else target_date,
                     "return_model": "close_to_close",
                     "reason": action.get("reason", ""),
+                    **_futures_margin_fields(market_upper, symbol, reference_close, action.get("margin_rate")),
                 }
             )
             continue
@@ -606,17 +609,39 @@ def _materialize_execution_actions(
             continue
         symbol = str(action.get("symbol"))
         snapshot = price_map.get(symbol)
+        reference_close = float(snapshot.get("close", 0.0)) if snapshot else 0.0
+        futures_margin = _futures_margin_fields(market_upper, symbol, reference_close, action.get("margin_rate"))
         execution_actions.append(
             {
                 "market": market_upper,
                 "bucket_action": action_name,
                 **action,
-                "reference_close": float(snapshot.get("close", 0.0)) if snapshot else 0.0,
+                "reference_close": reference_close,
                 "reference_date": str(snapshot.get("date")) if snapshot else target_date,
                 "return_model": "close_to_close",
+                **futures_margin,
             }
         )
     return execution_actions
+
+
+def _futures_margin_fields(
+    market: str,
+    symbol: str,
+    reference_close: float,
+    margin_rate: Optional[float] = None,
+) -> Dict[str, Any]:
+    if market in {"US", "HK"} or reference_close <= 0:
+        return {}
+    overrides = {symbol: float(margin_rate)} if margin_rate is not None else None
+    row = build_one_lot_margin_table({symbol: reference_close}, overrides)[0]
+    return {
+        "contract_multiplier": row["contract_multiplier"],
+        "margin_rate": row["margin_rate"],
+        "one_lot_notional": row["one_lot_notional"],
+        "one_lot_min_margin": row["one_lot_margin"],
+        "margin_formula": "latest_price * contract_multiplier * margin_rate",
+    }
 
 
 def _build_execution_instruction(action: Dict[str, Any]) -> str:
@@ -628,6 +653,13 @@ def _build_execution_instruction(action: Dict[str, Any]) -> str:
             f"目标权重 {float(action.get('target_weight', 0.0)) * 100:.1f}%。"
         )
     line = _build_instruction(action, float(action.get("reference_close", 0.0)))
+    if action.get("one_lot_min_margin") is not None:
+        line = (
+            f"{line}，1手最低保证金 {float(action.get('one_lot_min_margin', 0.0)):,.2f} "
+            f"= {float(action.get('reference_close', 0.0)):,.2f} * "
+            f"{float(action.get('contract_multiplier', 1.0)):g} * "
+            f"{float(action.get('margin_rate', 0.0)):.2%}"
+        )
     return f"{action.get('bucket_action')} -> {line}"
 
 

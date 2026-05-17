@@ -138,6 +138,24 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertEqual(execution[1]["symbol"], "USD_CASH")
         self.assertEqual(execution[1]["action"], "HOLD")
 
+    def test_materialize_futures_action_includes_one_lot_margin(self) -> None:
+        actions = [
+            {
+                "action": "LONG",
+                "symbol": "CU2607",
+                "target_weight": 0.2,
+                "confidence": 0.7,
+                "stop_loss_pct": 0.03,
+                "take_profit_pct": 0.06,
+                "margin_rate": 0.17,
+            }
+        ]
+        price_map = {"CU2607": {"date": "2026-05-11", "close": 74_717.64705882352}}
+        execution = _materialize_execution_actions(actions, "SHFE", price_map, "2026-05-11")
+        self.assertEqual(execution[0]["contract_multiplier"], 5.0)
+        self.assertAlmostEqual(execution[0]["one_lot_min_margin"], 63_510.0, places=2)
+        self.assertEqual(execution[0]["margin_formula"], "latest_price * contract_multiplier * margin_rate")
+
     def test_evaluate_execution_actions_quantifies_nav(self) -> None:
         actions = [
             {

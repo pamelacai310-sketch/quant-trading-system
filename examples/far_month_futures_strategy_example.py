@@ -86,6 +86,7 @@ def example_2_margin_and_reserve():
     print(f"合约信息:")
     print(f"  合约: {contract.symbol}")
     print(f"  当前价: ${contract.current_price}")
+    print(f"  交易乘数: {contract.contract_multiplier:g}")
     print(f"  保证金比例: {contract.margin_rate*100:.0f}%")
 
     # 计算不同合约数量的资金需求
@@ -94,7 +95,7 @@ def example_2_margin_and_reserve():
     print("-" * 80)
 
     for contracts_count in [1, 5, 10, 20, 50]:
-        contract_value = contract.current_price * contracts_count
+        contract_value = contract.notional_value(contracts_count)
         margin, reserve = strategy.calculate_margin_requirement(contract, contracts_count)
         risk_level = margin / (margin + reserve) if (margin + reserve) > 0 else 0
 
@@ -383,18 +384,21 @@ def example_7_risk_management():
             'name': '场景1: 正常配置',
             'contracts': 10,
             'price': 4000,
+            'multiplier': 10,
             'margin_rate': 0.15,
         },
         {
             'name': '场景2: 激进配置',
             'contracts': 20,
             'price': 4000,
+            'multiplier': 10,
             'margin_rate': 0.15,
         },
         {
             'name': '场景3: 超额配置',
             'contracts': 30,
             'price': 4000,
+            'multiplier': 10,
             'margin_rate': 0.15,
         },
     ]
@@ -404,7 +408,7 @@ def example_7_risk_management():
         print(f"  合约数: {scenario['contracts']}")
         print(f"  合约价格: ${scenario['price']}")
 
-        contract_value = scenario['price'] * scenario['contracts']
+        contract_value = scenario['price'] * scenario['multiplier'] * scenario['contracts']
         margin = contract_value * scenario['margin_rate']
         reserve = margin  # 1倍预留
         total = margin + reserve
@@ -419,7 +423,7 @@ def example_7_risk_management():
         if risk_level > 0.50:
             print(f"  ⚠️  风险度超过50%，需要调整")
             # 计算调整后的合约数
-            target_contracts = int((total * 0.50) / (scenario['price'] * scenario['margin_rate']))
+            target_contracts = int((total * 0.50) / (scenario['price'] * scenario['multiplier'] * scenario['margin_rate']))
             print(f"  调整为: {target_contracts}份合约")
         else:
             print(f"  ✅ 风险度符合要求")

@@ -139,7 +139,8 @@ class UnifiedPosition:
             price_diff = self.exit_price - self.entry_price
             if self.side == PositionSide.SHORT:
                 price_diff = -price_diff
-            return price_diff * self.contracts if self.contracts else 0.0
+            multiplier = self.futures_contract.contract_multiplier if self.futures_contract else 1.0
+            return price_diff * self.contracts * multiplier if self.contracts else 0.0
 
     @property
     def pnl_pct(self) -> float:
@@ -541,6 +542,11 @@ class HybridSwingStrategy:
         """开仓期货"""
         # 计算合约数量
         contracts = self._calculate_futures_contracts(contract, capital)
+        if contracts <= 0:
+            raise ValueError(
+                f"资金不足，无法开 1 手 {contract.symbol}: "
+                f"需要保证金 {contract.margin_requirement(1):,.2f}，可用资金 {capital:,.2f}"
+            )
 
         # 计算保证金和预留资金
         margin_used, reserve_capital = self._calculate_futures_margin(contract, contracts)
@@ -581,21 +587,18 @@ class HybridSwingStrategy:
         available_margin = capital * 0.50
 
         # 单个合约保证金
-        single_contract_margin = contract.current_price * contract.margin_rate
+        single_contract_margin = contract.margin_requirement(1)
 
         # 计算合约数量
-        contracts = int(available_margin / single_contract_margin)
+        contracts = int(available_margin / single_contract_margin) if single_contract_margin > 0 else 0
 
-        return max(1, contracts)
+        return max(0, contracts)
 
     def _calculate_futures_margin(self, contract: FuturesContract,
                                 contracts_count: int) -> Tuple[float, float]:
         """计算期货保证金和预留资金"""
-        # 计算合约价值
-        contract_value = contract.current_price * contracts_count
-
-        # 计算保证金
-        margin_required = contract_value * contract.margin_rate
+        # 计算保证金：最新价 * 交易乘数 * 手数 * 保证金率
+        margin_required = contract.margin_requirement(contracts_count)
 
         # 预留资金 = 保证金（1倍）
         reserve_capital = margin_required
@@ -607,8 +610,8 @@ class HybridSwingStrategy:
         if risk_level > self.futures_risk_level:
             # 调整到正好50%风险度
             target_total = margin_required / self.futures_risk_level
-            adjusted_contracts = int(target_total * contract.margin_rate / contract.current_price)
-            margin_required = contract.current_price * adjusted_contracts * contract.margin_rate
+            adjusted_contracts = int(target_total * contract.margin_rate / (contract.current_price * contract.contract_multiplier))
+            margin_required = contract.margin_requirement(adjusted_contracts)
             reserve_capital = margin_required
             contracts_count = adjusted_contracts
 
