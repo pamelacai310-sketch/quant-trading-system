@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from collections import defaultdict
@@ -34,6 +35,10 @@ SHFE_TAIL_HEDGE_SYMBOL = CN_FUTURES_TAIL_HEDGE_SYMBOL
 SHFE_SAFE_RESERVE_SYMBOL = CN_FUTURES_SAFE_RESERVE_SYMBOL
 US_EXECUTION_SUPPORT_UNIVERSE = [US_TAIL_HEDGE_SYMBOL]
 HK_EXECUTION_SUPPORT_UNIVERSE = [HK_TAIL_HEDGE_SYMBOL]
+FUTURES_SETTLE_FALLBACK_ENV = "QTS_FUTURES_SETTLE_FALLBACK"
+FUTURES_SETTLE_FALLBACK_DAILY = "daily_main_contract"
+US_CLOSE_AVAILABLE_CHINA_HOUR = 5
+US_CLOSE_AVAILABLE_CHINA_MINUTE = 30
 
 
 @dataclass
@@ -191,6 +196,26 @@ def _previous_weekday(day: date) -> date:
     return cursor
 
 
+def _us_t_close_available(target_day: date, as_of: Optional[datetime] = None) -> bool:
+    """Return whether the US cash close for target_day should be available in China time."""
+    current = as_of or datetime.now(CHINA_TZ)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=CHINA_TZ)
+    current = current.astimezone(CHINA_TZ)
+    current_day = current.date()
+    if current_day > target_day + timedelta(days=1):
+        return True
+    if current_day == target_day + timedelta(days=1):
+        marker = current.hour * 60 + current.minute
+        close_marker = US_CLOSE_AVAILABLE_CHINA_HOUR * 60 + US_CLOSE_AVAILABLE_CHINA_MINUTE
+        return marker >= close_marker
+    return False
+
+
+def _futures_settle_fallback_mode() -> str:
+    return os.getenv(FUTURES_SETTLE_FALLBACK_ENV, FUTURES_SETTLE_FALLBACK_DAILY).strip().lower()
+
+
 def _cash_price_snapshot(target_date: str) -> Dict[str, Any]:
     return {"date": target_date, "close": 1.0}
 
@@ -284,7 +309,12 @@ def _fetch_us_data(yf: Any, symbols: Iterable[str], end_date: Optional[str] = No
     return data
 
 
-def _validate_us_close(us_data: Dict[str, pd.DataFrame], target_day: date, max_lookback: int = 4) -> MarketValidation:
+def _validate_us_close(
+    us_data: Dict[str, pd.DataFrame],
+    target_day: date,
+    max_lookback: int = 4,
+    as_of: Optional[datetime] = None,
+) -> MarketValidation:
     target_date = target_day.strftime("%Y-%m-%d")
     actual_date, sample_count = _latest_sample_date(us_data)
     if not actual_date:
@@ -295,6 +325,16 @@ def _validate_us_close(us_data: Dict[str, pd.DataFrame], target_day: date, max_l
             passed=False,
             reason="美股样本日线为空，无法验证最近完整收盘。",
             sample_count=0,
+        )
+
+    if actual_date == target_date and _us_t_close_available(target_day, as_of=as_of):
+        return MarketValidation(
+            market="US",
+            requested_date=target_date,
+            actual_date=actual_date,
+            passed=True,
+            reason="美股样本最新日线一致落在 T 日，且运行时点已过美股现金市场收盘可用窗口。",
+            sample_count=sample_count,
         )
 
     expected_date = _previous_weekday(target_day)
@@ -388,9 +428,30 @@ def _validate_futures_close(
     futures_data: Dict[str, pd.DataFrame],
     settle_validation: MarketValidation,
 ) -> MarketValidation:
-    if not settle_validation.passed or settle_validation.actual_date is None:
-        return settle_validation
     actual_date, sample_count = _latest_sample_date(futures_data)
+    if not settle_validation.passed or settle_validation.actual_date is None:
+        fallback_mode = _futures_settle_fallback_mode()
+        if actual_date and fallback_mode in {FUTURES_SETTLE_FALLBACK_DAILY, "daily", "main_contract", "recent_daily"}:
+            requested_date = settle_validation.requested_date
+            if actual_date == requested_date:
+                reason = (
+                    f"{exchange} 结算参数不可用，按 {FUTURES_SETTLE_FALLBACK_ENV}={fallback_mode} "
+                    "显式降级到主力连续合约 T 日日线。"
+                )
+            else:
+                reason = (
+                    f"{exchange} 结算参数不可用，按 {FUTURES_SETTLE_FALLBACK_ENV}={fallback_mode} "
+                    f"显式降级到主力连续合约最近有效交易日 {actual_date}。"
+                )
+            return MarketValidation(
+                market=exchange,
+                requested_date=requested_date,
+                actual_date=actual_date,
+                passed=True,
+                reason=reason,
+                sample_count=sample_count,
+            )
+        return settle_validation
     if not actual_date:
         return MarketValidation(
             market=exchange,
@@ -438,6 +499,95 @@ def _build_futures_peer_datasets(
     return peer_datasets
 
 
+def _market_status_from_validation(validation: MarketValidation) -> Dict[str, Any]:
+    if validation.passed:
+        return {
+            "status": "OK",
+            "tradable": True,
+            "actual_date": validation.actual_date,
+            "reason": validation.reason,
+        }
+    return {
+        "status": "NO_TRADE_DATA_INVALID",
+        "tradable": False,
+        "actual_date": validation.actual_date,
+        "reason": validation.reason,
+    }
+
+
+def _build_market_status(
+    us_validation: MarketValidation,
+    hk_validation: MarketValidation,
+    futures_market_data: Dict[str, Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    status = {
+        "US": _market_status_from_validation(us_validation),
+        "HK": _market_status_from_validation(hk_validation),
+    }
+    for exchange, payload in futures_market_data.items():
+        status[exchange] = _market_status_from_validation(payload["validation"])
+    return status
+
+
+def _market_is_tradable(market_status: Dict[str, Dict[str, Any]], market: str) -> bool:
+    return bool(market_status.get(market.upper(), {}).get("tradable"))
+
+
+def _any_market_tradable(market_status: Dict[str, Dict[str, Any]]) -> bool:
+    return any(bool(item.get("tradable")) for item in market_status.values())
+
+
+def _all_markets_tradable(market_status: Dict[str, Dict[str, Any]]) -> bool:
+    return all(bool(item.get("tradable")) for item in market_status.values())
+
+
+def _real_rates_rising(market_context: Dict[str, Any]) -> bool:
+    explicit = market_context.get("real_rates_rising")
+    if explicit is not None:
+        return bool(explicit)
+    direction = str(market_context.get("real_rates_direction", "")).lower()
+    if direction in {"up", "rising", "higher"}:
+        return True
+    macro = market_context.get("macro_signals", {})
+    if isinstance(macro, dict):
+        return str(macro.get("real_rates_direction", "")).lower() in {"up", "rising", "higher"}
+    return False
+
+
+def _tail_hedge_effectiveness_gate(
+    frame: Optional[pd.DataFrame],
+    market_context: Dict[str, Any],
+    short_window: int = 20,
+) -> Dict[str, Any]:
+    if frame is None or frame.empty or len(frame) < max(5, short_window):
+        return {
+            "active": True,
+            "mode": "tail_hedge",
+            "reason": "尾部保护价格历史不足，保持默认保护腿但保留复盘监控。",
+        }
+    close = frame["close"].astype(float)
+    latest_close = float(close.iloc[-1])
+    short_ma = float(close.rolling(short_window, min_periods=max(5, short_window // 2)).mean().iloc[-1])
+    real_rates_up = _real_rates_rising(market_context)
+    if latest_close < short_ma and real_rates_up:
+        return {
+            "active": False,
+            "mode": "cash_instead_of_gold",
+            "latest_close": round(latest_close, 6),
+            "short_ma": round(short_ma, 6),
+            "real_rates_rising": True,
+            "reason": "黄金/黄金ETF低于短均线且实际利率上行，尾部保护有效性不足，切换为现金安全端。",
+        }
+    return {
+        "active": True,
+        "mode": "tail_hedge",
+        "latest_close": round(latest_close, 6),
+        "short_ma": round(short_ma, 6),
+        "real_rates_rising": real_rates_up,
+        "reason": "尾部保护价格趋势或实际利率条件未触发失效门控。",
+    }
+
+
 def _build_market_context(cross_asset_engine: CrossAssetCausalEngine, qqq: pd.DataFrame, gold: pd.DataFrame, copper: pd.DataFrame) -> tuple[Dict[str, Any], Dict[str, Any]]:
     qqq_mom = _pct_change_over_window(qqq, 60)
     gold_mom = _pct_change_over_window(gold, 60)
@@ -467,6 +617,7 @@ def _build_market_context(cross_asset_engine: CrossAssetCausalEngine, qqq: pd.Da
             "gold": _directional_signal(gold_mom),
             "copper": _directional_signal(copper_mom),
         },
+        "real_rates_direction": "up" if gold_mom < 0 and copper_mom < 0 else "flat_or_down",
     }
     game_analysis = GameCausalAnalysisEngine().analyze(
         news_items=[],
@@ -555,6 +706,7 @@ def _materialize_execution_actions(
     market: str,
     price_map: Dict[str, Dict[str, Any]],
     target_date: str,
+    tail_hedge_gate: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     execution_actions: List[Dict[str, Any]] = []
     market_upper = market.upper()
@@ -571,6 +723,23 @@ def _materialize_execution_actions(
         action_name = str(action.get("action"))
         target_weight = float(action.get("target_weight", 0.0))
         if action_name == "TAIL_HEDGE":
+            gate = tail_hedge_gate or {"active": True, "mode": "tail_hedge"}
+            if not bool(gate.get("active", True)):
+                execution_actions.append(
+                    {
+                        "market": market_upper,
+                        "bucket_action": action_name,
+                        "action": "HOLD",
+                        "symbol": safe_reserve_symbol,
+                        "target_weight": target_weight,
+                        "reference_close": 1.0,
+                        "reference_date": target_date,
+                        "return_model": "cash_flat",
+                        "reason": f"{action.get('reason', '')}；{gate.get('reason', '尾部保护有效性门控切换现金')}",
+                        "tail_hedge_gate": gate,
+                    }
+                )
+                continue
             symbol = tail_hedge_symbol
             snapshot = price_map.get(symbol)
             reference_close = float(snapshot.get("close", 0.0)) if snapshot else 0.0
@@ -587,6 +756,7 @@ def _materialize_execution_actions(
                     "reference_date": str(snapshot.get("date")) if snapshot else target_date,
                     "return_model": "close_to_close",
                     "reason": action.get("reason", ""),
+                    "tail_hedge_gate": gate,
                     **_futures_margin_fields(market_upper, symbol, reference_close, action.get("margin_rate")),
                 }
             )
@@ -704,12 +874,26 @@ def _evaluate_execution_actions(
     gross_weight = 0.0
     futures_weight = 0.0
     realized_returns: List[float] = []
+    price_unavailable_count = 0
     for action in actions:
         pnl = _compute_execution_action_return(action, current_prices)
         weight = float(action.get("target_weight", 0.0))
         symbol = str(action.get("symbol"))
         is_cash = action.get("return_model") == "cash_flat" or symbol.endswith("_CASH")
         if pnl is None:
+            price_unavailable_count += 1
+            details.append(
+                {
+                    "symbol": symbol,
+                    "action": action.get("action"),
+                    "bucket_action": action.get("bucket_action"),
+                    "target_weight": weight,
+                    "reference_close": float(action.get("reference_close", 0.0)),
+                    "current_close": None,
+                    "return_pct": None,
+                    "price_status": "price_unavailable",
+                }
+            )
             continue
         weighted_return += weight * pnl
         if not is_cash:
@@ -726,6 +910,7 @@ def _evaluate_execution_actions(
                 "reference_close": float(action.get("reference_close", 0.0)),
                 "current_close": float(current_prices.get(symbol, {}).get("close", action.get("reference_close", 0.0))),
                 "return_pct": round(pnl, 6),
+                "price_status": "ok",
             }
         )
     wins = [item for item in realized_returns if item > 0]
@@ -747,7 +932,12 @@ def _evaluate_execution_actions(
         "elasticity": round(float(elasticity), 6),
         "slippage_bps": 0.0,
         "execution_quality": "close_to_close_proxy",
-        "failure_attribution": "not_evaluated" if realized_returns else "no_directional_fill",
+        "price_unavailable_count": price_unavailable_count,
+        "failure_attribution": (
+            "price_unavailable"
+            if price_unavailable_count and not realized_returns
+            else ("partial_price_unavailable" if price_unavailable_count else ("not_evaluated" if realized_returns else "no_directional_fill"))
+        ),
         "details": details,
     }
 
@@ -889,11 +1079,12 @@ def _build_cycle_payload(
     price_map: Dict[str, Dict[str, Any]],
     execution_price_map: Dict[str, Dict[str, Any]],
     target_date: str,
+    tail_hedge_gate: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     actions = cycle.get("trade_actions", [])
     reports = {symbol: _summarize_symbol_report(item) for symbol, item in cycle.get("symbols", {}).items()}
     primary_lines, primary_actions = _classify_primary_actions(actions, price_map)
-    execution_actions = _materialize_execution_actions(actions, market, execution_price_map, target_date)
+    execution_actions = _materialize_execution_actions(actions, market, execution_price_map, target_date, tail_hedge_gate)
     return {
         "cycle_status": cycle.get("status"),
         "actions": actions,
@@ -985,6 +1176,14 @@ def _append_market_summary(
     prefix: str,
     section_lines: List[str],
 ) -> None:
+    market_key = prefix.upper()
+    market_status = report.get("market_status", {}).get(market_key, {})
+    if market_status and not bool(market_status.get("tradable")):
+        section_lines.append(
+            f"- {label}：NO_TRADE_DATA_INVALID；{market_status.get('reason', '数据校验未通过，本市场不出单。')}"
+        )
+        return
+
     primary_key = f"{prefix}_primary_lines"
     secondary_key = f"{prefix}_secondary_lines"
     execution_key = f"{prefix}_execution_lines"
@@ -1039,6 +1238,7 @@ def generate_report(target_day: date) -> Dict[str, Any]:
         futures_last[exchange] = _latest_price_map(exchange_data)
     futures_execution_data = _fetch_futures_data(ak, [CN_FUTURES_TAIL_HEDGE_SYMBOL], end_date=target_date)
     futures_execution_last = _latest_price_map(futures_execution_data)
+    market_status = _build_market_status(us_validation, hk_validation, futures_market_data)
 
     report: Dict[str, Any] = {
         "status": "failed_validation",
@@ -1057,6 +1257,7 @@ def generate_report(target_day: date) -> Dict[str, Any]:
         "us_execution_last": _latest_price_map(us_execution_data),
         "hk_execution_last": _latest_price_map(hk_execution_data),
         "futures_execution_last": futures_execution_last,
+        "market_status": market_status,
         "recap_lines": [],
         "primary_actions": [],
         "report_text": "",
@@ -1076,9 +1277,7 @@ def generate_report(target_day: date) -> Dict[str, Any]:
     current_price_map[CN_FUTURES_SAFE_RESERVE_SYMBOL] = _cash_price_snapshot(target_date)
     report["recap_lines"] = _build_recap(previous_report, current_price_map)
 
-    if not us_validation.passed or not hk_validation.passed or not all(
-        item["validation"].passed for item in futures_market_data.values()
-    ):
+    if not _any_market_tradable(market_status):
         report["evidence_snapshot"] = _build_evidence_snapshot(report, {})
         report["report_text"] = render_report_text(report)
         _save_report(report_dir, report)
@@ -1104,20 +1303,37 @@ def generate_report(target_day: date) -> Dict[str, Any]:
         copper_peer,
     )
     market_context, market_data = _build_market_context(cross_asset_engine, qqq, gold, copper_proxy)
-    us_cycle = self_iterating_engine.run_learning_cycle(
-        us_data,
-        benchmark_frame=qqq,
-        market_context=market_context,
-        global_peer_datasets={},
+    tail_hedge_gates = {
+        "US": _tail_hedge_effectiveness_gate(us_execution_data.get(US_TAIL_HEDGE_SYMBOL), market_context),
+        "HK": _tail_hedge_effectiveness_gate(hk_execution_data.get(HK_TAIL_HEDGE_SYMBOL), market_context),
+        "CN_FUTURES": _tail_hedge_effectiveness_gate(futures_execution_data.get(CN_FUTURES_TAIL_HEDGE_SYMBOL), market_context),
+    }
+    report["tail_hedge_gates"] = tail_hedge_gates
+    us_cycle = (
+        self_iterating_engine.run_learning_cycle(
+            us_data,
+            benchmark_frame=qqq,
+            market_context=market_context,
+            global_peer_datasets={},
+        )
+        if _market_is_tradable(market_status, "US")
+        else {"status": "NO_TRADE_DATA_INVALID", "symbols": {}, "portfolio_plan": None, "trade_actions": []}
     )
-    hk_cycle = self_iterating_engine.run_learning_cycle(
-        hk_data,
-        benchmark_frame=None,
-        market_context=market_context,
-        global_peer_datasets={},
+    hk_cycle = (
+        self_iterating_engine.run_learning_cycle(
+            hk_data,
+            benchmark_frame=None,
+            market_context=market_context,
+            global_peer_datasets={},
+        )
+        if _market_is_tradable(market_status, "HK")
+        else {"status": "NO_TRADE_DATA_INVALID", "symbols": {}, "portfolio_plan": None, "trade_actions": []}
     )
     futures_cycles: Dict[str, Dict[str, Any]] = {}
     for exchange, payload in futures_market_data.items():
+        if not _market_is_tradable(market_status, exchange):
+            futures_cycles[exchange] = {"status": "NO_TRADE_DATA_INVALID", "symbols": {}, "portfolio_plan": None, "trade_actions": []}
+            continue
         exchange_data = payload["data"]
         futures_cycles[exchange] = self_iterating_engine.run_learning_cycle(
             exchange_data,
@@ -1129,7 +1345,7 @@ def generate_report(target_day: date) -> Dict[str, Any]:
 
     report.update(
         {
-            "status": "ok",
+            "status": "ok" if _all_markets_tradable(market_status) else "partial_ok",
             "market_context": market_context,
             "market_data": market_data,
             "us_cycle_status": us_cycle.get("status"),
@@ -1169,6 +1385,7 @@ def generate_report(target_day: date) -> Dict[str, Any]:
                 report["us_last"],
                 us_execution_price_map,
                 target_date,
+                tail_hedge_gates.get("US"),
             ).items()
         }
     )
@@ -1181,6 +1398,7 @@ def generate_report(target_day: date) -> Dict[str, Any]:
                 report["hk_last"],
                 hk_execution_price_map,
                 target_date,
+                tail_hedge_gates.get("HK"),
             ).items()
         }
     )
@@ -1194,7 +1412,14 @@ def generate_report(target_day: date) -> Dict[str, Any]:
             **report["futures_execution_last"],
             CN_FUTURES_SAFE_RESERVE_SYMBOL: _cash_price_snapshot(target_date),
         }
-        payload = _build_cycle_payload(exchange, cycle, exchange_price_map, execution_price_map, target_date)
+        payload = _build_cycle_payload(
+            exchange,
+            cycle,
+            exchange_price_map,
+            execution_price_map,
+            target_date,
+            tail_hedge_gates.get("CN_FUTURES"),
+        )
         report[f"{exchange.lower()}_actions"] = payload["actions"]
         report[f"{exchange.lower()}_reports"] = payload["reports"]
         report[f"{exchange.lower()}_primary_lines"] = payload["primary_lines"]
@@ -1291,15 +1516,21 @@ def render_report_text(report: Dict[str, Any]) -> str:
             f"{exchange}：passed={validation.get('passed')} requested={validation.get('requested_date')} "
             f"actual={validation.get('actual_date')}；{validation.get('reason')}"
         )
+    market_status = report.get("market_status", {})
+    if market_status:
+        lines.append("")
+        lines.append("市场出单状态：")
+        for market, status in market_status.items():
+            lines.append(f"{market}：{status.get('status')}；{status.get('reason')}")
 
     lines.append("")
     lines.append("复盘：")
     lines.extend([f"- {line}" for line in report.get("recap_lines", [])])
 
-    if report.get("status") != "ok":
+    if report.get("status") == "failed_validation":
         lines.append("")
         lines.append("结果：")
-        lines.append("- 本次任务因至少一个市场或期货交易所校验未全部通过，按硬规则直接失败退出，不生成新的美股/港股/中国期货交易指令。")
+        lines.append("- 本次任务没有任何市场通过数据校验，按硬规则直接失败退出，不生成新的交易指令。")
         return "\n".join(lines)
 
     regime = report.get("market_context", {}).get("cross_asset_regime", {})
@@ -1368,17 +1599,27 @@ def _fetch_historical_price_maps(target_date: str, hk_symbols: Iterable[str], sh
         if symbol.endswith("_CASH"):
             continue
         code = symbol.split(".")[0]
-        frame = _normalize_live_frame(ak.stock_hk_daily(symbol=code))
-        snapshot = _price_on_or_before(frame, target_date)
-        if snapshot:
-            price_map[symbol] = snapshot
+        try:
+            frame = _normalize_live_frame(ak.stock_hk_daily(symbol=code))
+            snapshot = _price_on_or_before(frame, target_date)
+            if snapshot:
+                price_map[symbol] = snapshot
+            else:
+                price_map[symbol] = {"date": target_date, "close": None, "price_unavailable": True, "reason": "no_price_on_or_before_target"}
+        except Exception as exc:  # noqa: BLE001
+            price_map[symbol] = {"date": target_date, "close": None, "price_unavailable": True, "reason": str(exc)}
     for symbol in shfe_symbols:
         if symbol.endswith("_CASH"):
             continue
-        frame = _normalize_live_frame(ak.futures_zh_daily_sina(symbol=symbol))
-        snapshot = _price_on_or_before(frame, target_date)
-        if snapshot:
-            price_map[symbol] = snapshot
+        try:
+            frame = _normalize_live_frame(ak.futures_zh_daily_sina(symbol=symbol))
+            snapshot = _price_on_or_before(frame, target_date)
+            if snapshot:
+                price_map[symbol] = snapshot
+            else:
+                price_map[symbol] = {"date": target_date, "close": None, "price_unavailable": True, "reason": "no_price_on_or_before_target"}
+        except Exception as exc:  # noqa: BLE001
+            price_map[symbol] = {"date": target_date, "close": None, "price_unavailable": True, "reason": str(exc)}
     return price_map
 
 
@@ -1492,29 +1733,37 @@ def generate_weekly_execution_review(
 
 
 def _aggregate_weekly_quality_metrics(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    price_unavailable_count = sum(int(row.get("price_unavailable_count", 0) or 0) for row in rows)
     active = [row for row in rows if int(row.get("risk_asset_count", 0) or 0) > 0]
     if not active:
+        failures = ["no_directional_actions"]
+        if price_unavailable_count:
+            failures.append("price_unavailable")
         return {
             "win_rate": 0.0,
             "payoff_ratio": 0.0,
             "elasticity": 0.0,
             "slippage_bps": 0.0,
             "execution_quality": "no_directional_fill",
-            "failure_attribution": ["no_directional_actions"],
+            "price_unavailable_count": price_unavailable_count,
+            "failure_attribution": failures,
         }
     weights = [int(row.get("risk_asset_count", 0) or 0) for row in active]
     total_weight = sum(weights) or 1
     win_rate = sum(float(row.get("win_rate", 0.0)) * weight for row, weight in zip(active, weights)) / total_weight
     payoff = sum(float(row.get("payoff_ratio", 0.0)) * weight for row, weight in zip(active, weights)) / total_weight
     elasticity = sum(float(row.get("elasticity", 0.0)) * weight for row, weight in zip(active, weights)) / total_weight
-    failures = sorted({str(row.get("failure_attribution")) for row in active if row.get("failure_attribution")})
+    failures = {str(row.get("failure_attribution")) for row in active if row.get("failure_attribution")}
+    if price_unavailable_count:
+        failures.add("price_unavailable")
     return {
         "win_rate": round(float(win_rate), 6),
         "payoff_ratio": round(float(payoff), 6),
         "elasticity": round(float(elasticity), 6),
         "slippage_bps": 0.0,
         "execution_quality": "close_to_close_proxy_until_broker_fills_are_connected",
-        "failure_attribution": failures,
+        "price_unavailable_count": price_unavailable_count,
+        "failure_attribution": sorted(failures),
     }
 
 

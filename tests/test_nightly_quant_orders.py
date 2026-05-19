@@ -1,20 +1,27 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 import unittest
 
 import pandas as pd
 
 from quant_trade_system.nightly_quant_orders import (
+    CHINA_TZ,
+    MarketValidation,
+    _aggregate_weekly_quality_metrics,
     _build_evidence_snapshot,
     _build_instruction,
+    _build_market_status,
     _build_recap,
     _evaluate_execution_actions,
     _materialize_execution_actions,
     _next_weekday,
     _observation_lines,
+    _tail_hedge_effectiveness_gate,
+    _validate_futures_close,
     _validate_hk_close,
     _validate_us_close,
+    render_report_text,
 )
 
 
@@ -51,6 +58,29 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertTrue(fallback.passed)
         self.assertFalse(stale.passed)
         self.assertEqual(fallback.actual_date, "2026-05-08")
+
+    def test_validate_us_close_accepts_t_after_us_session_is_available(self) -> None:
+        after_close = datetime(2026, 5, 16, 6, 0, tzinfo=CHINA_TZ)
+        before_close = datetime(2026, 5, 16, 4, 30, tzinfo=CHINA_TZ)
+        passed = _validate_us_close({"AAPL": _frame("2026-05-15", 215.0)}, date(2026, 5, 15), as_of=after_close)
+        failed = _validate_us_close({"AAPL": _frame("2026-05-15", 215.0)}, date(2026, 5, 15), as_of=before_close)
+        self.assertTrue(passed.passed)
+        self.assertIn("T 日", passed.reason)
+        self.assertFalse(failed.passed)
+
+    def test_validate_futures_close_falls_back_to_daily_when_settle_missing(self) -> None:
+        settle = MarketValidation(
+            market="DCE",
+            requested_date="2026-05-15",
+            actual_date=None,
+            passed=False,
+            reason="DCE 在回看窗口内都没有可验证的结算参数。",
+            sample_count=0,
+        )
+        validation = _validate_futures_close("DCE", {"I0": _frame("2026-05-15", 805.5)}, settle)
+        self.assertTrue(validation.passed)
+        self.assertEqual(validation.actual_date, "2026-05-15")
+        self.assertIn("显式降级", validation.reason)
 
     def test_build_instruction_uses_reference_close(self) -> None:
         long_line = _build_instruction(
@@ -138,6 +168,26 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertEqual(execution[1]["symbol"], "USD_CASH")
         self.assertEqual(execution[1]["action"], "HOLD")
 
+    def test_tail_hedge_gate_switches_ineffective_gold_to_cash(self) -> None:
+        dates = pd.date_range("2026-04-01", periods=25, freq="D")
+        frame = pd.DataFrame(
+            {
+                "date": dates.strftime("%Y-%m-%d"),
+                "open": [120.0 - idx for idx in range(25)],
+                "high": [121.0 - idx for idx in range(25)],
+                "low": [119.0 - idx for idx in range(25)],
+                "close": [120.0 - idx for idx in range(25)],
+                "volume": [1_000] * 25,
+            }
+        )
+        gate = _tail_hedge_effectiveness_gate(frame, {"real_rates_direction": "up"})
+        actions = [{"action": "TAIL_HEDGE", "symbol": "TAIL_RISK_PROTECTION", "target_weight": 0.2, "reason": "hedge"}]
+        execution = _materialize_execution_actions(actions, "HK", {"02840.HK": {"date": "2026-05-11", "close": 100.0}}, "2026-05-11", gate)
+        self.assertFalse(gate["active"])
+        self.assertEqual(execution[0]["action"], "HOLD")
+        self.assertEqual(execution[0]["symbol"], "HKD_CASH")
+        self.assertEqual(execution[0]["bucket_action"], "TAIL_HEDGE")
+
     def test_materialize_futures_action_includes_one_lot_margin(self) -> None:
         actions = [
             {
@@ -183,6 +233,72 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertAlmostEqual(summary["gross_weight"], 0.1)
         self.assertEqual(summary["risk_asset_count"], 1)
         self.assertIn("elasticity", summary)
+
+    def test_evaluate_execution_actions_records_price_unavailable(self) -> None:
+        actions = [
+            {
+                "market": "SHFE",
+                "bucket_action": "TAIL_HEDGE",
+                "action": "LONG",
+                "symbol": "AU0",
+                "target_weight": 0.1,
+                "reference_close": 1000.0,
+                "return_model": "close_to_close",
+            }
+        ]
+        summary = _evaluate_execution_actions(actions, {"AU0": {"close": None, "price_unavailable": True}})
+        self.assertEqual(summary["portfolio_return"], 0.0)
+        self.assertEqual(summary["price_unavailable_count"], 1)
+        self.assertEqual(summary["failure_attribution"], "price_unavailable")
+        self.assertEqual(summary["details"][0]["price_status"], "price_unavailable")
+
+    def test_weekly_quality_metrics_preserve_price_unavailable(self) -> None:
+        metrics = _aggregate_weekly_quality_metrics(
+            [
+                {
+                    "risk_asset_count": 1,
+                    "win_rate": 1.0,
+                    "payoff_ratio": 2.0,
+                    "elasticity": 1.5,
+                    "price_unavailable_count": 0,
+                    "failure_attribution": "not_evaluated",
+                },
+                {
+                    "risk_asset_count": 0,
+                    "price_unavailable_count": 1,
+                    "failure_attribution": "price_unavailable",
+                },
+            ]
+        )
+        self.assertEqual(metrics["price_unavailable_count"], 1)
+        self.assertIn("price_unavailable", metrics["failure_attribution"])
+
+    def test_render_report_text_marks_invalid_market_without_global_failure(self) -> None:
+        report = {
+            "status": "partial_ok",
+            "report_date": "2026-05-15",
+            "generated_at": "2026-05-16T06:00:00+08:00",
+            "repo": {"branch": "main", "head": "abc", "origin_main": "abc", "synced_with_origin_main": True},
+            "us_validation": {"passed": True, "requested_date": "2026-05-15", "actual_date": "2026-05-15", "reason": "ok"},
+            "hk_validation": {"passed": True, "requested_date": "2026-05-15", "actual_date": "2026-05-15", "reason": "ok"},
+            "futures_validations": {
+                "SHFE": {"passed": True, "requested_date": "2026-05-15", "actual_date": "2026-05-15", "reason": "ok"},
+                "DCE": {"passed": False, "requested_date": "2026-05-15", "actual_date": None, "reason": "settle unavailable"},
+            },
+            "market_status": {
+                "US": {"status": "OK", "tradable": True, "reason": "ok"},
+                "HK": {"status": "OK", "tradable": True, "reason": "ok"},
+                "SHFE": {"status": "OK", "tradable": True, "reason": "ok"},
+                "DCE": {"status": "NO_TRADE_DATA_INVALID", "tradable": False, "reason": "settle unavailable"},
+            },
+            "recap_lines": [],
+            "market_context": {"cross_asset_regime": {"regime": "test", "growth": 0.0, "inflation": 0.0, "liquidity": 0.0, "confidence": 1.0}},
+            "calendar_note": "next",
+            "evidence_snapshot": {},
+        }
+        text = render_report_text(report)
+        self.assertIn("DCE：NO_TRADE_DATA_INVALID", text)
+        self.assertNotIn("没有任何市场通过数据校验", text)
 
     def test_evidence_snapshot_links_models_features_and_confirmations(self) -> None:
         report = {
