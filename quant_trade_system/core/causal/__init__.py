@@ -30,6 +30,12 @@ from .cross_asset_causal_engine import (
     MacroRegimeSnapshot,
     OrthogonalizationMethod,
 )
+from .invariance_market_decoder import (
+    DecoderSnapshot,
+    HierarchicalHMMDecoder,
+    InvarianceMarketDecoder,
+    InvariantDecoderConfig,
+)
 from .self_iterating_causal_engine import (
     FeatureSelectionPolicy,
     LearningObjectiveConfig,
@@ -133,6 +139,10 @@ __all__ = [
     "MacroRegime",
     "MacroRegimeSnapshot",
     "OrthogonalizationMethod",
+    "DecoderSnapshot",
+    "HierarchicalHMMDecoder",
+    "InvarianceMarketDecoder",
+    "InvariantDecoderConfig",
     "FeatureSelectionPolicy",
     "LearningObjectiveConfig",
     "ObjectiveMetrics",

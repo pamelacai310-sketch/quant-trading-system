@@ -173,6 +173,11 @@ class SelfIteratingCausalEngineTests(unittest.TestCase):
         self.assertIn("global_peer_relative_momentum_20", matrix.columns)
         self.assertIn("global_peer_spillover_score", matrix.columns)
         self.assertGreater(float(matrix["global_peer_spillover_score"].abs().sum()), 0.0)
+        self.assertIn("invariance_vol_norm_ret_1", matrix.columns)
+        self.assertIn("hmm_prob_risk_on", matrix.columns)
+        self.assertIn("hmm_sub_prob_liquidity_stress", matrix.columns)
+        self.assertIn("kernel_analog_forward_mean", matrix.columns)
+        self.assertIn("noisy_channel_long_posterior", matrix.columns)
 
     def test_learning_cycle_tracks_global_peer_count_for_futures(self) -> None:
         rows = 120
@@ -205,6 +210,44 @@ class SelfIteratingCausalEngineTests(unittest.TestCase):
         )
         self.assertIn("CU2608", result["symbols"])
         self.assertEqual(result["symbols"]["CU2608"]["global_peer_count"], 1)
+        self.assertIn("invariance_decoder", result)
+        self.assertEqual(result["invariance_decoder"]["decoder_count"], 1)
+        self.assertIn("invariance_decoder", result["symbols"]["CU2608"])
+
+    def test_portfolio_penalty_uses_decoder_uncertainty_and_risk_off(self) -> None:
+        low_risk_plan = self.engine.optimize_portfolio(
+            [
+                {
+                    "symbol": "AAPL",
+                    "asset_type": "stock",
+                    "direction": "long",
+                    "raw_score": 0.8,
+                    "confidence": 0.7,
+                    "objective_score": 0.75,
+                    "selected_features": ["noisy_channel_long_posterior"],
+                    "decoder_state_entropy": 0.10,
+                    "decoder_risk_off_probability": 0.05,
+                }
+            ],
+            market_context={"crisis_probability": 0.12},
+        )
+        high_risk_plan = self.engine.optimize_portfolio(
+            [
+                {
+                    "symbol": "AAPL",
+                    "asset_type": "stock",
+                    "direction": "long",
+                    "raw_score": 0.8,
+                    "confidence": 0.7,
+                    "objective_score": 0.75,
+                    "selected_features": ["noisy_channel_long_posterior"],
+                    "decoder_state_entropy": 0.95,
+                    "decoder_risk_off_probability": 0.90,
+                }
+            ],
+            market_context={"crisis_probability": 0.12},
+        )
+        self.assertGreater(low_risk_plan.projected_objective_score, high_risk_plan.projected_objective_score)
 
     def test_validation_gate_marks_unstable_features_observation_only(self) -> None:
         idx = pd.RangeIndex(80)

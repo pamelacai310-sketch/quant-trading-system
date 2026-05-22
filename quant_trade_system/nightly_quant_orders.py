@@ -1122,6 +1122,11 @@ def _build_evidence_snapshot(
         name: cycle.get("feature_store_records", [])[:8]
         for name, cycle in cycles.items()
     }
+    decoder_records = {
+        name: cycle.get("invariance_decoder", {})
+        for name, cycle in cycles.items()
+        if cycle.get("invariance_decoder")
+    }
     return {
         "report_date": report.get("report_date"),
         "generated_at": report.get("generated_at"),
@@ -1146,6 +1151,7 @@ def _build_evidence_snapshot(
             for item in top_relations
         ],
         "causal_validation": validation_summaries,
+        "invariance_decoder": decoder_records,
         "model_versions": model_records,
         "feature_lineage": feature_records,
         "position_constraints": {
@@ -1553,6 +1559,15 @@ def render_report_text(report: Dict[str, Any]) -> str:
         lines.append("")
         lines.append("证据快照：")
         lines.append(f"- 因果验证：{validation_text or '本次无可交易因果边'}")
+        decoder_snapshot = snapshot.get("invariance_decoder", {})
+        if decoder_snapshot:
+            decoder_text = "; ".join(
+                f"{market}:active={item.get('active_count', 0)}/{item.get('decoder_count', 0)} "
+                f"entropy={float(item.get('avg_state_entropy', 0.0) or 0.0):.3f} "
+                f"risk_off={float(item.get('max_risk_off_probability', 0.0) or 0.0):.3f}"
+                for market, item in decoder_snapshot.items()
+            )
+            lines.append(f"- 不变性/HMM解码：{decoder_text}")
         lines.append(
             f"- 博弈确认：chains={len(snapshot.get('event_driven_causal_chains', []))} "
             f"relations={len(snapshot.get('sensitive_asset_confirmations', []))}，"

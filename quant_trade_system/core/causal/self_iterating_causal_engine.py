@@ -23,6 +23,7 @@ import pandas as pd
 
 from ...factors.factor_library import FactorLibrary
 from .causal_factor_library import AssetClass, CausalFactorLibrary
+from .invariance_market_decoder import InvarianceMarketDecoder, InvariantDecoderConfig
 from .research_governance import (
     CausalValidationLoop,
     ExperimentRegistry,
@@ -104,6 +105,8 @@ class SignalAllocation:
     selected_features: List[str]
     stop_loss_pct: float
     take_profit_pct: float
+    decoder_state_entropy: float = 1.0
+    decoder_risk_off_probability: float = 0.0
 
 
 @dataclass
@@ -131,6 +134,7 @@ class SelfIteratingCausalEngine:
         selection_policy: Optional[FeatureSelectionPolicy] = None,
         objective_config: Optional[LearningObjectiveConfig] = None,
         constraints: Optional[PortfolioConstraintConfig] = None,
+        invariant_decoder_config: Optional[InvariantDecoderConfig] = None,
     ) -> None:
         self.factor_library = factor_library or FactorLibrary()
         self.causal_factor_library = causal_factor_library or CausalFactorLibrary()
@@ -141,6 +145,8 @@ class SelfIteratingCausalEngine:
         self.feature_store = FeatureStore()
         self.experiment_registry = ExperimentRegistry()
         self.model_registry = ModelRegistry()
+        self.invariance_decoder = InvarianceMarketDecoder(invariant_decoder_config)
+        self.latest_decoder_snapshots: Dict[str, Dict[str, Any]] = {}
         self.latest_iteration: Dict[str, Any] = {}
 
     def describe_capabilities(self) -> Dict[str, Any]:
@@ -172,6 +178,12 @@ class SelfIteratingCausalEngine:
                 "experiment_registry_enabled": True,
                 "model_registry_enabled": True,
             },
+            "invariance_decoder": {
+                "enabled": True,
+                "version": "invariance_decoder_v1",
+                "features": ["invariance", "hmm", "kernel_analog", "noisy_channel_posteriors"],
+                "dependency_policy": "numpy_pandas_only",
+            },
             "quantized_causal_factor_count": len(self.causal_factor_library.get_quantized_factor_ids()),
             "latest_iteration_status": self.latest_iteration.get("status", "idle"),
         }
@@ -196,6 +208,7 @@ class SelfIteratingCausalEngine:
         symbol_reports: Dict[str, Any] = {}
         signal_candidates: List[Dict[str, Any]] = []
         all_validation_records: List[Dict[str, Any]] = []
+        self.latest_decoder_snapshots = {}
 
         for symbol, frame in symbol_datasets.items():
             normalized = self._normalize_ohlcv_frame(frame)
@@ -214,7 +227,9 @@ class SelfIteratingCausalEngine:
                 normalized,
                 symbol=symbol,
                 peer_frames=peer_frames,
+                benchmark_frame=benchmark_frame,
             )
+            decoder_audit = self.latest_decoder_snapshots.get(symbol, {})
             target_returns = normalized["close"].pct_change(self.selection_policy.target_horizon).shift(
                 -self.selection_policy.target_horizon
             )
@@ -229,6 +244,7 @@ class SelfIteratingCausalEngine:
                     "status": "no_feature_passed_threshold",
                     "rows": int(len(normalized)),
                     "global_peer_count": int(len(peer_frames)),
+                    "invariance_decoder": decoder_audit,
                     "selected_features": [],
                     "rejected_features": [asdict(item) for item in rejected[:15]],
                 }
@@ -248,6 +264,7 @@ class SelfIteratingCausalEngine:
                     "status": "no_validated_causal_edge",
                     "rows": int(len(normalized)),
                     "global_peer_count": int(len(peer_frames)),
+                    "invariance_decoder": decoder_audit,
                     "selected_features": [asdict(item) for item in selected],
                     "rejected_features": [asdict(item) for item in rejected[:15]],
                     "causal_validation": validation_records,
@@ -273,6 +290,16 @@ class SelfIteratingCausalEngine:
                         "confidence": latest_confidence,
                         "objective_score": ensemble["objective_metrics"].objective_score,
                         "selected_features": [item.factor_name for item in tradable_selected],
+                        "decoder_state_entropy": float(decoder_audit.get("state_entropy", 1.0) or 1.0),
+                        "decoder_risk_off_probability": float(
+                            decoder_audit.get("state_probabilities", {}).get("risk_off", 0.0) or 0.0
+                        ),
+                        "decoder_long_posterior": float(
+                            decoder_audit.get("noisy_channel_posteriors", {}).get("LONG", 0.0) or 0.0
+                        ),
+                        "decoder_short_posterior": float(
+                            decoder_audit.get("noisy_channel_posteriors", {}).get("SHORT", 0.0) or 0.0
+                        ),
                     }
                 )
 
@@ -280,6 +307,7 @@ class SelfIteratingCausalEngine:
                 "status": "trained",
                 "rows": int(len(normalized)),
                 "global_peer_count": int(len(peer_frames)),
+                "invariance_decoder": decoder_audit,
                 "selected_features": [asdict(item) for item in selected],
                 "tradable_feature_count": int(len(tradable_selected)),
                 "rejected_features": [asdict(item) for item in rejected[:15]],
@@ -311,6 +339,7 @@ class SelfIteratingCausalEngine:
             "selection_policy": asdict(self.selection_policy),
             "constraints": asdict(self.constraints),
             "causal_validation_summary": self._summarize_validation_records(all_validation_records),
+            "invariance_decoder": self._summarize_decoder_snapshots(self.latest_decoder_snapshots),
             "experiment_record": asdict(experiment_record),
             "model_registry_record": asdict(model_record),
             "feature_store_records": self.feature_store.latest_records(limit=25),
@@ -534,6 +563,7 @@ class SelfIteratingCausalEngine:
             for symbol, frame in symbol_datasets.items()
         }
         validation_summary = self._summarize_validation_records(validation_records)
+        decoder_summary = self._summarize_decoder_snapshots(self.latest_decoder_snapshots)
         failure_reasons = sorted(
             {
                 str(report.get("status"))
@@ -564,6 +594,7 @@ class SelfIteratingCausalEngine:
                 "projected_objective_score": portfolio_plan.projected_objective_score,
                 "active_weight": portfolio_plan.active_weight,
                 "validation_summary": validation_summary,
+                "invariance_decoder": decoder_summary,
             },
             failure_reasons=failure_reasons,
             status="completed",
@@ -576,6 +607,7 @@ class SelfIteratingCausalEngine:
         validation_records: List[Dict[str, Any]],
     ):
         validation_summary = self._summarize_validation_records(validation_records)
+        decoder_summary = self._summarize_decoder_snapshots(self.latest_decoder_snapshots)
         passed_symbols = [
             symbol
             for symbol, report in symbol_reports.items()
@@ -599,6 +631,7 @@ class SelfIteratingCausalEngine:
                 "projected_objective_score": portfolio_plan.projected_objective_score,
                 "estimated_cost_penalty": portfolio_plan.estimated_cost_penalty,
                 "estimated_impact_penalty": portfolio_plan.estimated_impact_penalty,
+                "invariance_decoder": decoder_summary,
             },
             promotion_status=promotion_status,
             promotion_reason=promotion_reason,
@@ -618,6 +651,29 @@ class SelfIteratingCausalEngine:
             "status_counts": counts,
             "avg_validation_score": round(float(np.mean(scores)), 6) if scores else 0.0,
             "gate": "only identifiable or weak_identifiable edges can increase position size",
+        }
+
+    @staticmethod
+    def _summarize_decoder_snapshots(snapshots: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+        if not snapshots:
+            return {
+                "decoder_count": 0,
+                "active_count": 0,
+                "avg_state_entropy": 0.0,
+                "max_risk_off_probability": 0.0,
+                "symbols": {},
+            }
+        entropies = [float(item.get("state_entropy", 1.0) or 1.0) for item in snapshots.values()]
+        risk_off = [
+            float(item.get("state_probabilities", {}).get("risk_off", 0.0) or 0.0)
+            for item in snapshots.values()
+        ]
+        return {
+            "decoder_count": len(snapshots),
+            "active_count": sum(1 for item in snapshots.values() if item.get("status") == "active"),
+            "avg_state_entropy": round(float(np.mean(entropies)), 6) if entropies else 0.0,
+            "max_risk_off_probability": round(float(max(risk_off)), 6) if risk_off else 0.0,
+            "symbols": snapshots,
         }
 
     def _normalize_ohlcv_frame(self, frame: pd.DataFrame) -> pd.DataFrame:
@@ -644,6 +700,7 @@ class SelfIteratingCausalEngine:
         frame: pd.DataFrame,
         symbol: str = "",
         peer_frames: Optional[Dict[str, pd.DataFrame]] = None,
+        benchmark_frame: Optional[pd.DataFrame] = None,
     ) -> pd.DataFrame:
         enriched = frame
         global_peer = pd.DataFrame(index=frame.index)
@@ -662,7 +719,15 @@ class SelfIteratingCausalEngine:
         technical = self.factor_library.compute_all_technical_factors(enriched)
         causal_names = self.factor_library.get_factor_list(category="causal_quant")
         causal = self.factor_library.compute_factor_batch(causal_names, enriched, use_polars=False, parallel=False)
-        matrix = pd.concat([base, global_peer, technical, causal], axis=1)
+        decoder_snapshot = self.invariance_decoder.fit_transform(
+            enriched,
+            benchmark_frame=benchmark_frame,
+            peer_frames=peer_frames,
+            symbol=symbol,
+        )
+        decoder_features = decoder_snapshot.feature_frame.reindex(frame.index).fillna(0.0)
+        self.latest_decoder_snapshots[symbol] = decoder_snapshot.to_audit_dict()
+        matrix = pd.concat([base, global_peer, technical, causal, decoder_features], axis=1)
         matrix = matrix.replace([np.inf, -np.inf], np.nan)
         matrix = matrix.loc[:, matrix.notna().mean() >= self.selection_policy.min_non_null_ratio]
         matrix = matrix.ffill().fillna(0.0)
@@ -879,6 +944,14 @@ class SelfIteratingCausalEngine:
             return "成交量因子，衡量资金参与度与价格发现效率。"
         if factor_lower.startswith("base_"):
             return "基础市场统计因子，直接从收益、均线距离、成交量异常或回撤中提炼。"
+        if factor_lower.startswith("invariance_"):
+            return "不变性因子，刻画尺度变换下稳定的价格形状、跨市场残差或协方差结构。"
+        if factor_lower.startswith("hmm_"):
+            return "轻量隐状态解码因子，刻画风险状态、状态熵和制度切换稳定性。"
+        if factor_lower.startswith("kernel_"):
+            return "核相似历史类比因子，用当前市场形状匹配过去相似窗口的后验收益分布。"
+        if factor_lower.startswith("noisy_channel_"):
+            return "有损信道后验因子，从噪声观测中解码 LONG/SHORT/HOLD 的概率。"
         return f"可解释技术/因果因子: {factor_name}"
 
     def _factor_formula(self, factor_name: str) -> str:
@@ -896,6 +969,25 @@ class SelfIteratingCausalEngine:
             return "volume_t / mean(volume,20)_t - 1"
         if factor_lower == "base_drawdown_20":
             return "close_t / rolling_max(close,20)_t - 1"
+        decoder_formulas = {
+            "invariance_vol_norm_ret_1": "return_1d / realized_vol_20",
+            "invariance_vol_norm_ret_5": "return_5d / (realized_vol_20 * sqrt(5))",
+            "invariance_vol_norm_ret_20": "return_20d / (realized_vol_20 * sqrt(20))",
+            "invariance_peer_beta_residual_20": "return_1d - rolling_beta_20 * peer_return_1d",
+            "invariance_cov_eigen_ratio_60": "max_eigenvalue(cov(local, peer, 60)) / sum_abs_eigenvalues",
+            "hmm_prob_risk_on": "GaussianHMM posterior P(risk_on | invariant_observations)",
+            "hmm_prob_risk_off": "GaussianHMM posterior P(risk_off | invariant_observations)",
+            "hmm_state_entropy": "normalized entropy of latest HMM state posterior",
+            "hmm_sub_prob_trend": "sub-state posterior P(trend | invariant_observations)",
+            "hmm_sub_prob_mean_reversion": "sub-state posterior P(mean_reversion | invariant_observations)",
+            "hmm_sub_prob_liquidity_stress": "sub-state posterior P(liquidity_stress | invariant_observations)",
+            "kernel_analog_forward_mean": "mean forward return of nearest invariant-history analogs",
+            "kernel_analog_hit_rate": "positive return share of nearest invariant-history analogs",
+            "noisy_channel_long_posterior": "P(LONG | HMM state, kernel analog, invariant momentum)",
+            "noisy_channel_short_posterior": "P(SHORT | HMM state, kernel analog, invariant momentum)",
+        }
+        if factor_lower in decoder_formulas:
+            return decoder_formulas[factor_lower]
         return factor_name
 
     def _rejection_reason(self, rs_score: float, r_squared: float) -> str:
@@ -942,6 +1034,8 @@ class SelfIteratingCausalEngine:
                     selected_features=list(item["selected_features"]),
                     stop_loss_pct=round(stop_loss, 6),
                     take_profit_pct=round(take_profit, 6),
+                    decoder_state_entropy=round(float(item.get("decoder_state_entropy", 1.0) or 1.0), 6),
+                    decoder_risk_off_probability=round(float(item.get("decoder_risk_off_probability", 0.0) or 0.0), 6),
                 )
             )
         return allocations
@@ -1018,11 +1112,13 @@ class SelfIteratingCausalEngine:
         margin_penalty_rate = float(market_context.get("margin_penalty_rate", 0.018))
         tail_risk = self._extract_tail_risk_score(market_context)
         unhedged_tail = max(0.0, tail_risk - tail_weight)
+        decoder_uncertainty = sum(abs(item.target_weight) * float(item.decoder_state_entropy) for item in allocations)
+        decoder_risk_off = sum(abs(item.target_weight) * float(item.decoder_risk_off_probability) for item in allocations)
         return {
             "transaction_cost": turnover_estimate * transaction_bps / 10000.0,
             "impact_cost": gross_weight * impact_bps / 10000.0 + liquidity_penalty,
             "margin_penalty": futures_weight * margin_penalty_rate,
-            "tail_risk_penalty": unhedged_tail * 0.035,
+            "tail_risk_penalty": unhedged_tail * 0.035 + decoder_uncertainty * 0.006 + decoder_risk_off * 0.010,
         }
 
     def _extract_tail_risk_score(self, market_context: Dict[str, Any]) -> float:
@@ -1076,6 +1172,8 @@ class SelfIteratingCausalEngine:
                     "max_hold_days": self.constraints.max_hold_days,
                     "no_weekend_hold": self.constraints.no_weekend_hold,
                     "selected_features": allocation.selected_features,
+                    "decoder_state_entropy": allocation.decoder_state_entropy,
+                    "decoder_risk_off_probability": allocation.decoder_risk_off_probability,
                 }
             )
         if plan.tail_hedge_weight > 0:
