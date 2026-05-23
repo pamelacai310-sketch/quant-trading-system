@@ -7,7 +7,9 @@ import pandas as pd
 
 from quant_trade_system.core.causal import (
     FeatureSelectionPolicy,
+    LearningObjectiveConfig,
     PortfolioConstraintConfig,
+    SelectedFeature,
     SelfIteratingCausalEngine,
 )
 
@@ -248,6 +250,115 @@ class SelfIteratingCausalEngineTests(unittest.TestCase):
             market_context={"crisis_probability": 0.12},
         )
         self.assertGreater(low_risk_plan.projected_objective_score, high_risk_plan.projected_objective_score)
+
+    def test_state_conditioning_changes_factor_weights(self) -> None:
+        idx = pd.RangeIndex(90)
+        driver = pd.Series(np.linspace(-2.0, 2.0, len(idx)), index=idx)
+        factors = pd.DataFrame(
+            {
+                "base_ret_5": driver,
+                "base_drawdown_20": driver,
+            },
+            index=idx,
+        )
+        target = driver.shift(-1).fillna(driver.iloc[-1])
+        selected = [
+            SelectedFeature("base_ret_5", "momentum", "x", 90.0, 0.9, 0.9, 1.0, 1, True, can_trade=True),
+            SelectedFeature("base_drawdown_20", "drawdown", "x", 90.0, 0.9, 0.9, 1.0, 1, True, can_trade=True),
+        ]
+        decoder_audit = {
+            "state_probabilities": {"risk_on": 0.90, "risk_off": 0.05, "transition_choppy": 0.05},
+            "state_entropy": 0.10,
+            "transition_stability": 0.80,
+            "audit_metadata": {"sub_state_probabilities": {"trend": 0.85, "mean_reversion": 0.10, "liquidity_stress": 0.05}},
+        }
+
+        ensemble = self.engine._train_factor_ensemble(
+            factors,
+            target,
+            selected,
+            decoder_audit=decoder_audit,
+            symbol="TEST",
+        )
+
+        self.assertGreater(ensemble["state_conditioning"]["base_ret_5"], ensemble["state_conditioning"]["base_drawdown_20"])
+        self.assertGreater(ensemble["factor_weights"]["base_ret_5"], ensemble["factor_weights"]["base_drawdown_20"])
+
+    def test_fractional_kelly_caps_position_size(self) -> None:
+        high_plan = self.engine.optimize_portfolio(
+            [
+                {
+                    "symbol": "AAPL",
+                    "asset_type": "stock",
+                    "direction": "long",
+                    "raw_score": 0.9,
+                    "confidence": 0.9,
+                    "objective_score": 0.9,
+                    "objective_metrics": {"win_rate": 0.72, "payoff_ratio": 2.8, "elasticity": 1.6},
+                    "selected_features": ["f1"],
+                    "decoder_state_entropy": 0.05,
+                }
+            ],
+            market_context={"crisis_probability": 0.12},
+        )
+        low_plan = self.engine.optimize_portfolio(
+            [
+                {
+                    "symbol": "AAPL",
+                    "asset_type": "stock",
+                    "direction": "long",
+                    "raw_score": 0.9,
+                    "confidence": 0.9,
+                    "objective_score": 0.9,
+                    "objective_metrics": {"win_rate": 0.51, "payoff_ratio": 1.1, "elasticity": 0.4},
+                    "selected_features": ["f1"],
+                    "decoder_state_entropy": 0.05,
+                }
+            ],
+            market_context={"crisis_probability": 0.12},
+        )
+
+        self.assertGreater(high_plan.active_weight, low_plan.active_weight)
+        self.assertLessEqual(high_plan.signal_allocations[0].target_weight, self.engine.constraints.max_single_weight)
+        self.assertLessEqual(high_plan.signal_allocations[0].target_weight, high_plan.signal_allocations[0].kelly_fraction)
+
+    def test_capacity_limit_caps_allocation_and_adds_penalty(self) -> None:
+        plan = self.engine.optimize_portfolio(
+            [
+                {
+                    "symbol": "ILLIQ",
+                    "asset_type": "stock",
+                    "direction": "long",
+                    "raw_score": 0.9,
+                    "confidence": 0.9,
+                    "objective_score": 0.9,
+                    "objective_metrics": {"win_rate": 0.75, "payoff_ratio": 3.0, "elasticity": 2.0},
+                    "selected_features": ["f1"],
+                    "decoder_state_entropy": 0.0,
+                }
+            ],
+            market_context={
+                "portfolio_notional": 1_000_000,
+                "capacity": {"ILLIQ": {"adv_notional": 200_000, "max_participation_rate": 0.10}},
+                "execution_costs": {"ILLIQ": {"commission_bps": 2.0, "slippage_bps": 8.0, "impact_bps": 30.0}},
+            },
+        )
+
+        self.assertLessEqual(plan.signal_allocations[0].target_weight, 0.020001)
+        self.assertGreaterEqual(plan.estimated_slippage_penalty, 0.0)
+        self.assertGreater(plan.estimated_capacity_penalty, 0.0)
+
+    def test_cross_asset_transfer_requires_validated_memory(self) -> None:
+        feature = SelectedFeature("base_ret_5", "momentum", "x", 90.0, 0.9, 0.9, 1.0, 1, True, can_trade=True)
+        self.assertEqual(self.engine._cross_asset_transfer_multiplier("base_ret_5", "AAPL"), 1.0)
+
+        self.engine._update_cross_asset_factor_memory(
+            feature,
+            "CU2608",
+            {"validation_score": 0.8, "identification_status": "identifiable"},
+        )
+
+        self.assertGreater(self.engine._cross_asset_transfer_multiplier("base_ret_5", "AAPL"), 1.0)
 
     def test_validation_gate_marks_unstable_features_observation_only(self) -> None:
         idx = pd.RangeIndex(80)

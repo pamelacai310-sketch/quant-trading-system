@@ -109,6 +109,24 @@ class InvarianceMarketDecoderTests(unittest.TestCase):
         self.assertIn("HOLD", snapshot.noisy_channel_posteriors)
         self.assertAlmostEqual(sum(snapshot.audit_metadata["sub_state_probabilities"].values()), 1.0, places=5)
 
+    def test_sde_and_kernel_tail_risk_are_auditable(self) -> None:
+        rows = 180
+        close = pd.Series(np.linspace(100.0, 112.0, rows) + 0.4 * np.sin(np.linspace(0, 11, rows)))
+        frame = _ohlcv_from_close(close)
+        frame.loc[150:, ["open", "high", "low", "close"]] *= np.linspace(1.0, 0.88, 30)[:, None]
+        decoder = InvarianceMarketDecoder(
+            InvariantDecoderConfig(min_history=80, em_iterations=6, kernel_neighbors=10)
+        )
+
+        snapshot = decoder.fit_transform(frame, symbol="TAIL")
+
+        self.assertIn("sde_tail_loss_probability", snapshot.feature_frame.columns)
+        self.assertIn("sde_regime_switch_pressure", snapshot.feature_frame.columns)
+        self.assertIn("kernel_analog_tail_loss_rate", snapshot.feature_frame.columns)
+        risk = snapshot.audit_metadata["kernel_sde_risk"]
+        self.assertIn("tail_hedge_pressure", risk)
+        self.assertGreaterEqual(risk["tail_hedge_pressure"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -48,6 +48,8 @@ class LearningObjectiveConfig:
     win_rate_weight: float = 0.45
     payoff_weight: float = 0.35
     elasticity_weight: float = 0.20
+    state_conditioning_strength: float = 0.35
+    cross_asset_transfer_weight: float = 0.15
 
 
 @dataclass
@@ -60,6 +62,9 @@ class PortfolioConstraintConfig:
     base_take_profit_pct: float = 0.06
     max_hold_days: int = 5
     no_weekend_hold: bool = True
+    max_fractional_kelly: float = 0.25
+    default_portfolio_notional: float = 1_000_000.0
+    default_max_participation_rate: float = 0.10
 
 
 @dataclass
@@ -107,6 +112,17 @@ class SignalAllocation:
     take_profit_pct: float
     decoder_state_entropy: float = 1.0
     decoder_risk_off_probability: float = 0.0
+    decoder_sde_tail_loss_probability: float = 0.0
+    decoder_sde_downside_q05: float = 0.0
+    kernel_tail_loss_rate: float = 0.0
+    kelly_fraction: float = 0.0
+    capacity_weight_limit: float = 1.0
+    commission_bps: float = 8.0
+    slippage_bps: float = 0.0
+    impact_bps: float = 12.0
+    state_conditioning_multiplier: float = 1.0
+    cross_asset_transfer_multiplier: float = 1.0
+    transferred_factor_count: int = 0
 
 
 @dataclass
@@ -120,6 +136,8 @@ class PortfolioPlan:
     residual_cash_weight: float = 0.0
     estimated_cost_penalty: float = 0.0
     estimated_impact_penalty: float = 0.0
+    estimated_slippage_penalty: float = 0.0
+    estimated_capacity_penalty: float = 0.0
     estimated_margin_penalty: float = 0.0
     estimated_tail_risk_penalty: float = 0.0
 
@@ -147,6 +165,7 @@ class SelfIteratingCausalEngine:
         self.model_registry = ModelRegistry()
         self.invariance_decoder = InvarianceMarketDecoder(invariant_decoder_config)
         self.latest_decoder_snapshots: Dict[str, Dict[str, Any]] = {}
+        self.cross_asset_factor_memory: Dict[str, Dict[str, Any]] = {}
         self.latest_iteration: Dict[str, Any] = {}
 
     def describe_capabilities(self) -> Dict[str, Any]:
@@ -162,6 +181,17 @@ class SelfIteratingCausalEngine:
                 "win_rate_weight": self.objective_config.win_rate_weight,
                 "payoff_weight": self.objective_config.payoff_weight,
                 "elasticity_weight": self.objective_config.elasticity_weight,
+                "state_conditioning_strength": self.objective_config.state_conditioning_strength,
+                "cross_asset_transfer_weight": self.objective_config.cross_asset_transfer_weight,
+            },
+            "position_sizing": {
+                "fractional_kelly_enabled": True,
+                "max_fractional_kelly": self.constraints.max_fractional_kelly,
+                "hard_caps": ["max_single_weight", "max_futures_weight", "max_gross_weight", "capacity_weight_limit"],
+            },
+            "execution_objective": {
+                "net_score_includes": ["commission", "slippage", "impact", "capacity_penalty", "margin", "tail_risk"],
+                "default_max_participation_rate": self.constraints.default_max_participation_rate,
             },
             "global_futures_linkage": {
                 "enabled": True,
@@ -181,9 +211,10 @@ class SelfIteratingCausalEngine:
             "invariance_decoder": {
                 "enabled": True,
                 "version": "invariance_decoder_v1",
-                "features": ["invariance", "hmm", "kernel_analog", "noisy_channel_posteriors"],
+                "features": ["invariance", "hmm", "kernel_analog", "sde_risk", "noisy_channel_posteriors"],
                 "dependency_policy": "numpy_pandas_only",
             },
+            "monolithic_research_factory": self._summarize_cross_asset_factor_memory(),
             "quantized_causal_factor_count": len(self.causal_factor_library.get_quantized_factor_ids()),
             "latest_iteration_status": self.latest_iteration.get("status", "idle"),
         }
@@ -277,10 +308,13 @@ class SelfIteratingCausalEngine:
                 target_returns,
                 tradable_selected,
                 benchmark_returns=benchmark_returns,
+                decoder_audit=decoder_audit,
+                symbol=symbol,
             )
             latest_score = ensemble["latest_signal_score"]
             latest_confidence = ensemble["latest_confidence"]
             if abs(latest_score) >= self.selection_policy.signal_threshold:
+                kernel_sde_risk = decoder_audit.get("audit_metadata", {}).get("kernel_sde_risk", {})
                 signal_candidates.append(
                     {
                         "symbol": symbol,
@@ -289,6 +323,7 @@ class SelfIteratingCausalEngine:
                         "raw_score": latest_score,
                         "confidence": latest_confidence,
                         "objective_score": ensemble["objective_metrics"].objective_score,
+                        "objective_metrics": asdict(ensemble["objective_metrics"]),
                         "selected_features": [item.factor_name for item in tradable_selected],
                         "decoder_state_entropy": float(decoder_audit.get("state_entropy", 1.0) or 1.0),
                         "decoder_risk_off_probability": float(
@@ -300,6 +335,13 @@ class SelfIteratingCausalEngine:
                         "decoder_short_posterior": float(
                             decoder_audit.get("noisy_channel_posteriors", {}).get("SHORT", 0.0) or 0.0
                         ),
+                        "decoder_sde_tail_loss_probability": float(
+                            kernel_sde_risk.get("sde_tail_loss_probability", 0.0) or 0.0
+                        ),
+                        "decoder_sde_downside_q05": float(kernel_sde_risk.get("sde_downside_q05", 0.0) or 0.0),
+                        "kernel_tail_loss_rate": float(kernel_sde_risk.get("kernel_analog_tail_loss_rate", 0.0) or 0.0),
+                        "state_conditioning": ensemble.get("state_conditioning", {}),
+                        "cross_asset_transfer": ensemble.get("cross_asset_transfer", {}),
                     }
                 )
 
@@ -313,6 +355,8 @@ class SelfIteratingCausalEngine:
                 "rejected_features": [asdict(item) for item in rejected[:15]],
                 "causal_validation": validation_records,
                 "factor_weights": ensemble["factor_weights"],
+                "state_conditioning": ensemble.get("state_conditioning", {}),
+                "cross_asset_transfer": ensemble.get("cross_asset_transfer", {}),
                 "objective_metrics": asdict(ensemble["objective_metrics"]),
                 "latest_signal_score": latest_score,
                 "latest_confidence": latest_confidence,
@@ -340,6 +384,7 @@ class SelfIteratingCausalEngine:
             "constraints": asdict(self.constraints),
             "causal_validation_summary": self._summarize_validation_records(all_validation_records),
             "invariance_decoder": self._summarize_decoder_snapshots(self.latest_decoder_snapshots),
+            "monolithic_research_factory": self._summarize_cross_asset_factor_memory(),
             "experiment_record": asdict(experiment_record),
             "model_registry_record": asdict(model_record),
             "feature_store_records": self.feature_store.latest_records(limit=25),
@@ -469,7 +514,7 @@ class SelfIteratingCausalEngine:
             for hedge_ratio in [0.10, 0.20, 0.30, 0.40]:
                 tail_weight = barbell_budget * hedge_ratio
                 safe_weight = barbell_budget - tail_weight
-                allocations = self._allocate_signal_weights(candidates, active_weight)
+                allocations = self._allocate_signal_weights(candidates, active_weight, market_context)
                 allocations, residual_cash = self._enforce_portfolio_constraints(allocations)
                 projected_score = self._score_portfolio(
                     allocations,
@@ -491,6 +536,8 @@ class SelfIteratingCausalEngine:
                         residual_cash_weight=0.0,
                         estimated_cost_penalty=round(penalties["transaction_cost"], 6),
                         estimated_impact_penalty=round(penalties["impact_cost"], 6),
+                        estimated_slippage_penalty=round(penalties["slippage_cost"], 6),
+                        estimated_capacity_penalty=round(penalties["capacity_penalty"], 6),
                         estimated_margin_penalty=round(penalties["margin_penalty"], 6),
                         estimated_tail_risk_penalty=round(penalties["tail_risk_penalty"], 6),
                     )
@@ -543,10 +590,12 @@ class SelfIteratingCausalEngine:
                     "forward_target_shift_days": self.selection_policy.target_horizon,
                     "uses_only_information_available_at_or_before_signal_time": True,
                     "purged_cv_required_before_promotion": True,
+                    "cross_asset_transfer_requires_validation": True,
                 },
                 validation_status=record,
             )
             if validation.can_trade:
+                self._update_cross_asset_factor_memory(feature, symbol, record)
                 tradable.append(feature)
         return tradable, records
 
@@ -564,6 +613,7 @@ class SelfIteratingCausalEngine:
         }
         validation_summary = self._summarize_validation_records(validation_records)
         decoder_summary = self._summarize_decoder_snapshots(self.latest_decoder_snapshots)
+        transfer_summary = self._summarize_cross_asset_factor_memory()
         failure_reasons = sorted(
             {
                 str(report.get("status"))
@@ -595,6 +645,7 @@ class SelfIteratingCausalEngine:
                 "active_weight": portfolio_plan.active_weight,
                 "validation_summary": validation_summary,
                 "invariance_decoder": decoder_summary,
+                "monolithic_research_factory": transfer_summary,
             },
             failure_reasons=failure_reasons,
             status="completed",
@@ -608,6 +659,7 @@ class SelfIteratingCausalEngine:
     ):
         validation_summary = self._summarize_validation_records(validation_records)
         decoder_summary = self._summarize_decoder_snapshots(self.latest_decoder_snapshots)
+        transfer_summary = self._summarize_cross_asset_factor_memory()
         passed_symbols = [
             symbol
             for symbol, report in symbol_reports.items()
@@ -631,7 +683,10 @@ class SelfIteratingCausalEngine:
                 "projected_objective_score": portfolio_plan.projected_objective_score,
                 "estimated_cost_penalty": portfolio_plan.estimated_cost_penalty,
                 "estimated_impact_penalty": portfolio_plan.estimated_impact_penalty,
+                "estimated_slippage_penalty": portfolio_plan.estimated_slippage_penalty,
+                "estimated_capacity_penalty": portfolio_plan.estimated_capacity_penalty,
                 "invariance_decoder": decoder_summary,
+                "monolithic_research_factory": transfer_summary,
             },
             promotion_status=promotion_status,
             promotion_reason=promotion_reason,
@@ -674,6 +729,61 @@ class SelfIteratingCausalEngine:
             "avg_state_entropy": round(float(np.mean(entropies)), 6) if entropies else 0.0,
             "max_risk_off_probability": round(float(max(risk_off)), 6) if risk_off else 0.0,
             "symbols": snapshots,
+        }
+
+    def _update_cross_asset_factor_memory(
+        self,
+        feature: SelectedFeature,
+        symbol: str,
+        validation_record: Dict[str, Any],
+    ) -> None:
+        asset_type = self._infer_asset_type(symbol)
+        record = self.cross_asset_factor_memory.setdefault(
+            feature.factor_name,
+            {
+                "symbols": set(),
+                "asset_types": set(),
+                "validation_scores": [],
+                "identification_statuses": set(),
+            },
+        )
+        record["symbols"].add(symbol)
+        record["asset_types"].add(asset_type)
+        record["validation_scores"].append(float(validation_record.get("validation_score", 0.0) or 0.0))
+        record["identification_statuses"].add(str(validation_record.get("identification_status", "unknown")))
+
+    def _cross_asset_transfer_multiplier(self, factor_name: str, symbol: str) -> float:
+        record = self.cross_asset_factor_memory.get(factor_name)
+        if not record:
+            return 1.0
+        source_symbols = set(record.get("symbols", set())) - {symbol}
+        if not source_symbols:
+            return 1.0
+        current_asset_type = self._infer_asset_type(symbol)
+        source_asset_types = set(record.get("asset_types", set())) - {current_asset_type}
+        validation_scores = [float(item) for item in record.get("validation_scores", [])]
+        avg_validation = float(np.mean(validation_scores)) if validation_scores else 0.0
+        cross_asset_bonus = 0.50 if source_asset_types else 0.25
+        source_depth = min(len(source_symbols), 4) / 4.0
+        multiplier = 1.0 + self.objective_config.cross_asset_transfer_weight * avg_validation * cross_asset_bonus * source_depth
+        return round(float(np.clip(multiplier, 1.0, 1.20)), 6)
+
+    def _summarize_cross_asset_factor_memory(self) -> Dict[str, Any]:
+        factors: Dict[str, Any] = {}
+        for name, record in self.cross_asset_factor_memory.items():
+            validation_scores = [float(item) for item in record.get("validation_scores", [])]
+            factors[name] = {
+                "symbols": sorted(record.get("symbols", set())),
+                "asset_types": sorted(record.get("asset_types", set())),
+                "avg_validation_score": round(float(np.mean(validation_scores)), 6) if validation_scores else 0.0,
+                "identification_statuses": sorted(record.get("identification_statuses", set())),
+                "transfer_eligible": len(record.get("symbols", set())) >= 1,
+            }
+        return {
+            "validated_factor_count": len(factors),
+            "transfer_eligible_count": sum(1 for item in factors.values() if item["transfer_eligible"]),
+            "factors": factors,
+            "gate": "cross-asset migration can only boost weights after causal validation records exist",
         }
 
     def _normalize_ohlcv_frame(self, frame: pd.DataFrame) -> pd.DataFrame:
@@ -748,18 +858,32 @@ class SelfIteratingCausalEngine:
         target_returns: pd.Series,
         selected_features: List[SelectedFeature],
         benchmark_returns: Optional[pd.Series] = None,
+        decoder_audit: Optional[Dict[str, Any]] = None,
+        symbol: str = "",
     ) -> Dict[str, Any]:
         weighted_signals: Dict[str, pd.Series] = {}
         raw_weights: Dict[str, float] = {}
+        state_conditioning: Dict[str, float] = {}
+        transfer_multipliers: Dict[str, float] = {}
 
         for feature in selected_features:
             series = pd.to_numeric(factor_matrix[feature.factor_name], errors="coerce")
             signal = self.factor_library._zscore(series).fillna(0.0) * feature.direction
             metrics = self._evaluate_objective(signal, target_returns, benchmark_returns)
             feature.objective_score = metrics.objective_score
-            raw_weight = max(metrics.objective_score, 1e-6) * (feature.rs_score / 100.0) * feature.r_squared
+            state_multiplier = self._state_conditioning_multiplier(feature.factor_name, decoder_audit or {})
+            transfer_multiplier = self._cross_asset_transfer_multiplier(feature.factor_name, symbol)
+            raw_weight = (
+                max(metrics.objective_score, 1e-6)
+                * (feature.rs_score / 100.0)
+                * feature.r_squared
+                * state_multiplier
+                * transfer_multiplier
+            )
             weighted_signals[feature.factor_name] = signal
             raw_weights[feature.factor_name] = raw_weight
+            state_conditioning[feature.factor_name] = state_multiplier
+            transfer_multipliers[feature.factor_name] = transfer_multiplier
 
         total_weight = sum(raw_weights.values()) or 1.0
         normalized_weights = {
@@ -786,10 +910,46 @@ class SelfIteratingCausalEngine:
             "factor_weights": {
                 name: round(weight, 6) for name, weight in normalized_weights.items()
             },
+            "state_conditioning": {
+                name: round(multiplier, 6) for name, multiplier in state_conditioning.items()
+            },
+            "cross_asset_transfer": {
+                name: round(multiplier, 6) for name, multiplier in transfer_multipliers.items()
+            },
             "objective_metrics": objective_metrics,
             "latest_signal_score": round(latest_score, 6),
             "latest_confidence": round(latest_confidence, 6),
         }
+
+    def _state_conditioning_multiplier(self, factor_name: str, decoder_audit: Dict[str, Any]) -> float:
+        probs = decoder_audit.get("state_probabilities", {}) if isinstance(decoder_audit, dict) else {}
+        metadata = decoder_audit.get("audit_metadata", {}) if isinstance(decoder_audit, dict) else {}
+        sub_probs = metadata.get("sub_state_probabilities", {}) if isinstance(metadata, dict) else {}
+        risk_on = float(probs.get("risk_on", 1.0 / 3.0) or 0.0)
+        risk_off = float(probs.get("risk_off", 1.0 / 3.0) or 0.0)
+        transition = float(probs.get("transition_choppy", 1.0 / 3.0) or 0.0)
+        trend = float(sub_probs.get("trend", 1.0 / 3.0) or 0.0)
+        mean_reversion = float(sub_probs.get("mean_reversion", 1.0 / 3.0) or 0.0)
+        liquidity_stress = float(sub_probs.get("liquidity_stress", 1.0 / 3.0) or 0.0)
+        entropy = float(decoder_audit.get("state_entropy", 1.0) or 1.0) if isinstance(decoder_audit, dict) else 1.0
+        transition_stability = float(decoder_audit.get("transition_stability", 0.0) or 0.0) if isinstance(decoder_audit, dict) else 0.0
+        strength = float(self.objective_config.state_conditioning_strength)
+        lower_name = factor_name.lower()
+
+        if any(token in lower_name for token in ["momentum", "ret_", "macd", "trend", "noisy_channel_long"]):
+            regime_score = risk_on + trend - 2.0 / 3.0
+        elif any(token in lower_name for token in ["drawdown", "vol", "atr", "risk_off", "noisy_channel_short", "tail"]):
+            regime_score = risk_off + liquidity_stress - 2.0 / 3.0
+        elif any(token in lower_name for token in ["rsi", "mean_reversion", "reversal"]):
+            regime_score = transition + mean_reversion - 2.0 / 3.0
+        elif lower_name.startswith("kernel_"):
+            regime_score = transition_stability - 0.50
+        else:
+            regime_score = 0.25 * (risk_on - risk_off)
+
+        uncertainty_haircut = 1.0 - 0.35 * float(np.clip(entropy, 0.0, 1.0))
+        multiplier = (1.0 + strength * regime_score) * uncertainty_haircut
+        return round(float(np.clip(multiplier, 0.25, 1.75)), 6)
 
     def _evaluate_objective(
         self,
@@ -950,6 +1110,8 @@ class SelfIteratingCausalEngine:
             return "轻量隐状态解码因子，刻画风险状态、状态熵和制度切换稳定性。"
         if factor_lower.startswith("kernel_"):
             return "核相似历史类比因子，用当前市场形状匹配过去相似窗口的后验收益分布。"
+        if factor_lower.startswith("sde_"):
+            return "SDE扩散近似风险因子，用漂移、波动和尾部损失概率刻画状态切换和尾部保护需求。"
         if factor_lower.startswith("noisy_channel_"):
             return "有损信道后验因子，从噪声观测中解码 LONG/SHORT/HOLD 的概率。"
         return f"可解释技术/因果因子: {factor_name}"
@@ -983,6 +1145,13 @@ class SelfIteratingCausalEngine:
             "hmm_sub_prob_liquidity_stress": "sub-state posterior P(liquidity_stress | invariant_observations)",
             "kernel_analog_forward_mean": "mean forward return of nearest invariant-history analogs",
             "kernel_analog_hit_rate": "positive return share of nearest invariant-history analogs",
+            "kernel_analog_tail_loss_rate": "share of nearest invariant-history analogs with forward return below tail threshold",
+            "sde_drift_20": "rolling_mean(return_1d,20)",
+            "sde_volatility_20": "rolling_std(return_1d,20)",
+            "sde_downside_q05": "GBM-like 5% downside quantile over target_horizon",
+            "sde_upside_q95": "GBM-like 95% upside quantile over target_horizon",
+            "sde_tail_loss_probability": "P(forward_return <= tail_loss_threshold) under local diffusion approximation",
+            "sde_regime_switch_pressure": "clipped blend of volatility pressure, drawdown and SDE tail probability",
             "noisy_channel_long_posterior": "P(LONG | HMM state, kernel analog, invariant momentum)",
             "noisy_channel_short_posterior": "P(SHORT | HMM state, kernel analog, invariant momentum)",
         }
@@ -1011,23 +1180,39 @@ class SelfIteratingCausalEngine:
         self,
         candidates: List[Dict[str, Any]],
         active_weight: float,
+        market_context: Optional[Dict[str, Any]] = None,
     ) -> List[SignalAllocation]:
+        market_context = market_context or {}
+        kelly_fractions = [self._fractional_kelly_fraction(item) for item in candidates]
         raw_scores = np.array(
-            [max(item["objective_score"], 1e-6) * (0.5 + item["confidence"]) * abs(item["raw_score"]) for item in candidates],
+            [
+                max(item["objective_score"], 1e-6)
+                * (0.5 + item["confidence"])
+                * abs(item["raw_score"])
+                * max(kelly_fraction, 0.002)
+                for item, kelly_fraction in zip(candidates, kelly_fractions)
+            ],
             dtype=float,
         )
+        if float(raw_scores.sum()) <= 0:
+            return []
         raw_scores = raw_scores / raw_scores.sum()
         allocations: List[SignalAllocation] = []
-        for item, base_weight in zip(candidates, raw_scores.tolist()):
+        for item, base_weight, kelly_fraction in zip(candidates, raw_scores.tolist(), kelly_fractions):
             confidence = float(item["confidence"])
             stop_loss = self.constraints.base_stop_loss_pct * (1.10 - min(confidence, 0.9) * 0.20)
             take_profit = self.constraints.base_take_profit_pct * (1.0 + confidence)
+            execution_profile = self._execution_profile(item["symbol"], market_context)
+            capacity_weight_limit = self._capacity_weight_limit(item["symbol"], market_context)
+            target_weight = min(active_weight * base_weight, max(kelly_fraction, 0.0))
+            state_multipliers = list((item.get("state_conditioning") or {}).values())
+            transfer_multipliers = item.get("cross_asset_transfer") or {}
             allocations.append(
                 SignalAllocation(
                     symbol=item["symbol"],
                     direction=item["direction"],
                     asset_type=item["asset_type"],
-                    target_weight=round(active_weight * base_weight, 6),
+                    target_weight=round(target_weight, 6),
                     raw_score=round(float(item["raw_score"]), 6),
                     confidence=round(confidence, 6),
                     objective_score=round(float(item["objective_score"]), 6),
@@ -1036,9 +1221,50 @@ class SelfIteratingCausalEngine:
                     take_profit_pct=round(take_profit, 6),
                     decoder_state_entropy=round(float(item.get("decoder_state_entropy", 1.0) or 1.0), 6),
                     decoder_risk_off_probability=round(float(item.get("decoder_risk_off_probability", 0.0) or 0.0), 6),
+                    decoder_sde_tail_loss_probability=round(
+                        float(item.get("decoder_sde_tail_loss_probability", 0.0) or 0.0), 6
+                    ),
+                    decoder_sde_downside_q05=round(float(item.get("decoder_sde_downside_q05", 0.0) or 0.0), 6),
+                    kernel_tail_loss_rate=round(float(item.get("kernel_tail_loss_rate", 0.0) or 0.0), 6),
+                    kelly_fraction=round(kelly_fraction, 6),
+                    capacity_weight_limit=round(capacity_weight_limit, 6),
+                    commission_bps=round(float(execution_profile["commission_bps"]), 6),
+                    slippage_bps=round(float(execution_profile["slippage_bps"]), 6),
+                    impact_bps=round(float(execution_profile["impact_bps"]), 6),
+                    state_conditioning_multiplier=round(float(np.mean(state_multipliers)), 6) if state_multipliers else 1.0,
+                    cross_asset_transfer_multiplier=round(max(transfer_multipliers.values()), 6)
+                    if transfer_multipliers
+                    else 1.0,
+                    transferred_factor_count=sum(1 for value in transfer_multipliers.values() if float(value) > 1.0),
                 )
             )
         return allocations
+
+    def _fractional_kelly_fraction(self, candidate: Dict[str, Any]) -> float:
+        metrics = candidate.get("objective_metrics") or {}
+        objective_score = float(candidate.get("objective_score", 0.0) or 0.0)
+        win_rate = float(metrics.get("win_rate", 0.50 + 0.25 * min(max(objective_score, 0.0), 1.0)) or 0.0)
+        payoff_ratio = float(metrics.get("payoff_ratio", 1.0 + 2.0 * min(max(objective_score, 0.0), 1.0)) or 0.0)
+        elasticity = float(metrics.get("elasticity", 1.0) or 0.0)
+        win_rate = float(np.clip(win_rate, 0.0, 0.99))
+        payoff_ratio = max(payoff_ratio, 1e-6)
+        full_kelly = max(0.0, win_rate - (1.0 - win_rate) / payoff_ratio)
+        elasticity_scale = float(np.clip(elasticity / 2.0, 0.10, 1.0))
+        confidence = float(np.clip(candidate.get("confidence", 0.0) or 0.0, 0.0, 1.0))
+        entropy = float(np.clip(candidate.get("decoder_state_entropy", 1.0) or 1.0, 0.0, 1.0))
+        risk_off = float(np.clip(candidate.get("decoder_risk_off_probability", 0.0) or 0.0, 0.0, 1.0))
+        direction = str(candidate.get("direction", "long")).lower()
+        risk_haircut = 1.0 - (0.45 * risk_off if direction == "long" else 0.20 * risk_off)
+        uncertainty_haircut = 1.0 - 0.50 * entropy
+        fractional = (
+            full_kelly
+            * self.constraints.max_fractional_kelly
+            * elasticity_scale
+            * (0.50 + 0.50 * confidence)
+            * risk_haircut
+            * uncertainty_haircut
+        )
+        return round(float(np.clip(fractional, 0.0, self.constraints.max_single_weight)), 6)
 
     def _enforce_portfolio_constraints(
         self,
@@ -1048,7 +1274,8 @@ class SelfIteratingCausalEngine:
         futures_weight = 0.0
         residual_cash = 0.0
         for allocation in allocations:
-            weight = min(allocation.target_weight, self.constraints.max_single_weight)
+            original_weight = allocation.target_weight
+            weight = min(allocation.target_weight, self.constraints.max_single_weight, allocation.capacity_weight_limit)
             if allocation.asset_type == "futures":
                 available = max(0.0, self.constraints.max_futures_weight - futures_weight)
                 if available <= 0:
@@ -1056,8 +1283,10 @@ class SelfIteratingCausalEngine:
                     continue
                 weight = min(weight, available)
                 futures_weight += weight
+            residual_cash += max(0.0, original_weight - weight)
             allocation.target_weight = round(weight, 6)
-            constrained.append(allocation)
+            if allocation.target_weight > 0:
+                constrained.append(allocation)
 
         total = sum(item.target_weight for item in constrained)
         if total > self.constraints.max_gross_weight:
@@ -1084,7 +1313,8 @@ class SelfIteratingCausalEngine:
         concentration = sum(item.target_weight ** 2 for item in allocations) / max(
             sum(item.target_weight for item in allocations), 1e-6
         )
-        desired_tail_ratio = float(np.clip(0.10 + tail_risk * 0.60, 0.10, 0.45))
+        effective_tail_risk = max(tail_risk, self._allocation_tail_risk_score(allocations))
+        desired_tail_ratio = float(np.clip(0.10 + effective_tail_risk * 0.60, 0.10, 0.45))
         actual_tail_ratio = tail_weight / max(tail_weight + safe_weight, 1e-6)
         hedge_alignment = 1.0 - abs(actual_tail_ratio - desired_tail_ratio)
         return float(
@@ -1093,6 +1323,8 @@ class SelfIteratingCausalEngine:
             - 0.10 * concentration
             - penalties["transaction_cost"]
             - penalties["impact_cost"]
+            - penalties["slippage_cost"]
+            - penalties["capacity_penalty"]
             - penalties["margin_penalty"]
             - penalties["tail_risk_penalty"]
         )
@@ -1106,20 +1338,71 @@ class SelfIteratingCausalEngine:
         gross_weight = sum(abs(item.target_weight) for item in allocations)
         futures_weight = sum(abs(item.target_weight) for item in allocations if item.asset_type == "futures")
         turnover_estimate = float(market_context.get("turnover_estimate", gross_weight))
-        transaction_bps = float(market_context.get("transaction_cost_bps", 8.0))
-        impact_bps = float(market_context.get("impact_cost_bps", 12.0))
+        turnover_scale = turnover_estimate / max(gross_weight, 1e-9) if gross_weight else 0.0
         liquidity_penalty = float(market_context.get("liquidity_penalty", 0.0))
         margin_penalty_rate = float(market_context.get("margin_penalty_rate", 0.018))
-        tail_risk = self._extract_tail_risk_score(market_context)
+        tail_risk = max(self._extract_tail_risk_score(market_context), self._allocation_tail_risk_score(allocations))
         unhedged_tail = max(0.0, tail_risk - tail_weight)
         decoder_uncertainty = sum(abs(item.target_weight) * float(item.decoder_state_entropy) for item in allocations)
         decoder_risk_off = sum(abs(item.target_weight) * float(item.decoder_risk_off_probability) for item in allocations)
+        transaction_cost = 0.0
+        slippage_cost = 0.0
+        impact_cost = liquidity_penalty
+        capacity_penalty = 0.0
+        for item in allocations:
+            traded_weight = abs(item.target_weight) * turnover_scale
+            participation = abs(item.target_weight) / max(float(item.capacity_weight_limit), 1e-9)
+            transaction_cost += traded_weight * float(item.commission_bps) / 10000.0
+            slippage_cost += traded_weight * float(item.slippage_bps) / 10000.0
+            impact_cost += traded_weight * float(item.impact_bps) * (1.0 + np.sqrt(max(participation, 0.0))) / 10000.0
+            capacity_penalty += abs(item.target_weight) * max(0.0, participation - 0.80) * 0.020
         return {
-            "transaction_cost": turnover_estimate * transaction_bps / 10000.0,
-            "impact_cost": gross_weight * impact_bps / 10000.0 + liquidity_penalty,
+            "transaction_cost": transaction_cost,
+            "impact_cost": impact_cost,
+            "slippage_cost": slippage_cost,
+            "capacity_penalty": capacity_penalty,
             "margin_penalty": futures_weight * margin_penalty_rate,
             "tail_risk_penalty": unhedged_tail * 0.035 + decoder_uncertainty * 0.006 + decoder_risk_off * 0.010,
         }
+
+    def _allocation_tail_risk_score(self, allocations: List[SignalAllocation]) -> float:
+        if not allocations:
+            return 0.0
+        weighted_tail = 0.0
+        total_weight = 0.0
+        for item in allocations:
+            weight = abs(item.target_weight)
+            tail_pressure = max(
+                float(item.decoder_sde_tail_loss_probability),
+                float(item.kernel_tail_loss_rate),
+                min(abs(float(item.decoder_sde_downside_q05)) * 5.0, 1.0),
+            )
+            weighted_tail += weight * tail_pressure
+            total_weight += weight
+        return float(np.clip(weighted_tail / max(total_weight, 1e-9), 0.0, 0.80))
+
+    def _execution_profile(self, symbol: str, market_context: Dict[str, Any]) -> Dict[str, float]:
+        profiles = market_context.get("execution_costs", {})
+        profile = {}
+        if isinstance(profiles, dict):
+            profile = profiles.get(symbol) or profiles.get("default") or {}
+        return {
+            "commission_bps": float(profile.get("commission_bps", market_context.get("transaction_cost_bps", 8.0)) or 0.0),
+            "slippage_bps": float(profile.get("slippage_bps", market_context.get("slippage_bps", 0.0)) or 0.0),
+            "impact_bps": float(profile.get("impact_bps", market_context.get("impact_cost_bps", 12.0)) or 0.0),
+        }
+
+    def _capacity_weight_limit(self, symbol: str, market_context: Dict[str, Any]) -> float:
+        capacity_map = market_context.get("capacity") or market_context.get("capacity_limits") or {}
+        record = capacity_map.get(symbol, {}) if isinstance(capacity_map, dict) else {}
+        if "max_weight" in record:
+            return float(np.clip(float(record["max_weight"]), 0.0, 1.0))
+        portfolio_notional = float(record.get("portfolio_notional", market_context.get("portfolio_notional", self.constraints.default_portfolio_notional)) or 1.0)
+        adv_notional = float(record.get("adv_notional", 0.0) or 0.0)
+        participation = float(record.get("max_participation_rate", self.constraints.default_max_participation_rate) or 0.0)
+        if adv_notional <= 0 or portfolio_notional <= 0 or participation <= 0:
+            return 1.0
+        return float(np.clip((adv_notional * participation) / portfolio_notional, 0.0, 1.0))
 
     def _extract_tail_risk_score(self, market_context: Dict[str, Any]) -> float:
         crisis_probability = float(market_context.get("crisis_probability", 0.15))
@@ -1152,6 +1435,8 @@ class SelfIteratingCausalEngine:
             "residual_cash_weight": plan.residual_cash_weight,
             "estimated_cost_penalty": plan.estimated_cost_penalty,
             "estimated_impact_penalty": plan.estimated_impact_penalty,
+            "estimated_slippage_penalty": plan.estimated_slippage_penalty,
+            "estimated_capacity_penalty": plan.estimated_capacity_penalty,
             "estimated_margin_penalty": plan.estimated_margin_penalty,
             "estimated_tail_risk_penalty": plan.estimated_tail_risk_penalty,
             "signal_allocations": [asdict(item) for item in plan.signal_allocations],
@@ -1174,6 +1459,19 @@ class SelfIteratingCausalEngine:
                     "selected_features": allocation.selected_features,
                     "decoder_state_entropy": allocation.decoder_state_entropy,
                     "decoder_risk_off_probability": allocation.decoder_risk_off_probability,
+                    "decoder_sde_tail_loss_probability": allocation.decoder_sde_tail_loss_probability,
+                    "decoder_sde_downside_q05": allocation.decoder_sde_downside_q05,
+                    "kernel_tail_loss_rate": allocation.kernel_tail_loss_rate,
+                    "kelly_fraction": allocation.kelly_fraction,
+                    "capacity_weight_limit": allocation.capacity_weight_limit,
+                    "execution_cost_assumption": {
+                        "commission_bps": allocation.commission_bps,
+                        "slippage_bps": allocation.slippage_bps,
+                        "impact_bps": allocation.impact_bps,
+                    },
+                    "state_conditioning_multiplier": allocation.state_conditioning_multiplier,
+                    "cross_asset_transfer_multiplier": allocation.cross_asset_transfer_multiplier,
+                    "transferred_factor_count": allocation.transferred_factor_count,
                 }
             )
         if plan.tail_hedge_weight > 0:

@@ -9,6 +9,7 @@ posterior scoring. It is not a claim to reproduce any private fund algorithm.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -30,6 +31,7 @@ class InvariantDecoderConfig:
     kernel_neighbors: int = 20
     kernel_window: int = 5
     target_horizon: int = 5
+    sde_tail_loss_threshold: float = -0.02
 
 
 @dataclass
@@ -300,6 +302,7 @@ class InvarianceMarketDecoder:
         status = "active" if hmm.get("status") == "decoded" else "insufficient_or_uncertain"
         if status != "active":
             features = self._neutralize_uncertain_decoder_features(features)
+        risk_audit = self._latest_kernel_sde_audit(features)
         return DecoderSnapshot(
             status=status,
             feature_frame=features,
@@ -323,6 +326,7 @@ class InvarianceMarketDecoder:
                 "viterbi_path_tail": hmm.get("viterbi_path", []),
                 "sub_state_probabilities": sub_state_probabilities,
                 "kernel_neighbors": int(self.config.kernel_neighbors),
+                "kernel_sde_risk": risk_audit,
             },
         )
 
@@ -374,7 +378,8 @@ class InvarianceMarketDecoder:
         features["invariance_peer_corr_stability_20"] = returns_1.rolling(20, min_periods=5).corr(peer_return).fillna(0.0)
         features["invariance_cov_eigen_ratio_60"] = self._cov_eigen_ratio(returns_1, peer_return, 60)
         kernel = self._kernel_analog_features(features, close)
-        features = pd.concat([features, kernel], axis=1)
+        sde = self._sde_risk_features(close)
+        features = pd.concat([features, kernel, sde], axis=1)
         return features.replace([np.inf, -np.inf], np.nan).ffill().fillna(0.0)
 
     def _peer_return_mean(
@@ -435,12 +440,14 @@ class InvarianceMarketDecoder:
         means = []
         hit_rates = []
         payoffs = []
+        tail_loss_rates = []
         for idx in range(len(matrix)):
             max_train = idx - self.config.target_horizon
             if max_train < self.config.kernel_neighbors:
                 means.append(0.0)
                 hit_rates.append(0.0)
                 payoffs.append(0.0)
+                tail_loss_rates.append(0.0)
                 continue
             history = matrix.iloc[:max_train]
             labels = forward.iloc[:max_train]
@@ -453,16 +460,77 @@ class InvarianceMarketDecoder:
                 means.append(0.0)
                 hit_rates.append(0.0)
                 payoffs.append(0.0)
+                tail_loss_rates.append(0.0)
                 continue
             wins = neighbor_returns[neighbor_returns > 0]
             losses = neighbor_returns[neighbor_returns < 0]
             means.append(float(neighbor_returns.mean()))
             hit_rates.append(float((neighbor_returns > 0).mean()))
             payoffs.append(float(wins.mean() / abs(losses.mean())) if not wins.empty and not losses.empty else 0.0)
+            tail_loss_rates.append(float((neighbor_returns <= self.config.sde_tail_loss_threshold).mean()))
         out["kernel_analog_forward_mean"] = means
         out["kernel_analog_hit_rate"] = hit_rates
         out["kernel_analog_payoff_ratio"] = payoffs
+        out["kernel_analog_tail_loss_rate"] = tail_loss_rates
         return out
+
+    def _sde_risk_features(self, close: pd.Series) -> pd.DataFrame:
+        returns = close.astype(float).pct_change().fillna(0.0)
+        drift = returns.rolling(20, min_periods=5).mean().fillna(0.0)
+        volatility = returns.rolling(20, min_periods=5).std().fillna(0.0)
+        long_vol_mean = volatility.rolling(60, min_periods=10).mean().replace(0, np.nan)
+        horizon = max(1, int(self.config.target_horizon))
+        sqrt_h = math.sqrt(float(horizon))
+        variance = volatility * volatility
+        center = (drift - 0.5 * variance) * horizon
+        downside_q05 = np.exp(center + volatility * sqrt_h * -1.6448536269514722) - 1.0
+        upside_q95 = np.exp(center + volatility * sqrt_h * 1.6448536269514722) - 1.0
+        threshold = max(-0.95, float(self.config.sde_tail_loss_threshold))
+        log_threshold = math.log1p(threshold)
+        denom = (volatility * sqrt_h).replace(0, np.nan)
+        z_score = ((log_threshold - center) / denom).replace([np.inf, -np.inf], np.nan).fillna(-8.0)
+        tail_loss_probability = z_score.apply(self._normal_cdf)
+        vol_pressure = (volatility / long_vol_mean - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0).clip(lower=0.0)
+        drawdown = (close / close.rolling(20, min_periods=5).max().replace(0, np.nan) - 1.0).fillna(0.0).abs()
+        regime_switch_pressure = (0.45 * vol_pressure + 2.5 * drawdown + 0.55 * tail_loss_probability).clip(0.0, 1.0)
+        return pd.DataFrame(
+            {
+                "sde_drift_20": drift,
+                "sde_volatility_20": volatility,
+                "sde_downside_q05": downside_q05,
+                "sde_upside_q95": upside_q95,
+                "sde_tail_loss_probability": tail_loss_probability,
+                "sde_regime_switch_pressure": regime_switch_pressure,
+            },
+            index=close.index,
+        )
+
+    @staticmethod
+    def _normal_cdf(value: float) -> float:
+        return float(0.5 * (1.0 + math.erf(float(value) / math.sqrt(2.0))))
+
+    @staticmethod
+    def _latest_kernel_sde_audit(features: pd.DataFrame) -> Dict[str, float]:
+        if features.empty:
+            return {}
+        latest = features.iloc[-1]
+        return {
+            "kernel_analog_tail_loss_rate": round(float(latest.get("kernel_analog_tail_loss_rate", 0.0) or 0.0), 6),
+            "sde_tail_loss_probability": round(float(latest.get("sde_tail_loss_probability", 0.0) or 0.0), 6),
+            "sde_downside_q05": round(float(latest.get("sde_downside_q05", 0.0) or 0.0), 6),
+            "sde_volatility_20": round(float(latest.get("sde_volatility_20", 0.0) or 0.0), 6),
+            "sde_regime_switch_pressure": round(float(latest.get("sde_regime_switch_pressure", 0.0) or 0.0), 6),
+            "tail_hedge_pressure": round(
+                float(
+                    max(
+                        latest.get("kernel_analog_tail_loss_rate", 0.0) or 0.0,
+                        latest.get("sde_tail_loss_probability", 0.0) or 0.0,
+                        latest.get("sde_regime_switch_pressure", 0.0) or 0.0,
+                    )
+                ),
+                6,
+            ),
+        }
 
     @staticmethod
     def _noisy_channel_posteriors(features: pd.DataFrame, hmm: Dict[str, Any]) -> Dict[str, float]:
