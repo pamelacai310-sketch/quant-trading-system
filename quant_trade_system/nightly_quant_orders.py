@@ -1127,6 +1127,11 @@ def _build_evidence_snapshot(
         for name, cycle in cycles.items()
         if cycle.get("invariance_decoder")
     }
+    scm_records = {
+        name: cycle.get("scm_dag", {})
+        for name, cycle in cycles.items()
+        if cycle.get("scm_dag")
+    }
     return {
         "report_date": report.get("report_date"),
         "generated_at": report.get("generated_at"),
@@ -1152,6 +1157,7 @@ def _build_evidence_snapshot(
         ],
         "causal_validation": validation_summaries,
         "invariance_decoder": decoder_records,
+        "scm_dag": scm_records,
         "model_versions": model_records,
         "feature_lineage": feature_records,
         "position_constraints": {
@@ -1568,6 +1574,15 @@ def render_report_text(report: Dict[str, Any]) -> str:
                 for market, item in decoder_snapshot.items()
             )
             lines.append(f"- 不变性/HMM解码：{decoder_text}")
+        scm_snapshot = snapshot.get("scm_dag", {})
+        if scm_snapshot:
+            scm_text = "; ".join(
+                f"{market}:graphs={item.get('graph_count', 0)} "
+                f"edges={item.get('candidate_edge_count', 0)} "
+                f"cf_tail={float(item.get('max_counterfactual_tail_risk', 0.0) or 0.0):.3f}"
+                for market, item in scm_snapshot.items()
+            )
+            lines.append(f"- SCM/DAG因果图：{scm_text}")
         lines.append(
             f"- 博弈确认：chains={len(snapshot.get('event_driven_causal_chains', []))} "
             f"relations={len(snapshot.get('sensitive_asset_confirmations', []))}，"

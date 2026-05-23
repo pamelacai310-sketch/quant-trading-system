@@ -127,6 +127,8 @@ class SelfIteratingCausalEngineTests(unittest.TestCase):
         self.assertIn("experiment_record", result)
         self.assertIn("model_registry_record", result)
         self.assertIn("feature_store_records", result)
+        self.assertIn("scm_dag", result)
+        self.assertIn("TEST", result["scm_dag"]["symbols"])
 
     def test_futures_candidate_matrix_includes_global_peer_linkage_features(self) -> None:
         rows = 140
@@ -215,6 +217,7 @@ class SelfIteratingCausalEngineTests(unittest.TestCase):
         self.assertIn("invariance_decoder", result)
         self.assertEqual(result["invariance_decoder"]["decoder_count"], 1)
         self.assertIn("invariance_decoder", result["symbols"]["CU2608"])
+        self.assertIn("scm_dag", result["symbols"]["CU2608"])
 
     def test_portfolio_penalty_uses_decoder_uncertainty_and_risk_off(self) -> None:
         low_risk_plan = self.engine.optimize_portfolio(
@@ -359,6 +362,21 @@ class SelfIteratingCausalEngineTests(unittest.TestCase):
         )
 
         self.assertGreater(self.engine._cross_asset_transfer_multiplier("base_ret_5", "AAPL"), 1.0)
+
+    def test_scm_counterfactual_stress_increases_tail_risk(self) -> None:
+        low_context = {"crisis_probability": 0.05}
+        high_context = {
+            "crisis_probability": 0.05,
+            "scm_counterfactual_stress": {"max_tail_risk_score": 0.45, "max_tail_hedge_multiplier": 1.45},
+        }
+
+        self.assertGreater(
+            self.engine._extract_tail_risk_score(high_context),
+            self.engine._extract_tail_risk_score(low_context),
+        )
+
+        no_signal_plan = self.engine.optimize_portfolio([], high_context)
+        self.assertGreater(no_signal_plan.tail_hedge_weight, 0.10)
 
     def test_validation_gate_marks_unstable_features_observation_only(self) -> None:
         idx = pd.RangeIndex(80)

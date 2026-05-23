@@ -130,6 +130,9 @@ class CausalValidationLoop:
         factor_series: pd.Series,
         target_returns: pd.Series,
         benchmark_returns: Optional[pd.Series] = None,
+        adjustment_frame: Optional[pd.DataFrame] = None,
+        backdoor_adjustment: Optional[Mapping[str, Any]] = None,
+        discovery_support: float = 0.0,
     ) -> CausalEdgeValidationSnapshot:
         aligned = pd.concat(
             [
@@ -146,6 +149,15 @@ class CausalValidationLoop:
             benchmark.index = aligned.index
             aligned["benchmark"] = benchmark
             aligned = aligned.dropna()
+        if adjustment_frame is not None and not adjustment_frame.empty:
+            controls = adjustment_frame.copy().reset_index(drop=True)
+            controls = controls.apply(pd.to_numeric, errors="coerce")
+            if len(controls) >= len(aligned):
+                controls = controls.iloc[-len(aligned):].reset_index(drop=True)
+            controls.index = aligned.index
+            controls = controls.loc[:, controls.std(numeric_only=True) > 1e-10]
+            controls = controls.add_prefix("adjust_")
+            aligned = aligned.join(controls, how="left").dropna()
 
         edge_id = f"{feature_name}_to_forward_return"
         if len(aligned) < self.min_observations:
@@ -191,19 +203,23 @@ class CausalValidationLoop:
         p_value = self._p_value_proxy(corr, len(aligned))
         effect_size = abs(slope) * float(source.std())
 
+        adjustment_quality = _to_float((backdoor_adjustment or {}).get("adjustment_quality"), 0.0)
         validation_score = float(
             np.clip(
-                0.35 * min(r2 / 0.70, 1.0)
-                + 0.25 * min(abs(corr) / 0.50, 1.0)
-                + 0.25 * stability
-                + 0.15 * min(oos_score / 0.30, 1.0),
+                0.28 * min(r2 / 0.70, 1.0)
+                + 0.20 * min(abs(corr) / 0.50, 1.0)
+                + 0.22 * stability
+                + 0.12 * min(oos_score / 0.30, 1.0)
+                + 0.10 * min(max(float(discovery_support), 0.0), 1.0)
+                + 0.08 * min(adjustment_quality, 1.0),
                 0.0,
                 1.0,
             )
         )
-        if p_value <= 0.05 and r2 >= 0.15 and stability >= 0.55 and oos_score >= 0.05:
+        backdoor_ok = adjustment_quality >= 0.55 or benchmark_returns is not None
+        if p_value <= 0.05 and r2 >= 0.15 and stability >= 0.55 and oos_score >= 0.05 and backdoor_ok:
             status = IDENTIFIABLE
-        elif p_value <= 0.10 and r2 >= 0.05 and stability >= 0.35:
+        elif p_value <= 0.10 and r2 >= 0.05 and stability >= 0.35 and (backdoor_ok or discovery_support >= 0.10):
             status = WEAK_IDENTIFIABLE
         elif abs(corr) >= 0.05:
             status = CORRELATION_ONLY
@@ -228,7 +244,10 @@ class CausalValidationLoop:
                 "slope": round(float(slope), 6),
                 "first_half_correlation": round(float(first_corr), 6),
                 "second_half_correlation": round(float(second_corr), 6),
-                "method": "split_stability_incremental_regression",
+                "method": "backdoor_adjusted_split_stability_incremental_regression",
+                "discovery_support": round(float(discovery_support), 6),
+                "backdoor_adjustment": dict(backdoor_adjustment or {}),
+                "adjustment_columns": [column for column in aligned.columns if column.startswith("adjust_")],
             },
         )
 
@@ -246,9 +265,11 @@ class CausalValidationLoop:
     def _incremental_regression(aligned: pd.DataFrame) -> tuple[float, float, float]:
         y = aligned["target"].to_numpy(dtype=float)
         source = aligned["source"].to_numpy(dtype=float)
-        if "benchmark" in aligned.columns:
-            x = np.column_stack([np.ones(len(aligned)), aligned["benchmark"].to_numpy(dtype=float), source])
-            base = np.column_stack([np.ones(len(aligned)), aligned["benchmark"].to_numpy(dtype=float)])
+        control_columns = [column for column in aligned.columns if column not in {"source", "target"}]
+        if control_columns:
+            controls = aligned[control_columns].to_numpy(dtype=float)
+            x = np.column_stack([np.ones(len(aligned)), controls, source])
+            base = np.column_stack([np.ones(len(aligned)), controls])
             base_coef, *_ = np.linalg.lstsq(base, y, rcond=None)
             base_hat = base @ base_coef
             base_ss = float(np.sum((y - base_hat) ** 2))
@@ -259,7 +280,7 @@ class CausalValidationLoop:
         y_hat = x @ coef
         ss_res = float(np.sum((y - y_hat) ** 2))
         ss_tot = float(np.sum((y - y.mean()) ** 2))
-        if "benchmark" in aligned.columns:
+        if control_columns:
             r2 = max(0.0, (base_ss - ss_res) / max(ss_tot, 1e-12))
         else:
             r2 = 1.0 - ss_res / ss_tot if ss_tot else 0.0

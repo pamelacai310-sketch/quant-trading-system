@@ -23,6 +23,7 @@ import pandas as pd
 
 from ...factors.factor_library import FactorLibrary
 from .causal_factor_library import AssetClass, CausalFactorLibrary
+from .causal_graph_layer import CausalDAGEdge, CausalGraphLayer
 from .invariance_market_decoder import InvarianceMarketDecoder, InvariantDecoderConfig
 from .research_governance import (
     CausalValidationLoop,
@@ -41,6 +42,8 @@ class FeatureSelectionPolicy:
     max_selected_features: int = 12
     target_horizon: int = 5
     signal_threshold: float = 0.25
+    min_discovery_support: float = 0.03
+    discovery_support_weight: float = 0.20
 
 
 @dataclass
@@ -83,6 +86,9 @@ class SelectedFeature:
     validation_score: float = 0.0
     can_trade: bool = False
     rejection_reason: Optional[str] = None
+    causal_discovery_support: float = 0.0
+    backdoor_adjustment_quality: float = 0.0
+    scm_edge_algorithms: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -164,7 +170,9 @@ class SelfIteratingCausalEngine:
         self.experiment_registry = ExperimentRegistry()
         self.model_registry = ModelRegistry()
         self.invariance_decoder = InvarianceMarketDecoder(invariant_decoder_config)
+        self.causal_graph_layer = CausalGraphLayer(min_observations=self.selection_policy.min_history)
         self.latest_decoder_snapshots: Dict[str, Dict[str, Any]] = {}
+        self.latest_scm_snapshots: Dict[str, Dict[str, Any]] = {}
         self.cross_asset_factor_memory: Dict[str, Dict[str, Any]] = {}
         self.latest_iteration: Dict[str, Any] = {}
 
@@ -208,6 +216,12 @@ class SelfIteratingCausalEngine:
                 "experiment_registry_enabled": True,
                 "model_registry_enabled": True,
             },
+            "scm_dag_layer": {
+                "enabled": True,
+                "candidate_edge_generators": ["pc", "fci", "pcmci"],
+                "backdoor_adjustment_gate": True,
+                "counterfactual_stress_to_tail_hedge": True,
+            },
             "invariance_decoder": {
                 "enabled": True,
                 "version": "invariance_decoder_v1",
@@ -240,6 +254,7 @@ class SelfIteratingCausalEngine:
         signal_candidates: List[Dict[str, Any]] = []
         all_validation_records: List[Dict[str, Any]] = []
         self.latest_decoder_snapshots = {}
+        self.latest_scm_snapshots = {}
 
         for symbol, frame in symbol_datasets.items():
             normalized = self._normalize_ohlcv_frame(frame)
@@ -269,6 +284,12 @@ class SelfIteratingCausalEngine:
                 target_returns,
                 benchmark_returns=benchmark_returns,
             )
+            scm_snapshot = self.causal_graph_layer.build_scm_snapshot(
+                factor_matrix,
+                target_returns,
+                benchmark_returns=benchmark_returns,
+            )
+            self.latest_scm_snapshots[symbol] = scm_snapshot.to_audit_dict()
 
             if not selected:
                 symbol_reports[symbol] = {
@@ -276,6 +297,7 @@ class SelfIteratingCausalEngine:
                     "rows": int(len(normalized)),
                     "global_peer_count": int(len(peer_frames)),
                     "invariance_decoder": decoder_audit,
+                    "scm_dag": self.latest_scm_snapshots.get(symbol, {}),
                     "selected_features": [],
                     "rejected_features": [asdict(item) for item in rejected[:15]],
                 }
@@ -287,6 +309,7 @@ class SelfIteratingCausalEngine:
                 target_returns=target_returns,
                 selected_features=selected,
                 benchmark_returns=benchmark_returns,
+                scm_edges={edge["source"]: edge for edge in self.latest_scm_snapshots[symbol].get("edges", [])},
             )
             all_validation_records.extend(validation_records)
 
@@ -296,6 +319,7 @@ class SelfIteratingCausalEngine:
                     "rows": int(len(normalized)),
                     "global_peer_count": int(len(peer_frames)),
                     "invariance_decoder": decoder_audit,
+                    "scm_dag": self.latest_scm_snapshots.get(symbol, {}),
                     "selected_features": [asdict(item) for item in selected],
                     "rejected_features": [asdict(item) for item in rejected[:15]],
                     "causal_validation": validation_records,
@@ -350,6 +374,7 @@ class SelfIteratingCausalEngine:
                 "rows": int(len(normalized)),
                 "global_peer_count": int(len(peer_frames)),
                 "invariance_decoder": decoder_audit,
+                "scm_dag": self.latest_scm_snapshots.get(symbol, {}),
                 "selected_features": [asdict(item) for item in selected],
                 "tradable_feature_count": int(len(tradable_selected)),
                 "rejected_features": [asdict(item) for item in rejected[:15]],
@@ -362,7 +387,9 @@ class SelfIteratingCausalEngine:
                 "latest_confidence": latest_confidence,
             }
 
-        portfolio_plan = self.optimize_portfolio(signal_candidates, market_context or {})
+        portfolio_context = dict(market_context or {})
+        portfolio_context["scm_counterfactual_stress"] = self._aggregate_counterfactual_stress(self.latest_scm_snapshots)
+        portfolio_plan = self.optimize_portfolio(signal_candidates, portfolio_context)
         experiment_record = self._record_learning_experiment(
             symbol_datasets=symbol_datasets,
             signal_candidates=signal_candidates,
@@ -384,6 +411,7 @@ class SelfIteratingCausalEngine:
             "constraints": asdict(self.constraints),
             "causal_validation_summary": self._summarize_validation_records(all_validation_records),
             "invariance_decoder": self._summarize_decoder_snapshots(self.latest_decoder_snapshots),
+            "scm_dag": self._summarize_scm_snapshots(self.latest_scm_snapshots),
             "monolithic_research_factory": self._summarize_cross_asset_factor_memory(),
             "experiment_record": asdict(experiment_record),
             "model_registry_record": asdict(model_record),
@@ -401,6 +429,7 @@ class SelfIteratingCausalEngine:
         """按 RS>70 和 R²>0.7 自动筛选具备金融含义的特征。"""
         raw_rows: List[Dict[str, Any]] = []
         benchmark = self._align_series(benchmark_returns, factor_matrix.index) if benchmark_returns is not None else None
+        discovery_edges = self.causal_graph_layer.discover_candidate_edges(factor_matrix, target_returns)
 
         for factor_name in factor_matrix.columns:
             series = pd.to_numeric(factor_matrix[factor_name], errors="coerce")
@@ -423,6 +452,8 @@ class SelfIteratingCausalEngine:
             else:
                 regression = self._univariate_factor_regression(aligned["factor"], aligned["target"])
 
+            edge = discovery_edges.get(factor_name)
+            discovery_support = self.causal_graph_layer.discovery_support_for(discovery_edges, factor_name)
             raw_rows.append(
                 {
                     "factor_name": factor_name,
@@ -431,7 +462,11 @@ class SelfIteratingCausalEngine:
                     "slope": regression["slope"],
                     "financial_meaning": self._factor_financial_meaning(factor_name),
                     "formula": self._factor_formula(factor_name),
-                    "predictive_power": abs(regression["correlation"]) * (1.0 + regression["r_squared"]),
+                    "predictive_power": abs(regression["correlation"])
+                    * (1.0 + regression["r_squared"])
+                    * (1.0 + self.selection_policy.discovery_support_weight * discovery_support),
+                    "causal_discovery_support": discovery_support,
+                    "scm_edge_algorithms": list(edge.algorithms) if edge else [],
                 }
             )
 
@@ -454,6 +489,8 @@ class SelfIteratingCausalEngine:
                 slope=float(row["slope"]),
                 direction=1 if row["slope"] >= 0 else -1,
                 selected=passes,
+                causal_discovery_support=float(row["causal_discovery_support"]),
+                scm_edge_algorithms=list(row["scm_edge_algorithms"]),
                 rejection_reason=None if passes else self._rejection_reason(rs_score, row["r_squared"]),
             )
             self.factor_library.update_factor_metadata(
@@ -463,6 +500,8 @@ class SelfIteratingCausalEngine:
                     "latest_r_squared": round(float(row["r_squared"]), 6),
                     "latest_correlation": round(float(row["correlation"]), 6),
                     "selected_in_latest_cycle": passes,
+                    "latest_causal_discovery_support": round(float(row["causal_discovery_support"]), 6),
+                    "latest_scm_edge_algorithms": list(row["scm_edge_algorithms"]),
                     "financial_meaning": row["financial_meaning"],
                     "formula": row["formula"],
                 },
@@ -494,18 +533,19 @@ class SelfIteratingCausalEngine:
             key=lambda item: (item["objective_score"], abs(item["raw_score"]), item["confidence"]),
             reverse=True,
         )[: self.constraints.max_positions]
+        tail_risk = self._extract_tail_risk_score(market_context)
         if not candidates:
+            tail_weight = float(np.clip(0.10 + tail_risk * 0.60, 0.10, 0.45))
             return PortfolioPlan(
                 active_weight=0.0,
-                safe_weight=0.90,
-                tail_hedge_weight=0.10,
+                safe_weight=round(1.0 - tail_weight, 6),
+                tail_hedge_weight=round(tail_weight, 6),
                 signal_allocations=[],
                 projected_objective_score=0.0,
-                barbell_ratio=0.10,
+                barbell_ratio=round(tail_weight, 6),
                 residual_cash_weight=0.0,
             )
 
-        tail_risk = self._extract_tail_risk_score(market_context)
         best_plan: Optional[PortfolioPlan] = None
         best_score = -np.inf
 
@@ -559,21 +599,41 @@ class SelfIteratingCausalEngine:
         target_returns: pd.Series,
         selected_features: List[SelectedFeature],
         benchmark_returns: Optional[pd.Series] = None,
+        scm_edges: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> tuple[List[SelectedFeature], List[Dict[str, Any]]]:
         tradable: List[SelectedFeature] = []
         records: List[Dict[str, Any]] = []
+        scm_edges = scm_edges or {}
         for feature in selected_features:
+            backdoor = self.causal_graph_layer.backdoor_adjustment(
+                feature.factor_name,
+                "forward_return",
+                factor_matrix,
+                benchmark_returns=benchmark_returns,
+            )
+            adjustment_frame = self.causal_graph_layer.adjustment_frame(
+                backdoor,
+                factor_matrix,
+                benchmark_returns=benchmark_returns,
+            )
+            discovery_support = float(scm_edges.get(feature.factor_name, {}).get("confidence", feature.causal_discovery_support) or 0.0)
             validation = self.causal_validation_loop.validate_feature(
                 feature_name=feature.factor_name,
                 factor_series=factor_matrix[feature.factor_name],
                 target_returns=target_returns,
                 benchmark_returns=benchmark_returns,
+                adjustment_frame=adjustment_frame,
+                backdoor_adjustment=asdict(backdoor),
+                discovery_support=discovery_support,
             )
             feature.identification_status = validation.identification_status
             feature.validation_score = validation.validation_score
             feature.can_trade = validation.can_trade
+            feature.backdoor_adjustment_quality = backdoor.adjustment_quality
+            feature.causal_discovery_support = discovery_support
             record = asdict(validation)
             record["symbol"] = symbol
+            record["scm_edge"] = scm_edges.get(feature.factor_name, {})
             records.append(record)
 
             self.feature_store.register_feature(
@@ -585,12 +645,14 @@ class SelfIteratingCausalEngine:
                     "source": "self_iterating_candidate_factor_matrix",
                     "rows": int(len(factor_matrix)),
                     "target_horizon": self.selection_policy.target_horizon,
+                    "scm_edge": scm_edges.get(feature.factor_name, {}),
                 },
                 leakage_check={
                     "forward_target_shift_days": self.selection_policy.target_horizon,
                     "uses_only_information_available_at_or_before_signal_time": True,
                     "purged_cv_required_before_promotion": True,
                     "cross_asset_transfer_requires_validation": True,
+                    "backdoor_adjustment_required_before_position_sizing": True,
                 },
                 validation_status=record,
             )
@@ -613,6 +675,7 @@ class SelfIteratingCausalEngine:
         }
         validation_summary = self._summarize_validation_records(validation_records)
         decoder_summary = self._summarize_decoder_snapshots(self.latest_decoder_snapshots)
+        scm_summary = self._summarize_scm_snapshots(self.latest_scm_snapshots)
         transfer_summary = self._summarize_cross_asset_factor_memory()
         failure_reasons = sorted(
             {
@@ -645,6 +708,7 @@ class SelfIteratingCausalEngine:
                 "active_weight": portfolio_plan.active_weight,
                 "validation_summary": validation_summary,
                 "invariance_decoder": decoder_summary,
+                "scm_dag": scm_summary,
                 "monolithic_research_factory": transfer_summary,
             },
             failure_reasons=failure_reasons,
@@ -659,6 +723,7 @@ class SelfIteratingCausalEngine:
     ):
         validation_summary = self._summarize_validation_records(validation_records)
         decoder_summary = self._summarize_decoder_snapshots(self.latest_decoder_snapshots)
+        scm_summary = self._summarize_scm_snapshots(self.latest_scm_snapshots)
         transfer_summary = self._summarize_cross_asset_factor_memory()
         passed_symbols = [
             symbol
@@ -686,6 +751,7 @@ class SelfIteratingCausalEngine:
                 "estimated_slippage_penalty": portfolio_plan.estimated_slippage_penalty,
                 "estimated_capacity_penalty": portfolio_plan.estimated_capacity_penalty,
                 "invariance_decoder": decoder_summary,
+                "scm_dag": scm_summary,
                 "monolithic_research_factory": transfer_summary,
             },
             promotion_status=promotion_status,
@@ -729,6 +795,46 @@ class SelfIteratingCausalEngine:
             "avg_state_entropy": round(float(np.mean(entropies)), 6) if entropies else 0.0,
             "max_risk_off_probability": round(float(max(risk_off)), 6) if risk_off else 0.0,
             "symbols": snapshots,
+        }
+
+    @staticmethod
+    def _aggregate_counterfactual_stress(snapshots: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+        stresses = []
+        for symbol, snapshot in snapshots.items():
+            stress = snapshot.get("counterfactual_stress", {})
+            if stress:
+                stresses.append(
+                    {
+                        "symbol": symbol,
+                        "tail_risk_score": float(stress.get("tail_risk_score", 0.0) or 0.0),
+                        "tail_hedge_multiplier": float(stress.get("tail_hedge_multiplier", 1.0) or 1.0),
+                        "expected_portfolio_impact": float(stress.get("expected_portfolio_impact", 0.0) or 0.0),
+                    }
+                )
+        return {
+            "max_tail_risk_score": round(max([item["tail_risk_score"] for item in stresses] or [0.0]), 6),
+            "max_tail_hedge_multiplier": round(max([item["tail_hedge_multiplier"] for item in stresses] or [1.0]), 6),
+            "min_expected_portfolio_impact": round(min([item["expected_portfolio_impact"] for item in stresses] or [0.0]), 6),
+            "symbols": stresses,
+        }
+
+    def _summarize_scm_snapshots(self, snapshots: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+        if not snapshots:
+            return {
+                "graph_count": 0,
+                "candidate_edge_count": 0,
+                "max_counterfactual_tail_risk": 0.0,
+                "symbols": {},
+            }
+        edge_count = sum(len(snapshot.get("edges", [])) for snapshot in snapshots.values())
+        stress = self._aggregate_counterfactual_stress(snapshots)
+        return {
+            "graph_count": len(snapshots),
+            "candidate_edge_count": edge_count,
+            "max_counterfactual_tail_risk": stress["max_tail_risk_score"],
+            "max_tail_hedge_multiplier": stress["max_tail_hedge_multiplier"],
+            "symbols": snapshots,
+            "gate": "SCM/DAG candidate edges require backdoor-adjusted validation before sizing",
         }
 
     def _update_cross_asset_factor_memory(
@@ -1417,6 +1523,13 @@ class SelfIteratingCausalEngine:
                     .get("score", 0.0)
                     or 0.0
                 ),
+            )
+        scm_stress = market_context.get("scm_counterfactual_stress", {})
+        if isinstance(scm_stress, dict):
+            crisis_probability = max(
+                crisis_probability,
+                float(scm_stress.get("max_tail_risk_score", 0.0) or 0.0),
+                min(0.80, max(0.0, float(scm_stress.get("max_tail_hedge_multiplier", 1.0) or 1.0) - 1.0)),
             )
         regime = market_context.get("regime") or market_context.get("cross_asset_regime", {}).get("regime", "")
         if isinstance(regime, dict):

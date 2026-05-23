@@ -334,6 +334,11 @@ class NightlyQuantOrdersTests(unittest.TestCase):
                     "avg_state_entropy": 0.2,
                     "max_risk_off_probability": 0.1,
                 },
+                "scm_dag": {
+                    "graph_count": 1,
+                    "candidate_edge_count": 2,
+                    "max_counterfactual_tail_risk": 0.15,
+                },
                 "model_registry_record": {"version": "v1"},
                 "feature_store_records": [{"name": "f1"}],
                 "constraints": {"max_single_weight": 0.2},
@@ -342,6 +347,7 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         snapshot = _build_evidence_snapshot(report, cycles)
         self.assertEqual(snapshot["causal_validation"]["HK"]["tradable_edge_count"], 1)
         self.assertEqual(snapshot["invariance_decoder"]["HK"]["active_count"], 1)
+        self.assertEqual(snapshot["scm_dag"]["HK"]["candidate_edge_count"], 2)
         self.assertEqual(snapshot["model_versions"]["HK"]["version"], "v1")
         self.assertEqual(snapshot["sensitive_asset_confirmations"][0]["actionability"], "trade_allowed")
 

@@ -36,6 +36,13 @@ from .invariance_market_decoder import (
     InvarianceMarketDecoder,
     InvariantDecoderConfig,
 )
+from .causal_graph_layer import (
+    BackdoorAdjustmentSet,
+    CausalDAGEdge,
+    CausalGraphLayer,
+    CounterfactualStressResult,
+    SCMSnapshot,
+)
 from .self_iterating_causal_engine import (
     FeatureSelectionPolicy,
     LearningObjectiveConfig,
@@ -143,6 +150,11 @@ __all__ = [
     "HierarchicalHMMDecoder",
     "InvarianceMarketDecoder",
     "InvariantDecoderConfig",
+    "BackdoorAdjustmentSet",
+    "CausalDAGEdge",
+    "CausalGraphLayer",
+    "CounterfactualStressResult",
+    "SCMSnapshot",
     "FeatureSelectionPolicy",
     "LearningObjectiveConfig",
     "ObjectiveMetrics",
