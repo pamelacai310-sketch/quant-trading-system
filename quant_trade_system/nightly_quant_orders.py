@@ -1132,6 +1132,21 @@ def _build_evidence_snapshot(
         for name, cycle in cycles.items()
         if cycle.get("scm_dag")
     }
+    abstention_records = {
+        name: cycle.get("abstention_gate", {})
+        for name, cycle in cycles.items()
+        if cycle.get("abstention_gate")
+    }
+    instrument_records = {
+        name: cycle.get("instrument_registry", [])
+        for name, cycle in cycles.items()
+        if cycle.get("instrument_registry")
+    }
+    llm_audit_records = {
+        name: cycle.get("causal_llm_audit", [])
+        for name, cycle in cycles.items()
+        if cycle.get("causal_llm_audit")
+    }
     return {
         "report_date": report.get("report_date"),
         "generated_at": report.get("generated_at"),
@@ -1158,6 +1173,9 @@ def _build_evidence_snapshot(
         "causal_validation": validation_summaries,
         "invariance_decoder": decoder_records,
         "scm_dag": scm_records,
+        "causal_abstention_gate": abstention_records,
+        "instrument_registry": instrument_records,
+        "causal_llm_audit": llm_audit_records,
         "model_versions": model_records,
         "feature_lineage": feature_records,
         "position_constraints": {
@@ -1583,6 +1601,29 @@ def render_report_text(report: Dict[str, Any]) -> str:
                 for market, item in scm_snapshot.items()
             )
             lines.append(f"- SCM/DAG因果图：{scm_text}")
+        abstention_snapshot = snapshot.get("causal_abstention_gate", {})
+        if abstention_snapshot:
+            abstention_text = "; ".join(
+                f"{market}:{item.get('decision_counts', {})} "
+                f"avg_risk={float(item.get('avg_risk_score', 0.0) or 0.0):.3f}"
+                for market, item in abstention_snapshot.items()
+            )
+            lines.append(f"- 统一弃权门：{abstention_text}")
+        instrument_snapshot = snapshot.get("instrument_registry", {})
+        if instrument_snapshot:
+            instrument_text = "; ".join(
+                f"{market}:iv_edges={len(records)} "
+                f"valid={sum(1 for record in records if record.get('validity_status') == 'valid')}"
+                for market, records in instrument_snapshot.items()
+            )
+            lines.append(f"- 工具变量诊断：{instrument_text}")
+        llm_snapshot = snapshot.get("causal_llm_audit", {})
+        if llm_snapshot:
+            llm_text = "; ".join(
+                f"{market}:audit_only={len(records)}"
+                for market, records in llm_snapshot.items()
+            )
+            lines.append(f"- Causal LLM审计：{llm_text}（不得直接改变仓位）")
         lines.append(
             f"- 博弈确认：chains={len(snapshot.get('event_driven_causal_chains', []))} "
             f"relations={len(snapshot.get('sensitive_asset_confirmations', []))}，"

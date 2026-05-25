@@ -26,9 +26,18 @@ from .causal_factor_library import AssetClass, CausalFactorLibrary
 from .causal_graph_layer import CausalDAGEdge, CausalGraphLayer
 from .invariance_market_decoder import InvarianceMarketDecoder, InvariantDecoderConfig
 from .research_governance import (
+    ALLOW,
+    IDENTIFIABLE,
+    NO_TRADE,
+    OBSERVE_ONLY,
+    REDUCE,
+    WEAK_IDENTIFIABLE,
+    CausalAbstentionGate,
+    CausalLLMAuditor,
     CausalValidationLoop,
     ExperimentRegistry,
     FeatureStore,
+    InstrumentRegistry,
     ModelRegistry,
 )
 
@@ -89,6 +98,10 @@ class SelectedFeature:
     causal_discovery_support: float = 0.0
     backdoor_adjustment_quality: float = 0.0
     scm_edge_algorithms: List[str] = field(default_factory=list)
+    instrument_status: str = "unavailable"
+    instrument_first_stage_strength: float = 0.0
+    instrument_exclusion_proxy: float = 1.0
+    iv_weight_multiplier: float = 1.0
 
 
 @dataclass
@@ -129,6 +142,9 @@ class SignalAllocation:
     state_conditioning_multiplier: float = 1.0
     cross_asset_transfer_multiplier: float = 1.0
     transferred_factor_count: int = 0
+    abstention_decision: str = ALLOW
+    abstention_risk_score: float = 0.0
+    abstention_reasons: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -169,10 +185,15 @@ class SelfIteratingCausalEngine:
         self.feature_store = FeatureStore()
         self.experiment_registry = ExperimentRegistry()
         self.model_registry = ModelRegistry()
+        self.instrument_registry = InstrumentRegistry()
+        self.abstention_gate = CausalAbstentionGate()
+        self.causal_llm_auditor = CausalLLMAuditor()
         self.invariance_decoder = InvarianceMarketDecoder(invariant_decoder_config)
         self.causal_graph_layer = CausalGraphLayer(min_observations=self.selection_policy.min_history)
         self.latest_decoder_snapshots: Dict[str, Dict[str, Any]] = {}
         self.latest_scm_snapshots: Dict[str, Dict[str, Any]] = {}
+        self.latest_abstention_decisions: Dict[str, Dict[str, Any]] = {}
+        self.latest_llm_audit_records: List[Dict[str, Any]] = []
         self.cross_asset_factor_memory: Dict[str, Dict[str, Any]] = {}
         self.latest_iteration: Dict[str, Any] = {}
 
@@ -222,6 +243,27 @@ class SelfIteratingCausalEngine:
                 "backdoor_adjustment_gate": True,
                 "counterfactual_stress_to_tail_hedge": True,
             },
+            "causal_abstention_gate": {
+                "enabled": True,
+                "outputs": [ALLOW, REDUCE, OBSERVE_ONLY, NO_TRADE],
+                "inputs": [
+                    "identification_status",
+                    "backdoor_quality",
+                    "hmm_state_entropy",
+                    "data_validation",
+                    "model_disagreement",
+                    "counterfactual_tail_risk",
+                    "instrument_status",
+                ],
+            },
+            "instrument_registry": {
+                "enabled": True,
+                "role": "Deep-IV readiness diagnostics; valid instruments may boost weights, weak instruments stay observe-only.",
+            },
+            "causal_llm_auditor": {
+                "enabled": True,
+                "role": "audit-only hypothesis extraction; never changes position size before price/SCM/backdoor/IV validation.",
+            },
             "invariance_decoder": {
                 "enabled": True,
                 "version": "invariance_decoder_v1",
@@ -255,6 +297,8 @@ class SelfIteratingCausalEngine:
         all_validation_records: List[Dict[str, Any]] = []
         self.latest_decoder_snapshots = {}
         self.latest_scm_snapshots = {}
+        self.latest_abstention_decisions = {}
+        self.latest_llm_audit_records = self._audit_llm_hypotheses(market_context or {})
 
         for symbol, frame in symbol_datasets.items():
             normalized = self._normalize_ohlcv_frame(frame)
@@ -266,6 +310,10 @@ class SelfIteratingCausalEngine:
                     "global_peer_count": int(len(peer_frames)),
                     "selected_features": [],
                     "rejected_features": [],
+                    "abstention_gate": {
+                        "decision": NO_TRADE,
+                        "reason": "insufficient_history",
+                    },
                 }
                 continue
 
@@ -337,7 +385,15 @@ class SelfIteratingCausalEngine:
             )
             latest_score = ensemble["latest_signal_score"]
             latest_confidence = ensemble["latest_confidence"]
-            if abs(latest_score) >= self.selection_policy.signal_threshold:
+            abstention = self._evaluate_signal_abstention(
+                symbol=symbol,
+                selected_features=tradable_selected,
+                decoder_audit=decoder_audit,
+                latest_score=latest_score,
+                market_context=market_context or {},
+            )
+            self.latest_abstention_decisions[symbol] = asdict(abstention)
+            if abs(latest_score) >= self.selection_policy.signal_threshold and abstention.decision in {ALLOW, REDUCE}:
                 kernel_sde_risk = decoder_audit.get("audit_metadata", {}).get("kernel_sde_risk", {})
                 signal_candidates.append(
                     {
@@ -366,6 +422,10 @@ class SelfIteratingCausalEngine:
                         "kernel_tail_loss_rate": float(kernel_sde_risk.get("kernel_analog_tail_loss_rate", 0.0) or 0.0),
                         "state_conditioning": ensemble.get("state_conditioning", {}),
                         "cross_asset_transfer": ensemble.get("cross_asset_transfer", {}),
+                        "abstention_decision": abstention.decision,
+                        "abstention_weight_multiplier": abstention.weight_multiplier,
+                        "abstention_risk_score": abstention.risk_score,
+                        "abstention_reasons": list(abstention.reasons),
                     }
                 )
 
@@ -385,6 +445,7 @@ class SelfIteratingCausalEngine:
                 "objective_metrics": asdict(ensemble["objective_metrics"]),
                 "latest_signal_score": latest_score,
                 "latest_confidence": latest_confidence,
+                "abstention_gate": asdict(abstention),
             }
 
         portfolio_context = dict(market_context or {})
@@ -412,6 +473,9 @@ class SelfIteratingCausalEngine:
             "causal_validation_summary": self._summarize_validation_records(all_validation_records),
             "invariance_decoder": self._summarize_decoder_snapshots(self.latest_decoder_snapshots),
             "scm_dag": self._summarize_scm_snapshots(self.latest_scm_snapshots),
+            "abstention_gate": self._summarize_abstention_decisions(self.latest_abstention_decisions),
+            "instrument_registry": self.instrument_registry.latest_records(limit=50),
+            "causal_llm_audit": self.latest_llm_audit_records,
             "monolithic_research_factory": self._summarize_cross_asset_factor_memory(),
             "experiment_record": asdict(experiment_record),
             "model_registry_record": asdict(model_record),
@@ -626,14 +690,29 @@ class SelfIteratingCausalEngine:
                 backdoor_adjustment=asdict(backdoor),
                 discovery_support=discovery_support,
             )
+            instrument_record = self.instrument_registry.diagnose_edge(
+                source=feature.factor_name,
+                target="forward_return",
+                factor_matrix=factor_matrix,
+                target_returns=target_returns,
+            )
             feature.identification_status = validation.identification_status
             feature.validation_score = validation.validation_score
             feature.can_trade = validation.can_trade
             feature.backdoor_adjustment_quality = backdoor.adjustment_quality
             feature.causal_discovery_support = discovery_support
+            feature.instrument_status = instrument_record.validity_status
+            feature.instrument_first_stage_strength = instrument_record.first_stage_strength
+            feature.instrument_exclusion_proxy = instrument_record.exclusion_proxy
+            feature.iv_weight_multiplier = (
+                round(float(np.clip(1.0 + 0.50 * instrument_record.first_stage_strength, 1.0, 1.15)), 6)
+                if instrument_record.validity_status == "valid"
+                else 1.0
+            )
             record = asdict(validation)
             record["symbol"] = symbol
             record["scm_edge"] = scm_edges.get(feature.factor_name, {})
+            record["instrument_registry"] = asdict(instrument_record)
             records.append(record)
 
             self.feature_store.register_feature(
@@ -653,10 +732,12 @@ class SelfIteratingCausalEngine:
                     "purged_cv_required_before_promotion": True,
                     "cross_asset_transfer_requires_validation": True,
                     "backdoor_adjustment_required_before_position_sizing": True,
+                    "weak_instrument_forces_observe_only": True,
+                    "causal_llm_output_is_audit_only": True,
                 },
                 validation_status=record,
             )
-            if validation.can_trade:
+            if validation.can_trade and instrument_record.validity_status not in {"weak", "invalid"}:
                 self._update_cross_asset_factor_memory(feature, symbol, record)
                 tradable.append(feature)
         return tradable, records
@@ -676,6 +757,7 @@ class SelfIteratingCausalEngine:
         validation_summary = self._summarize_validation_records(validation_records)
         decoder_summary = self._summarize_decoder_snapshots(self.latest_decoder_snapshots)
         scm_summary = self._summarize_scm_snapshots(self.latest_scm_snapshots)
+        abstention_summary = self._summarize_abstention_decisions(self.latest_abstention_decisions)
         transfer_summary = self._summarize_cross_asset_factor_memory()
         failure_reasons = sorted(
             {
@@ -709,6 +791,9 @@ class SelfIteratingCausalEngine:
                 "validation_summary": validation_summary,
                 "invariance_decoder": decoder_summary,
                 "scm_dag": scm_summary,
+                "abstention_gate": abstention_summary,
+                "instrument_registry": self.instrument_registry.latest_records(limit=50),
+                "causal_llm_audit": self.latest_llm_audit_records,
                 "monolithic_research_factory": transfer_summary,
             },
             failure_reasons=failure_reasons,
@@ -724,6 +809,7 @@ class SelfIteratingCausalEngine:
         validation_summary = self._summarize_validation_records(validation_records)
         decoder_summary = self._summarize_decoder_snapshots(self.latest_decoder_snapshots)
         scm_summary = self._summarize_scm_snapshots(self.latest_scm_snapshots)
+        abstention_summary = self._summarize_abstention_decisions(self.latest_abstention_decisions)
         transfer_summary = self._summarize_cross_asset_factor_memory()
         passed_symbols = [
             symbol
@@ -752,6 +838,9 @@ class SelfIteratingCausalEngine:
                 "estimated_capacity_penalty": portfolio_plan.estimated_capacity_penalty,
                 "invariance_decoder": decoder_summary,
                 "scm_dag": scm_summary,
+                "abstention_gate": abstention_summary,
+                "instrument_registry": self.instrument_registry.latest_records(limit=50),
+                "causal_llm_audit": self.latest_llm_audit_records,
                 "monolithic_research_factory": transfer_summary,
             },
             promotion_status=promotion_status,
@@ -773,6 +862,76 @@ class SelfIteratingCausalEngine:
             "avg_validation_score": round(float(np.mean(scores)), 6) if scores else 0.0,
             "gate": "only identifiable or weak_identifiable edges can increase position size",
         }
+
+    def _evaluate_signal_abstention(
+        self,
+        symbol: str,
+        selected_features: List[SelectedFeature],
+        decoder_audit: Dict[str, Any],
+        latest_score: float,
+        market_context: Dict[str, Any],
+    ):
+        statuses = [feature.identification_status for feature in selected_features]
+        identification_status = IDENTIFIABLE if statuses and all(status == IDENTIFIABLE for status in statuses) else WEAK_IDENTIFIABLE
+        backdoor_quality = min([feature.backdoor_adjustment_quality for feature in selected_features] or [0.0])
+        iv_statuses = [feature.instrument_status for feature in selected_features]
+        if any(status == "valid" for status in iv_statuses):
+            instrument_status = "valid"
+        elif any(status in {"weak", "invalid"} for status in iv_statuses):
+            instrument_status = "weak"
+        else:
+            instrument_status = "unavailable"
+        posteriors = decoder_audit.get("noisy_channel_posteriors", {}) if isinstance(decoder_audit, dict) else {}
+        long_p = float(posteriors.get("LONG", 0.0) or 0.0)
+        short_p = float(posteriors.get("SHORT", 0.0) or 0.0)
+        hold_p = float(posteriors.get("HOLD", 0.0) or 0.0)
+        if latest_score >= 0:
+            model_disagreement = short_p + 0.50 * hold_p
+        else:
+            model_disagreement = long_p + 0.50 * hold_p
+        scm_stress = (self.latest_scm_snapshots.get(symbol, {}) or {}).get("counterfactual_stress", {})
+        decision = self.abstention_gate.evaluate(
+            identification_status=identification_status,
+            backdoor_quality=backdoor_quality,
+            hmm_state_entropy=float(decoder_audit.get("state_entropy", 1.0) or 1.0),
+            data_validation_passed=bool(market_context.get("data_validation_passed", True)),
+            model_disagreement=float(model_disagreement),
+            counterfactual_tail_risk=float(scm_stress.get("tail_risk_score", 0.0) or 0.0),
+            instrument_status=instrument_status,
+        )
+        return decision
+
+    @staticmethod
+    def _summarize_abstention_decisions(decisions: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+        counts: Dict[str, int] = {}
+        risk_scores = []
+        for decision in decisions.values():
+            label = str(decision.get("decision", "unknown"))
+            counts[label] = counts.get(label, 0) + 1
+            risk_scores.append(float(decision.get("risk_score", 0.0) or 0.0))
+        return {
+            "decision_count": len(decisions),
+            "decision_counts": counts,
+            "avg_risk_score": round(float(np.mean(risk_scores)), 6) if risk_scores else 0.0,
+            "symbols": decisions,
+            "gate": "ALLOW sizes normally, REDUCE haircuts weights, OBSERVE_ONLY/NO_TRADE cannot enter trade_actions",
+        }
+
+    def _audit_llm_hypotheses(self, market_context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        payload = (
+            market_context.get("causal_llm_hypotheses")
+            or market_context.get("llm_causal_hypotheses")
+            or market_context.get("llm_hypotheses")
+        )
+        game_analysis = market_context.get("game_causal_analysis", {})
+        if payload is None and isinstance(game_analysis, dict):
+            payload = (
+                game_analysis.get("causal_llm_hypotheses")
+                or game_analysis.get("llm_hypotheses")
+                or game_analysis.get("events")
+            )
+        records = self.causal_llm_auditor.audit_hypotheses(payload)
+        return [asdict(record) for record in records]
 
     @staticmethod
     def _summarize_decoder_snapshots(snapshots: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
@@ -985,6 +1144,7 @@ class SelfIteratingCausalEngine:
                 * feature.r_squared
                 * state_multiplier
                 * transfer_multiplier
+                * feature.iv_weight_multiplier
             )
             weighted_signals[feature.factor_name] = signal
             raw_weights[feature.factor_name] = raw_weight
@@ -1296,6 +1456,7 @@ class SelfIteratingCausalEngine:
                 * (0.5 + item["confidence"])
                 * abs(item["raw_score"])
                 * max(kelly_fraction, 0.002)
+                * float(item.get("abstention_weight_multiplier", 1.0) or 1.0)
                 for item, kelly_fraction in zip(candidates, kelly_fractions)
             ],
             dtype=float,
@@ -1310,7 +1471,8 @@ class SelfIteratingCausalEngine:
             take_profit = self.constraints.base_take_profit_pct * (1.0 + confidence)
             execution_profile = self._execution_profile(item["symbol"], market_context)
             capacity_weight_limit = self._capacity_weight_limit(item["symbol"], market_context)
-            target_weight = min(active_weight * base_weight, max(kelly_fraction, 0.0))
+            abstention_multiplier = float(item.get("abstention_weight_multiplier", 1.0) or 1.0)
+            target_weight = min(active_weight * base_weight * abstention_multiplier, max(kelly_fraction, 0.0))
             state_multipliers = list((item.get("state_conditioning") or {}).values())
             transfer_multipliers = item.get("cross_asset_transfer") or {}
             allocations.append(
@@ -1342,6 +1504,9 @@ class SelfIteratingCausalEngine:
                     if transfer_multipliers
                     else 1.0,
                     transferred_factor_count=sum(1 for value in transfer_multipliers.values() if float(value) > 1.0),
+                    abstention_decision=str(item.get("abstention_decision", ALLOW)),
+                    abstention_risk_score=round(float(item.get("abstention_risk_score", 0.0) or 0.0), 6),
+                    abstention_reasons=list(item.get("abstention_reasons", [])),
                 )
             )
         return allocations
@@ -1585,6 +1750,11 @@ class SelfIteratingCausalEngine:
                     "state_conditioning_multiplier": allocation.state_conditioning_multiplier,
                     "cross_asset_transfer_multiplier": allocation.cross_asset_transfer_multiplier,
                     "transferred_factor_count": allocation.transferred_factor_count,
+                    "abstention_gate": {
+                        "decision": allocation.abstention_decision,
+                        "risk_score": allocation.abstention_risk_score,
+                        "reasons": allocation.abstention_reasons,
+                    },
                 }
             )
         if plan.tail_hedge_weight > 0:

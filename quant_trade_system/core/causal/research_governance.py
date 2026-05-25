@@ -31,6 +31,11 @@ WEAK_IDENTIFIABLE = "weak_identifiable"
 CORRELATION_ONLY = "correlation_only"
 UNAVAILABLE = "unavailable"
 
+ALLOW = "ALLOW"
+REDUCE = "REDUCE"
+OBSERVE_ONLY = "OBSERVE_ONLY"
+NO_TRADE = "NO_TRADE"
+
 
 def _utc_now() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
@@ -109,6 +114,415 @@ class ModelRecord:
     promotion_status: str
     promotion_reason: str
     created_at: str = field(default_factory=_utc_now)
+
+
+@dataclass
+class CausalAbstentionDecision:
+    """Unified trade eligibility decision for a causal signal."""
+
+    decision: str
+    weight_multiplier: float
+    risk_score: float
+    reasons: List[str]
+    inputs: Dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=_utc_now)
+
+
+@dataclass
+class InstrumentRecord:
+    """Auditable instrument-variable diagnostics for one causal edge."""
+
+    edge_id: str
+    source: str
+    target: str
+    instruments: List[str]
+    first_stage_strength: float
+    exclusion_proxy: float
+    weak_instrument: bool
+    validity_status: str
+    exclusion_restriction_assumption: str
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=_utc_now)
+
+
+@dataclass
+class LLMHypothesisAuditRecord:
+    """Causal LLM output captured as an audit-only research hypothesis."""
+
+    hypothesis_id: str
+    treatment: str
+    outcome: str
+    controls: List[str]
+    instrument: str
+    expected_path: List[str]
+    source: str
+    validation_required: List[str]
+    actionability: str = "audit_only"
+    created_at: str = field(default_factory=_utc_now)
+
+
+class CausalAbstentionGate:
+    """Convert causal evidence quality into ALLOW/REDUCE/OBSERVE/NO_TRADE.
+
+    The gate is intentionally deterministic and conservative. It does not
+    discover signals; it only decides whether an existing signal may size up,
+    must be haircut, or must remain an audit-only observation.
+    """
+
+    def evaluate(
+        self,
+        *,
+        identification_status: str,
+        backdoor_quality: float,
+        hmm_state_entropy: float,
+        data_validation_passed: bool,
+        model_disagreement: float,
+        counterfactual_tail_risk: float,
+        instrument_status: str = "unavailable",
+    ) -> CausalAbstentionDecision:
+        status = str(identification_status or UNAVAILABLE)
+        iv_status = str(instrument_status or "unavailable")
+        backdoor = float(np.clip(_to_float(backdoor_quality), 0.0, 1.0))
+        entropy = float(np.clip(_to_float(hmm_state_entropy, 1.0), 0.0, 1.0))
+        disagreement = float(np.clip(_to_float(model_disagreement), 0.0, 1.0))
+        tail_risk = float(np.clip(_to_float(counterfactual_tail_risk), 0.0, 1.0))
+        reasons: List[str] = []
+
+        if not data_validation_passed:
+            return CausalAbstentionDecision(
+                decision=NO_TRADE,
+                weight_multiplier=0.0,
+                risk_score=1.0,
+                reasons=["data_validation_failed"],
+                inputs={
+                    "identification_status": status,
+                    "backdoor_quality": backdoor,
+                    "hmm_state_entropy": entropy,
+                    "model_disagreement": disagreement,
+                    "counterfactual_tail_risk": tail_risk,
+                    "instrument_status": iv_status,
+                },
+            )
+
+        status_risk = {
+            IDENTIFIABLE: 0.05,
+            WEAK_IDENTIFIABLE: 0.25,
+            CORRELATION_ONLY: 0.70,
+            UNAVAILABLE: 0.85,
+        }.get(status, 0.85)
+        iv_risk = {
+            "valid": -0.08,
+            "weak": 0.30,
+            "invalid": 0.45,
+            "unavailable": 0.0,
+        }.get(iv_status, 0.0)
+        risk_score = float(
+            np.clip(
+                0.25 * status_risk
+                + 0.18 * (1.0 - backdoor)
+                + 0.20 * entropy
+                + 0.17 * disagreement
+                + 0.20 * tail_risk
+                + iv_risk,
+                0.0,
+                1.0,
+            )
+        )
+
+        if status in {CORRELATION_ONLY, UNAVAILABLE}:
+            reasons.append(f"identification_status={status}")
+        if backdoor < 0.55:
+            reasons.append(f"backdoor_quality={backdoor:.2f}<0.55")
+        if entropy >= 0.85:
+            reasons.append(f"hmm_state_entropy={entropy:.2f}>=0.85")
+        if disagreement >= 0.50:
+            reasons.append(f"model_disagreement={disagreement:.2f}>=0.50")
+        if tail_risk >= 0.55:
+            reasons.append(f"counterfactual_tail_risk={tail_risk:.2f}>=0.55")
+        if iv_status in {"weak", "invalid"}:
+            reasons.append(f"instrument_status={iv_status}")
+
+        if status in {CORRELATION_ONLY, UNAVAILABLE} or iv_status in {"weak", "invalid"}:
+            decision = OBSERVE_ONLY if risk_score < 0.85 else NO_TRADE
+            weight_multiplier = 0.0
+        elif risk_score >= 0.75:
+            decision = NO_TRADE
+            weight_multiplier = 0.0
+        elif risk_score >= 0.45 or status == WEAK_IDENTIFIABLE:
+            decision = REDUCE
+            weight_multiplier = float(np.clip(1.0 - risk_score, 0.15, 0.65))
+        else:
+            decision = ALLOW
+            weight_multiplier = float(np.clip(1.0 - 0.35 * risk_score, 0.65, 1.10))
+
+        if not reasons:
+            reasons.append("causal_evidence_passed")
+        return CausalAbstentionDecision(
+            decision=decision,
+            weight_multiplier=round(float(weight_multiplier), 6),
+            risk_score=round(float(risk_score), 6),
+            reasons=reasons,
+            inputs={
+                "identification_status": status,
+                "backdoor_quality": round(backdoor, 6),
+                "hmm_state_entropy": round(entropy, 6),
+                "data_validation_passed": bool(data_validation_passed),
+                "model_disagreement": round(disagreement, 6),
+                "counterfactual_tail_risk": round(tail_risk, 6),
+                "instrument_status": iv_status,
+            },
+        )
+
+
+class InstrumentRegistry:
+    """Lightweight IV/Deep-IV readiness registry for causal edges."""
+
+    INSTRUMENT_TOKENS = (
+        "iv_",
+        "instrument",
+        "policy",
+        "weather",
+        "supply",
+        "inventory",
+        "opec",
+        "margin",
+        "exchange_rule",
+        "global_peer",
+        "shipping",
+        "tariff",
+        "dxy",
+        "usd",
+        "rate",
+    )
+
+    def __init__(self, base_dir: Optional[Path | str] = None) -> None:
+        self.base_dir = Path(base_dir) if base_dir else None
+        self.records: Dict[str, InstrumentRecord] = {}
+        if self.base_dir:
+            self.base_dir.mkdir(parents=True, exist_ok=True)
+
+    def diagnose_edge(
+        self,
+        source: str,
+        target: str,
+        factor_matrix: pd.DataFrame,
+        target_returns: pd.Series,
+        candidate_instruments: Optional[Iterable[str]] = None,
+    ) -> InstrumentRecord:
+        edge_id = f"{source}_to_{target}"
+        instruments = list(candidate_instruments or self._candidate_instruments(source, factor_matrix.columns))
+        instruments = [name for name in instruments if name in factor_matrix.columns and name != source]
+        if not instruments or source not in factor_matrix.columns:
+            return self.register_instrument(
+                source=source,
+                target=target,
+                instruments=[],
+                first_stage_strength=0.0,
+                exclusion_proxy=1.0,
+                weak_instrument=False,
+                validity_status="unavailable",
+                diagnostics={"reason": "no_candidate_instrument"},
+            )
+
+        aligned = pd.concat(
+            [
+                pd.to_numeric(factor_matrix[source], errors="coerce").rename("source"),
+                pd.to_numeric(target_returns, errors="coerce").rename("target"),
+                factor_matrix[instruments].apply(pd.to_numeric, errors="coerce"),
+            ],
+            axis=1,
+        ).dropna()
+        if len(aligned) < 30:
+            return self.register_instrument(
+                source=source,
+                target=target,
+                instruments=instruments,
+                first_stage_strength=0.0,
+                exclusion_proxy=1.0,
+                weak_instrument=True,
+                validity_status="weak",
+                diagnostics={"reason": "insufficient_iv_observations", "observation_count": int(len(aligned))},
+            )
+
+        scores = []
+        for name in instruments:
+            first_stage = abs(CausalValidationLoop._safe_corr(aligned[name], aligned["source"]))
+            exclusion_proxy = abs(self._target_residual_corr(aligned[name], aligned["source"], aligned["target"]))
+            scores.append((name, first_stage, exclusion_proxy))
+        best = max(scores, key=lambda item: (item[1], -item[2]))
+        weak = best[1] < 0.10
+        if best[1] >= 0.15 and best[2] <= 0.35:
+            status = "valid"
+        elif weak:
+            status = "weak"
+        else:
+            status = "invalid"
+        return self.register_instrument(
+            source=source,
+            target=target,
+            instruments=[best[0]],
+            first_stage_strength=best[1],
+            exclusion_proxy=best[2],
+            weak_instrument=weak,
+            validity_status=status,
+            diagnostics={
+                "observation_count": int(len(aligned)),
+                "candidate_scores": [
+                    {
+                        "instrument": name,
+                        "first_stage_strength": round(float(first), 6),
+                        "exclusion_proxy": round(float(exclusion), 6),
+                    }
+                    for name, first, exclusion in scores
+                ],
+                "method": "lightweight_deep_iv_readiness_proxy",
+            },
+        )
+
+    def register_instrument(
+        self,
+        *,
+        source: str,
+        target: str,
+        instruments: Iterable[str],
+        first_stage_strength: float,
+        exclusion_proxy: float,
+        weak_instrument: bool,
+        validity_status: str,
+        diagnostics: Optional[Mapping[str, Any]] = None,
+        exclusion_restriction_assumption: str = (
+            "instrument affects forward returns only through the treatment edge after observed controls"
+        ),
+    ) -> InstrumentRecord:
+        record = InstrumentRecord(
+            edge_id=f"{source}_to_{target}",
+            source=source,
+            target=target,
+            instruments=list(instruments),
+            first_stage_strength=round(float(first_stage_strength), 6),
+            exclusion_proxy=round(float(exclusion_proxy), 6),
+            weak_instrument=bool(weak_instrument),
+            validity_status=str(validity_status),
+            exclusion_restriction_assumption=exclusion_restriction_assumption,
+            diagnostics=dict(diagnostics or {}),
+        )
+        self.records[record.edge_id] = record
+        self._append_jsonl("instruments.jsonl", asdict(record))
+        return record
+
+    def latest_records(self, limit: int = 50) -> List[Dict[str, Any]]:
+        return [asdict(record) for record in list(self.records.values())[-limit:]]
+
+    def _candidate_instruments(self, source: str, columns: Iterable[str]) -> List[str]:
+        candidates = []
+        source_lower = source.lower()
+        for column in columns:
+            lower = str(column).lower()
+            if column == source:
+                continue
+            if any(token in lower for token in self.INSTRUMENT_TOKENS):
+                candidates.append(str(column))
+            elif "global_peer" in source_lower and lower.startswith("base_"):
+                candidates.append(str(column))
+        return candidates[:8]
+
+    @staticmethod
+    def _target_residual_corr(instrument: pd.Series, source: pd.Series, target: pd.Series) -> float:
+        aligned = pd.concat(
+            [instrument.rename("instrument"), source.rename("source"), target.rename("target")],
+            axis=1,
+        ).dropna()
+        if len(aligned) < 5:
+            return 1.0
+        x = np.column_stack([np.ones(len(aligned)), aligned["source"].to_numpy(dtype=float)])
+        y = aligned["target"].to_numpy(dtype=float)
+        coef, *_ = np.linalg.lstsq(x, y, rcond=None)
+        residual = pd.Series(y - x @ coef, index=aligned.index)
+        return CausalValidationLoop._safe_corr(aligned["instrument"], residual)
+
+    def _append_jsonl(self, filename: str, payload: Mapping[str, Any]) -> None:
+        if not self.base_dir:
+            return
+        path = self.base_dir / filename
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+
+
+class CausalLLMAuditor:
+    """Keep LLM-generated causal hypotheses audit-only until validated."""
+
+    REQUIRED_FIELDS = ("treatment", "outcome", "expected_path")
+
+    def audit_hypotheses(self, payload: Any) -> List[LLMHypothesisAuditRecord]:
+        records = []
+        for item in self._records_from_any(payload):
+            item = self._normalize_hypothesis_record(item)
+            if not all(item.get(field) for field in self.REQUIRED_FIELDS):
+                continue
+            source = str(item.get("source") or "causal_llm")
+            treatment = str(item.get("treatment"))
+            outcome = str(item.get("outcome"))
+            expected_path = item.get("expected_path")
+            if isinstance(expected_path, str):
+                path = [part.strip() for part in expected_path.replace("→", ">").split(">") if part.strip()]
+            else:
+                path = [str(part) for part in expected_path]
+            controls = item.get("controls") or []
+            if isinstance(controls, str):
+                controls = [part.strip() for part in controls.split(",") if part.strip()]
+            record = LLMHypothesisAuditRecord(
+                hypothesis_id=_stable_id(
+                    "llm_hypothesis",
+                    {"treatment": treatment, "outcome": outcome, "expected_path": path},
+                ),
+                treatment=treatment,
+                outcome=outcome,
+                controls=[str(part) for part in controls],
+                instrument=str(item.get("instrument") or ""),
+                expected_path=path,
+                source=source,
+                validation_required=["price_confirmation", "scm_dag", "backdoor_or_iv_validation"],
+                actionability="audit_only",
+            )
+            records.append(record)
+        return records
+
+    @staticmethod
+    def _normalize_hypothesis_record(item: Mapping[str, Any]) -> Dict[str, Any]:
+        normalized = dict(item)
+        if all(normalized.get(field) for field in CausalLLMAuditor.REQUIRED_FIELDS):
+            return normalized
+        text = str(
+            normalized.get("title")
+            or normalized.get("headline")
+            or normalized.get("summary")
+            or normalized.get("content")
+            or normalized.get("text")
+            or ""
+        ).strip()
+        if not text:
+            return normalized
+        normalized.setdefault("treatment", text[:120])
+        normalized.setdefault("outcome", normalized.get("target") or "market_forward_return")
+        normalized.setdefault("controls", normalized.get("controls") or ["market_regime", "liquidity", "benchmark_return"])
+        normalized.setdefault("instrument", normalized.get("instrument") or "")
+        normalized.setdefault("expected_path", [text[:120], "expectation_change", str(normalized["outcome"])])
+        normalized.setdefault("source", normalized.get("source") or "news_or_policy_record")
+        return normalized
+
+    @staticmethod
+    def _records_from_any(payload: Any) -> List[Mapping[str, Any]]:
+        if payload is None:
+            return []
+        if isinstance(payload, Mapping):
+            if "hypotheses" in payload:
+                return CausalLLMAuditor._records_from_any(payload.get("hypotheses"))
+            return [payload]
+        if isinstance(payload, pd.DataFrame):
+            return [row.dropna().to_dict() for _, row in payload.iterrows()]
+        if isinstance(payload, Iterable) and not isinstance(payload, (str, bytes)):
+            return [item for item in payload if isinstance(item, Mapping)]
+        return []
 
 
 class CausalValidationLoop:
