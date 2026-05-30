@@ -22,6 +22,13 @@ from .causal_factor_library import (
     EvidenceType,
     create_causal_factor_library,
 )
+from .event_intensity import (
+    EventIntensityEngine,
+    EventIntensityFactor,
+    EventIntensitySnapshot,
+    EventIntensitySpec,
+    create_event_intensity_engine,
+)
 from .cross_asset_causal_engine import (
     CrossAssetCausalEngine,
     CrossAssetProcessingConfig,
@@ -35,6 +42,11 @@ from .invariance_market_decoder import (
     HierarchicalHMMDecoder,
     InvarianceMarketDecoder,
     InvariantDecoderConfig,
+)
+from .macro_event_state import (
+    MacroEventState,
+    MacroEventStateConfig,
+    MacroEventStateEngine,
 )
 from .causal_graph_layer import (
     BackdoorAdjustmentSet,
@@ -150,6 +162,11 @@ __all__ = [
     "CausalType",
     "EvidenceType",
     "create_causal_factor_library",
+    "EventIntensityEngine",
+    "EventIntensityFactor",
+    "EventIntensitySnapshot",
+    "EventIntensitySpec",
+    "create_event_intensity_engine",
     "CrossAssetCausalEngine",
     "CrossAssetProcessingConfig",
     "CorrelationMethod",
@@ -160,6 +177,9 @@ __all__ = [
     "HierarchicalHMMDecoder",
     "InvarianceMarketDecoder",
     "InvariantDecoderConfig",
+    "MacroEventState",
+    "MacroEventStateConfig",
+    "MacroEventStateEngine",
     "BackdoorAdjustmentSet",
     "CausalDAGEdge",
     "CausalGraphLayer",

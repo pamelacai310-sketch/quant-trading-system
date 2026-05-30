@@ -96,6 +96,9 @@ class GameCausalAnalysisEngineTests(unittest.TestCase):
         self.assertEqual(report["current_judgement"]["winner"], "geopolitical_risk_premium")
         self.assertTrue(report["price_confirmation"]["A"]["data_available"])
         self.assertGreater(report["price_confirmation"]["A"]["score"], report["price_confirmation"]["B"]["score"])
+        self.assertGreater(report["bilateral_probability"]["A"], report["bilateral_probability"]["B"])
+        self.assertIn("event_zscore_geopolitical_energy", report["bilateral_probability"]["side_a_quant_inputs"])
+        self.assertGreater(report["bilateral_probability"]["exposure_scaler"], 0.0)
 
     def test_price_non_confirmation_can_make_risk_appetite_win(self) -> None:
         result = self.engine.analyze(
@@ -192,6 +195,24 @@ class GameCausalAnalysisEngineTests(unittest.TestCase):
         self.assertGreater(brent_confirmation["effective_weight"], brent_confirmation["weight"])
         self.assertGreaterEqual(brent_confirmation["learned_sample_count"], 2)
         self.assertIn(report["actionability"], {"trade_allowed", "observe_only"})
+
+    def test_event_intensity_snapshot_is_returned_for_game_analysis(self) -> None:
+        result = self.engine.analyze(
+            news_items=[
+                {
+                    "timestamp": "2026-05-10",
+                    "title": "AI capex and data center power grid bottleneck",
+                    "relevance_score": 1.0,
+                    "sentiment_score": 0.7,
+                }
+            ],
+            market_context={"as_of": "2026-05-15"},
+        )
+
+        event_intensity = result["event_intensity"]
+        self.assertEqual(event_intensity["status"], "active")
+        self.assertIn("event_zscore_ai_capex", event_intensity["factor_columns"])
+        self.assertIn("feature_frame_records", event_intensity)
 
     @staticmethod
     def _dominance(result: dict, asset: str) -> dict:

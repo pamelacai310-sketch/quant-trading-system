@@ -14,6 +14,8 @@ from typing import List, Dict, Optional, Any, Tuple
 import pandas as pd
 import numpy as np
 
+from .event_intensity import EventIntensityEngine, EventIntensitySnapshot
+
 
 # ============================================================================
 # 枚举定义
@@ -161,6 +163,7 @@ class CausalFactorLibrary:
 
     def __init__(self):
         self.factors: Dict[str, CausalFactor] = {}
+        self.event_intensity_engine = EventIntensityEngine()
         self._initialize_common_factors()
         self._initialize_equity_factors()
         self._initialize_commodity_factors()
@@ -175,6 +178,27 @@ class CausalFactorLibrary:
             # 如果扩展模块不可用，跳过
             pass
         self.quantized_factors: Dict[str, QuantizedCausalFactor] = self._build_quantized_factor_catalog()
+
+    def compute_event_intensity_factors(
+        self,
+        records: Any,
+        calendar_index: Optional[List[Any]] = None,
+        as_of: Optional[Any] = None,
+        include_records: bool = False,
+    ) -> EventIntensitySnapshot:
+        """把新闻/政策等定性事件压缩成可回测的时序因子。
+
+        统一公式：
+        EventIntensity=sum(relevance*abs(sentiment)*keyword_weight*asset_link*exp(-lambda*age))
+        EventZ 使用 t-1 滚动均值/标准差，防止前视偏误。
+        """
+
+        return self.event_intensity_engine.fit_transform(
+            records,
+            calendar_index=calendar_index,
+            as_of=as_of,
+            include_records=include_records,
+        )
 
     def _bulk_add_factor_specs(self, specs: List[Dict[str, Any]]) -> None:
         """批量添加因素规格。"""

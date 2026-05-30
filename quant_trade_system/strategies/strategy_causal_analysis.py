@@ -57,6 +57,99 @@ class CausalGraph:
     description: str
 
 
+@dataclass
+class StrategyFactorFormulaSpec:
+    """Auditable formula contract for strategy-level qualitative rules."""
+
+    raw_inputs: List[str]
+    formula: str
+    direction: int
+    lag: int
+    normalization: str
+    expected_asset_class: str
+    validation_required: List[str]
+
+
+VALIDATION_GATE_SEQUENCE = [
+    "data_timestamp_validation",
+    "outlier_and_missing_value_handling",
+    "cross_sectional_or_time_series_standardization",
+    "RS_greater_than_70_and_R2_greater_than_0_7",
+    "rolling_rank_ic_ir_stability",
+    "SCM_backdoor_or_IV_validation",
+    "HMM_entropy_and_model_disagreement_check",
+    "CausalAbstentionGate",
+    "portfolio_net_objective_after_costs",
+]
+
+
+def build_formula_specs_from_strategy(strategy_spec: Dict[str, Any]) -> List[StrategyFactorFormulaSpec]:
+    """Translate indicator/rule config into formula specs without changing execution."""
+
+    indicator_map = {str(item.get("name")): item for item in strategy_spec.get("indicators", []) if item.get("name")}
+    specs: List[StrategyFactorFormulaSpec] = []
+    for name, indicator in indicator_map.items():
+        indicator_type = str(indicator.get("type", "")).lower()
+        window = int(indicator.get("window", 1) or 1)
+        if indicator_type in {"sma", "ema"}:
+            formula = f"{indicator_type.upper()}(close,{window})"
+            direction = 1
+            normalization = "price_relative_to_moving_average_or_cross_signal"
+        elif indicator_type == "zscore":
+            formula = f"(close - rolling_mean(close,{window})) / rolling_std(close,{window})"
+            direction = -1
+            normalization = "time_series_zscore"
+        elif indicator_type == "momentum":
+            formula = f"close_t / close_t-{window} - 1"
+            direction = 1
+            normalization = "time_series_return"
+        elif indicator_type == "volatility":
+            formula = f"rolling_std(return_1d,{window})"
+            direction = -1
+            normalization = "time_series_zscore"
+        elif indicator_type == "volume_sma":
+            formula = f"SMA(volume,{window})"
+            direction = 1
+            normalization = "volume_ratio_or_zscore"
+        else:
+            formula = f"{indicator_type or name}(raw_inputs,{window})"
+            direction = 1
+            normalization = "explicit_strategy_rule"
+        specs.append(
+            StrategyFactorFormulaSpec(
+                raw_inputs=["close", "volume"] if "volume" in indicator_type else ["close"],
+                formula=formula,
+                direction=direction,
+                lag=1,
+                normalization=normalization,
+                expected_asset_class=strategy_spec.get("asset_class", "multi_asset"),
+                validation_required=list(VALIDATION_GATE_SEQUENCE),
+            )
+        )
+    return specs
+
+
+def attach_formula_gate_metadata(strategy_spec: Dict[str, Any]) -> Dict[str, Any]:
+    """Add formula/gate metadata so textual rules can be audited quantitatively."""
+
+    enriched = dict(strategy_spec)
+    enriched["factor_formula_specs"] = [
+        spec.__dict__ for spec in build_formula_specs_from_strategy(strategy_spec)
+    ]
+    enriched["validation_gate_sequence"] = list(VALIDATION_GATE_SEQUENCE)
+    enriched["taleb_barbell_formula"] = {
+        "tail_risk": "max(macro_tail_score,counterfactual_tail_score,hmm_risk_off_probability,sde_tail_loss_probability)",
+        "w_tail": "clip(0.08 + 0.35 * tail_risk, 0.08, 0.25)",
+        "w_core": "clip(0.75 - 0.30 * tail_risk, 0.45, 0.80)",
+        "w_cash": "1 - w_tail - w_core",
+    }
+    enriched["net_objective_formula"] = (
+        "expected_return - commission_cost - slippage_cost - impact_cost "
+        "- capacity_penalty - margin_penalty - tail_risk_penalty"
+    )
+    return enriched
+
+
 class ONeillCausalAnalyzer:
     """
     欧奈尔CANSLIM策略因果分析器

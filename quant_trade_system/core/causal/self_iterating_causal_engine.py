@@ -142,6 +142,7 @@ class SignalAllocation:
     state_conditioning_multiplier: float = 1.0
     cross_asset_transfer_multiplier: float = 1.0
     transferred_factor_count: int = 0
+    macro_event_overlay_multiplier: float = 1.0
     abstention_decision: str = ALLOW
     abstention_risk_score: float = 0.0
     abstention_reasons: List[str] = field(default_factory=list)
@@ -217,6 +218,11 @@ class SelfIteratingCausalEngine:
                 "fractional_kelly_enabled": True,
                 "max_fractional_kelly": self.constraints.max_fractional_kelly,
                 "hard_caps": ["max_single_weight", "max_futures_weight", "max_gross_weight", "capacity_weight_limit"],
+            },
+            "macro_event_overlays": {
+                "enabled": True,
+                "inputs": ["SOFR", "MOVE", "bond_straddles", "US10Y/US30Y 5pct threshold", "DXY divergence", "CSI1000-CSI500 excess", "Hormuz reopen probability"],
+                "role": "condition factor weights and tail-risk controls without bypassing causal validation gates",
             },
             "execution_objective": {
                 "net_score_includes": ["commission", "slippage", "impact", "capacity_penalty", "margin", "tail_risk"],
@@ -322,6 +328,7 @@ class SelfIteratingCausalEngine:
                 symbol=symbol,
                 peer_frames=peer_frames,
                 benchmark_frame=benchmark_frame,
+                market_context=market_context or {},
             )
             decoder_audit = self.latest_decoder_snapshots.get(symbol, {})
             target_returns = normalized["close"].pct_change(self.selection_policy.target_horizon).shift(
@@ -382,6 +389,7 @@ class SelfIteratingCausalEngine:
                 benchmark_returns=benchmark_returns,
                 decoder_audit=decoder_audit,
                 symbol=symbol,
+                market_context=market_context or {},
             )
             latest_score = ensemble["latest_signal_score"]
             latest_confidence = ensemble["latest_confidence"]
@@ -422,6 +430,7 @@ class SelfIteratingCausalEngine:
                         "kernel_tail_loss_rate": float(kernel_sde_risk.get("kernel_analog_tail_loss_rate", 0.0) or 0.0),
                         "state_conditioning": ensemble.get("state_conditioning", {}),
                         "cross_asset_transfer": ensemble.get("cross_asset_transfer", {}),
+                        "macro_event_overlay": ensemble.get("macro_event_overlay", {}),
                         "abstention_decision": abstention.decision,
                         "abstention_weight_multiplier": abstention.weight_multiplier,
                         "abstention_risk_score": abstention.risk_score,
@@ -442,6 +451,7 @@ class SelfIteratingCausalEngine:
                 "factor_weights": ensemble["factor_weights"],
                 "state_conditioning": ensemble.get("state_conditioning", {}),
                 "cross_asset_transfer": ensemble.get("cross_asset_transfer", {}),
+                "macro_event_overlay": ensemble.get("macro_event_overlay", {}),
                 "objective_metrics": asdict(ensemble["objective_metrics"]),
                 "latest_signal_score": latest_score,
                 "latest_confidence": latest_confidence,
@@ -1076,6 +1086,7 @@ class SelfIteratingCausalEngine:
         symbol: str = "",
         peer_frames: Optional[Dict[str, pd.DataFrame]] = None,
         benchmark_frame: Optional[pd.DataFrame] = None,
+        market_context: Optional[Dict[str, Any]] = None,
     ) -> pd.DataFrame:
         enriched = frame
         global_peer = pd.DataFrame(index=frame.index)
@@ -1102,11 +1113,61 @@ class SelfIteratingCausalEngine:
         )
         decoder_features = decoder_snapshot.feature_frame.reindex(frame.index).fillna(0.0)
         self.latest_decoder_snapshots[symbol] = decoder_snapshot.to_audit_dict()
-        matrix = pd.concat([base, global_peer, technical, causal, decoder_features], axis=1)
+        event_features = self._event_intensity_feature_frame(frame, market_context or {})
+        matrix = pd.concat([base, global_peer, technical, causal, decoder_features, event_features], axis=1)
         matrix = matrix.replace([np.inf, -np.inf], np.nan)
         matrix = matrix.loc[:, matrix.notna().mean() >= self.selection_policy.min_non_null_ratio]
         matrix = matrix.ffill().fillna(0.0)
         return matrix
+
+    def _event_intensity_feature_frame(self, frame: pd.DataFrame, market_context: Dict[str, Any]) -> pd.DataFrame:
+        """Attach leakage-safe event intensity factors to the training matrix."""
+
+        records = (
+            market_context.get("event_intensity_records")
+            or market_context.get("news_items")
+            or market_context.get("policy_records")
+            or []
+        )
+        game_analysis = market_context.get("game_causal_analysis", {})
+        if not records and isinstance(game_analysis, dict):
+            event_payload = game_analysis.get("event_intensity", {})
+            if isinstance(event_payload, dict) and event_payload.get("feature_frame_records"):
+                return self._event_intensity_records_to_frame(frame, event_payload["feature_frame_records"])
+            records = game_analysis.get("events", [])
+        if not records:
+            return pd.DataFrame(index=frame.index)
+        calendar_index = frame["date"] if "date" in frame.columns else frame.index
+        as_of = frame["date"].iloc[-1] if "date" in frame.columns and len(frame) else None
+        snapshot = self.causal_factor_library.compute_event_intensity_factors(
+            records,
+            calendar_index=list(calendar_index),
+            as_of=as_of,
+            include_records=False,
+        )
+        features = snapshot.feature_frame.copy()
+        if features.empty:
+            return pd.DataFrame(index=frame.index)
+        features = features.reset_index(drop=True)
+        features.index = frame.index[: len(features)]
+        return features.reindex(frame.index).ffill().fillna(0.0)
+
+    @staticmethod
+    def _event_intensity_records_to_frame(frame: pd.DataFrame, records: Any) -> pd.DataFrame:
+        try:
+            feature_frame = pd.DataFrame(records)
+        except Exception:
+            return pd.DataFrame(index=frame.index)
+        if feature_frame.empty:
+            return pd.DataFrame(index=frame.index)
+        for column in list(feature_frame.columns):
+            if str(column).lower() in {"date", "timestamp", "datetime", "time"}:
+                feature_frame = feature_frame.drop(columns=[column])
+        feature_frame = feature_frame.apply(pd.to_numeric, errors="coerce")
+        feature_frame = feature_frame.reset_index(drop=True)
+        feature_frame = feature_frame.iloc[-len(frame) :] if len(feature_frame) > len(frame) else feature_frame
+        feature_frame.index = frame.index[-len(feature_frame) :]
+        return feature_frame.reindex(frame.index).ffill().fillna(0.0)
 
     def get_global_peer_symbols(self, symbol: str) -> List[str]:
         """返回某个期货品种应联动参考的全球同类合约。"""
@@ -1125,11 +1186,13 @@ class SelfIteratingCausalEngine:
         benchmark_returns: Optional[pd.Series] = None,
         decoder_audit: Optional[Dict[str, Any]] = None,
         symbol: str = "",
+        market_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         weighted_signals: Dict[str, pd.Series] = {}
         raw_weights: Dict[str, float] = {}
         state_conditioning: Dict[str, float] = {}
         transfer_multipliers: Dict[str, float] = {}
+        macro_event_multipliers: Dict[str, float] = {}
 
         for feature in selected_features:
             series = pd.to_numeric(factor_matrix[feature.factor_name], errors="coerce")
@@ -1138,18 +1201,21 @@ class SelfIteratingCausalEngine:
             feature.objective_score = metrics.objective_score
             state_multiplier = self._state_conditioning_multiplier(feature.factor_name, decoder_audit or {})
             transfer_multiplier = self._cross_asset_transfer_multiplier(feature.factor_name, symbol)
+            macro_event_multiplier = self._macro_event_factor_multiplier(feature.factor_name, symbol, market_context or {})
             raw_weight = (
                 max(metrics.objective_score, 1e-6)
                 * (feature.rs_score / 100.0)
                 * feature.r_squared
                 * state_multiplier
                 * transfer_multiplier
+                * macro_event_multiplier
                 * feature.iv_weight_multiplier
             )
             weighted_signals[feature.factor_name] = signal
             raw_weights[feature.factor_name] = raw_weight
             state_conditioning[feature.factor_name] = state_multiplier
             transfer_multipliers[feature.factor_name] = transfer_multiplier
+            macro_event_multipliers[feature.factor_name] = macro_event_multiplier
 
         total_weight = sum(raw_weights.values()) or 1.0
         normalized_weights = {
@@ -1181,6 +1247,9 @@ class SelfIteratingCausalEngine:
             },
             "cross_asset_transfer": {
                 name: round(multiplier, 6) for name, multiplier in transfer_multipliers.items()
+            },
+            "macro_event_overlay": {
+                name: round(multiplier, 6) for name, multiplier in macro_event_multipliers.items()
             },
             "objective_metrics": objective_metrics,
             "latest_signal_score": round(latest_score, 6),
@@ -1216,6 +1285,50 @@ class SelfIteratingCausalEngine:
         uncertainty_haircut = 1.0 - 0.35 * float(np.clip(entropy, 0.0, 1.0))
         multiplier = (1.0 + strength * regime_score) * uncertainty_haircut
         return round(float(np.clip(multiplier, 0.25, 1.75)), 6)
+
+    def _macro_event_factor_multiplier(self, factor_name: str, symbol: str, market_context: Dict[str, Any]) -> float:
+        state = market_context.get("macro_event_state", {})
+        if not isinstance(state, dict):
+            return 1.0
+        overlays = state.get("factor_weight_overlays", {})
+        if not isinstance(overlays, dict):
+            return 1.0
+
+        lower_name = factor_name.lower()
+        symbol_upper = symbol.upper()
+        symbol_tags = market_context.get("symbol_tags", {})
+        tags = []
+        if isinstance(symbol_tags, dict):
+            raw_tags = symbol_tags.get(symbol) or symbol_tags.get(symbol_upper) or []
+            if isinstance(raw_tags, str):
+                tags = [raw_tags.lower()]
+            elif isinstance(raw_tags, list):
+                tags = [str(item).lower() for item in raw_tags]
+
+        multiplier = 1.0
+        is_momentum = any(token in lower_name for token in ["momentum", "ret_", "macd", "trend", "noisy_channel_long"])
+        is_rate_sensitive = any(token in lower_name for token in ["rate", "duration", "valuation", "discount", "pe_", "pb_", "real_rate"])
+        is_earnings_driven = any(token in lower_name for token in ["earnings", "eps", "profit", "margin", "roic", "revenue", "growth"])
+        is_volatility_or_tail = any(token in lower_name for token in ["vol", "atr", "drawdown", "risk_off", "tail", "sde_", "hmm_state_entropy"])
+        is_fx_sensitive = any(token in lower_name for token in ["fx", "dxy", "usd", "cny", "usdcnh", "usdcny"])
+        is_ai_small_cap_proxy = (
+            symbol_upper.startswith("IM")
+            or "csi1000" in tags
+            or "small_cap" in tags
+            or "ai_industrial_chain" in tags
+        )
+
+        if is_momentum and is_ai_small_cap_proxy:
+            multiplier *= float(overlays.get("ai_small_cap_momentum_multiplier", 1.0) or 1.0)
+        if is_rate_sensitive:
+            multiplier *= float(overlays.get("rate_sensitive_multiplier", 1.0) or 1.0)
+        if is_earnings_driven:
+            multiplier *= float(overlays.get("earnings_driven_multiplier", 1.0) or 1.0)
+        if is_volatility_or_tail:
+            multiplier *= float(overlays.get("volatility_multiplier", 1.0) or 1.0)
+        if is_fx_sensitive:
+            multiplier *= float(overlays.get("fx_cny_resilience_multiplier", 1.0) or 1.0)
+        return round(float(np.clip(multiplier, 0.35, 1.75)), 6)
 
     def _evaluate_objective(
         self,
@@ -1380,6 +1493,16 @@ class SelfIteratingCausalEngine:
             return "SDE扩散近似风险因子，用漂移、波动和尾部损失概率刻画状态切换和尾部保护需求。"
         if factor_lower.startswith("noisy_channel_"):
             return "有损信道后验因子，从噪声观测中解码 LONG/SHORT/HOLD 的概率。"
+        if factor_lower.startswith("event_intensity_"):
+            return "事件强度因子，把新闻/政策/地缘叙事按相关度、情绪、关键词权重和时间衰减压缩成时序信号。"
+        if factor_lower.startswith("event_zscore_"):
+            return "事件强度滚动Z分数，衡量当前事件热度相对历史窗口的异常程度，并使用t-1窗口避免前视偏误。"
+        if factor_lower.startswith("event_momentum_"):
+            return "事件强度动量因子，衡量事件热度在短窗口内是否继续升温或降温。"
+        if factor_lower.startswith("event_decay_pressure_"):
+            return "事件衰减压力因子，衡量旧事件热度残留，防止过期叙事继续驱动新仓位。"
+        if factor_lower.startswith("event_asset_"):
+            return "事件-资产暴露因子，把事件域映射到受影响资产链条，用于跨资产风控和仓位缩放。"
         return f"可解释技术/因果因子: {factor_name}"
 
     def _factor_formula(self, factor_name: str) -> str:
@@ -1423,6 +1546,16 @@ class SelfIteratingCausalEngine:
         }
         if factor_lower in decoder_formulas:
             return decoder_formulas[factor_lower]
+        if factor_lower.startswith("event_intensity_"):
+            return "sum(relevance_i * abs(sentiment_i or 0.15) * keyword_weight_i * exp(-lambda * age_days_i))"
+        if factor_lower.startswith("event_zscore_"):
+            return "(EventIntensity_t - mean(EventIntensity_{t-L:t-1})) / std(EventIntensity_{t-L:t-1})"
+        if factor_lower.startswith("event_momentum_"):
+            return "EventIntensity_t - EventIntensity_{t-5}"
+        if factor_lower.startswith("event_decay_pressure_"):
+            return "EventIntensity_t / rolling_max(EventIntensity_{t-L:t-1})"
+        if factor_lower.startswith("event_asset_"):
+            return "sum(abs(event_zscore_domain) * 0.70 + event_decay_pressure_domain * 0.30) * asset_exposure_weight"
         return factor_name
 
     def _rejection_reason(self, rs_score: float, r_squared: float) -> str:
@@ -1475,6 +1608,7 @@ class SelfIteratingCausalEngine:
             target_weight = min(active_weight * base_weight * abstention_multiplier, max(kelly_fraction, 0.0))
             state_multipliers = list((item.get("state_conditioning") or {}).values())
             transfer_multipliers = item.get("cross_asset_transfer") or {}
+            macro_event_multipliers = item.get("macro_event_overlay") or {}
             allocations.append(
                 SignalAllocation(
                     symbol=item["symbol"],
@@ -1504,6 +1638,9 @@ class SelfIteratingCausalEngine:
                     if transfer_multipliers
                     else 1.0,
                     transferred_factor_count=sum(1 for value in transfer_multipliers.values() if float(value) > 1.0),
+                    macro_event_overlay_multiplier=round(float(np.mean(list(macro_event_multipliers.values()))), 6)
+                    if macro_event_multipliers
+                    else 1.0,
                     abstention_decision=str(item.get("abstention_decision", ALLOW)),
                     abstention_risk_score=round(float(item.get("abstention_risk_score", 0.0) or 0.0), 6),
                     abstention_reasons=list(item.get("abstention_reasons", [])),
@@ -1696,6 +1833,13 @@ class SelfIteratingCausalEngine:
                 float(scm_stress.get("max_tail_risk_score", 0.0) or 0.0),
                 min(0.80, max(0.0, float(scm_stress.get("max_tail_hedge_multiplier", 1.0) or 1.0) - 1.0)),
             )
+        macro_event_state = market_context.get("macro_event_state", {})
+        if isinstance(macro_event_state, dict):
+            crisis_probability = max(
+                crisis_probability,
+                float(macro_event_state.get("tail_risk_score", 0.0) or 0.0),
+                min(0.80, max(0.0, float(macro_event_state.get("tail_hedge_multiplier", 1.0) or 1.0) - 1.0)),
+            )
         regime = market_context.get("regime") or market_context.get("cross_asset_regime", {}).get("regime", "")
         if isinstance(regime, dict):
             regime = regime.get("regime", "")
@@ -1750,6 +1894,7 @@ class SelfIteratingCausalEngine:
                     "state_conditioning_multiplier": allocation.state_conditioning_multiplier,
                     "cross_asset_transfer_multiplier": allocation.cross_asset_transfer_multiplier,
                     "transferred_factor_count": allocation.transferred_factor_count,
+                    "macro_event_overlay_multiplier": allocation.macro_event_overlay_multiplier,
                     "abstention_gate": {
                         "decision": allocation.abstention_decision,
                         "risk_score": allocation.abstention_risk_score,

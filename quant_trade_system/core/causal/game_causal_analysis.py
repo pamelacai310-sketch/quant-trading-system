@@ -15,11 +15,14 @@ conditions so downstream trading reports can say why a logic won.
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import pandas as pd
+
+from .event_intensity import EventIntensityEngine, EventIntensitySnapshot
 
 
 def _clip(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
@@ -134,6 +137,7 @@ class GameSideSpec:
     domain_weights: Dict[str, float]
     context_rules: List[ContextRule] = field(default_factory=list)
     price_confirmations: List[PricingAssetRule] = field(default_factory=list)
+    quant_inputs: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -162,6 +166,7 @@ class GameRelationReport:
     side_scores: Dict[str, float]
     current_judgement: Dict[str, Any]
     layer_winners: Dict[str, Dict[str, Any]]
+    bilateral_probability: Dict[str, Any]
     market_pricing_forecast: Dict[str, Any]
     key_reversal_signals: List[str]
     observation_checklist: List[str]
@@ -206,6 +211,7 @@ class GameCausalAnalysisEngine:
         price_confirmation_memory: Optional[Mapping[str, Mapping[str, Any]]] = None,
     ) -> None:
         self.price_confirmation_memory: Dict[str, PriceConfirmationMemoryRecord] = {}
+        self.event_intensity_engine = EventIntensityEngine()
         for key, value in (price_confirmation_memory or {}).items():
             if isinstance(value, PriceConfirmationMemoryRecord):
                 self.price_confirmation_memory[key] = value
@@ -424,6 +430,13 @@ class GameCausalAnalysisEngine:
         events = self.ingest_news(news_items)
         events.extend(self.ingest_policy_records(policy_records))
         market_context = market_context or {}
+        historical_events = self._records_from_any(market_context.get("event_history", []))
+        intensity_records = [asdict(event) for event in events] + historical_events
+        event_intensity_snapshot = self.event_intensity_engine.fit_transform(
+            intensity_records,
+            calendar_index=market_context.get("event_intensity_calendar"),
+            as_of=market_context.get("as_of") or market_context.get("report_date"),
+        )
         event_windows = self.build_event_windows(
             events,
             market_context.get("pricing_asset_panels", {}),
@@ -433,7 +446,7 @@ class GameCausalAnalysisEngine:
         learned_records = self.learn_price_confirmation_weights(
             market_context.get("price_confirmation_history", [])
         )
-        risk_scores = self.quantify_risks(events)
+        risk_scores = self.quantify_risks(events, event_intensity_snapshot=event_intensity_snapshot)
         event_chains = self.build_event_causal_chains(events, risk_scores)
         dominance = self.evaluate_game_dominance(risk_scores, market_context, event_chains)
         relation_reports = self.analyze_game_relations(
@@ -447,6 +460,7 @@ class GameCausalAnalysisEngine:
             "event_count": len(events),
             "events": [asdict(event) for event in events[:25]],
             "event_windows": [asdict(item) for item in event_windows],
+            "event_intensity": event_intensity_snapshot.to_audit_dict(include_records=True),
             "price_confirmation_learning": {
                 "updated_records": [asdict(item) for item in learned_records],
                 "memory_size": len(self.price_confirmation_memory),
@@ -491,6 +505,15 @@ class GameCausalAnalysisEngine:
                 risk_scores=risk_scores,
                 chain_ids=chain_ids,
             )
+            bilateral = self._bilateral_probability(
+                spec=spec,
+                side_a_score=side_a_score,
+                side_b_score=side_b_score,
+                confidence=confidence,
+                identification=identification,
+                side_a_price=side_a_price,
+                side_b_price=side_b_price,
+            )
             reports.append(
                 GameRelationReport(
                     relation_id=spec.relation_id,
@@ -529,6 +552,7 @@ class GameCausalAnalysisEngine:
                         "medium_term": layer_winners.get("one_to_three_months", {}).get("winner", winner),
                     },
                     layer_winners=layer_winners,
+                    bilateral_probability=bilateral,
                     market_pricing_forecast={
                         "if_A_wins": spec.side_a.market_pricing_if_wins,
                         "if_B_wins": spec.side_b.market_pricing_if_wins,
@@ -537,7 +561,7 @@ class GameCausalAnalysisEngine:
                     key_reversal_signals=sorted(set(spec.side_a.reversal_signals + spec.side_b.reversal_signals)),
                     observation_checklist=spec.observation_checklist,
                     identification_status=identification,
-                    actionability="trade_allowed" if identification.get("can_trade") else "observe_only",
+                    actionability=bilateral["actionability"],
                 )
             )
         return reports
@@ -659,8 +683,13 @@ class GameCausalAnalysisEngine:
             updated.append(memory)
         return updated
 
-    def quantify_risks(self, events: Sequence[NewsEvent]) -> Dict[str, Dict[str, Any]]:
+    def quantify_risks(
+        self,
+        events: Sequence[NewsEvent],
+        event_intensity_snapshot: Optional[EventIntensitySnapshot] = None,
+    ) -> Dict[str, Dict[str, Any]]:
         scores: Dict[str, Dict[str, Any]] = {}
+        intensity_latest = event_intensity_snapshot.latest_values if event_intensity_snapshot else {}
         for domain, spec in self.DOMAIN_ONTOLOGY.items():
             event_hits: List[Tuple[NewsEvent, float, List[str]]] = []
             evidence_terms: List[str] = []
@@ -681,9 +710,21 @@ class GameCausalAnalysisEngine:
                 score = _clip(0.62 * min(weighted_hit / 2.2, 1.0) + 0.25 * max_hit + 0.13 * event_count_component)
             else:
                 score = 0.0
+            intensity_factor_id = self._domain_intensity_factor_id(domain)
+            intensity = _to_float(intensity_latest.get(f"event_intensity_{intensity_factor_id}"), 0.0)
+            zscore = _to_float(intensity_latest.get(f"event_zscore_{intensity_factor_id}"), 0.0)
+            decay_pressure = _to_float(intensity_latest.get(f"event_decay_pressure_{intensity_factor_id}"), 0.0)
+            if event_intensity_snapshot:
+                intensity_component = _clip(abs(zscore) / 3.0)
+                pressure_component = _clip(decay_pressure / 2.0)
+                intensity_blend = _clip(0.72 * score + 0.18 * intensity_component + 0.10 * pressure_component)
+                score = max(score, intensity_blend)
 
             scores[domain] = {
                 "score": round(score, 6),
+                "event_intensity": round(float(intensity), 6),
+                "event_zscore": round(float(zscore), 6),
+                "event_decay_pressure": round(float(decay_pressure), 6),
                 "event_count": len(event_hits),
                 "matched_terms": sorted(set(evidence_terms))[:20],
                 "affected_assets": list(spec["assets"]),
@@ -911,7 +952,10 @@ class GameCausalAnalysisEngine:
             domains: Dict[str, float],
             context: Optional[List[ContextRule]] = None,
             prices: Optional[List[PricingAssetRule]] = None,
+            quant_inputs: Optional[List[str]] = None,
         ) -> GameSideSpec:
+            context = context or []
+            prices = prices or []
             return GameSideSpec(
                 side_id=side_id,
                 name=name,
@@ -922,8 +966,9 @@ class GameCausalAnalysisEngine:
                 market_pricing_if_wins=pricing,
                 reversal_signals=reversals,
                 domain_weights=domains,
-                context_rules=context or [],
-                price_confirmations=prices or [],
+                context_rules=context,
+                price_confirmations=prices,
+                quant_inputs=quant_inputs or self._default_side_quant_inputs(domains, context, prices),
             )
 
         return [
@@ -1369,6 +1414,64 @@ class GameCausalAnalysisEngine:
         weight_sum = sum(weight for _, weight in components)
         return _clip(sum(score * weight for score, weight in components) / max(weight_sum, 1e-9))
 
+    def _bilateral_probability(
+        self,
+        spec: GameRelationSpec,
+        side_a_score: float,
+        side_b_score: float,
+        confidence: float,
+        identification: Mapping[str, Any],
+        side_a_price: Mapping[str, Any],
+        side_b_price: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        """Convert A-vs-B scores into tradable win probabilities.
+
+        This is the machine-readable layer for narrative games.  It keeps the
+        six-step report for humans, but exposes probability, contradiction and
+        exposure scaling for portfolio sizing.
+        """
+
+        temperature = 0.22
+        a_logit = side_a_score / temperature
+        b_logit = side_b_score / temperature
+        max_logit = max(a_logit, b_logit)
+        exp_a = math.exp(a_logit - max_logit)
+        exp_b = math.exp(b_logit - max_logit)
+        p_a = exp_a / max(exp_a + exp_b, 1e-12)
+        p_b = 1.0 - p_a
+        contradiction = float(_clip(1.0 - abs(p_a - p_b) * 2.0, 0.0, 1.0))
+        best_price = max(_to_float(side_a_price.get("score"), 0.0), _to_float(side_b_price.get("score"), 0.0))
+        can_trade = bool(identification.get("can_trade")) and best_price >= 0.30
+        dominant_side = "A" if p_a > p_b else "B"
+        dominant_prob = max(p_a, p_b)
+        causal_gate_multiplier = 1.0 if can_trade else 0.0
+        if contradiction > 0.60:
+            causal_gate_multiplier *= 0.35
+        if dominant_prob >= 0.70 and best_price >= 0.55:
+            sizing_rule = "increase_only_after_price_confirmation"
+        elif contradiction > 0.60:
+            sizing_rule = "delever_or_cash_until_contest_resolves"
+        elif can_trade:
+            sizing_rule = "base_weight"
+        else:
+            sizing_rule = "observe_only"
+        exposure_scaler = float(_clip(confidence * (1.0 - contradiction) * causal_gate_multiplier, 0.0, 1.0))
+        return {
+            "A": round(float(p_a), 6),
+            "B": round(float(p_b), 6),
+            "dominant_side": dominant_side,
+            "dominant_name": spec.side_a.name if dominant_side == "A" else spec.side_b.name,
+            "dominant_probability": round(float(dominant_prob), 6),
+            "contradiction_score": round(float(contradiction), 6),
+            "exposure_scaler": round(exposure_scaler, 6),
+            "causal_gate_multiplier": round(float(causal_gate_multiplier), 6),
+            "sizing_rule": sizing_rule,
+            "actionability": "trade_allowed" if exposure_scaler > 0 and sizing_rule != "observe_only" else "observe_only",
+            "side_a_quant_inputs": list(spec.side_a.quant_inputs),
+            "side_b_quant_inputs": list(spec.side_b.quant_inputs),
+            "formula": "softmax(A_score,B_score); contradiction=1-2*abs(P(A)-0.5); scaler=confidence*(1-contradiction)*gate",
+        }
+
     def _score_context_rules(self, rules: Sequence[ContextRule], market_context: Mapping[str, Any]) -> float:
         if not rules:
             return 0.0
@@ -1492,6 +1595,36 @@ class GameCausalAnalysisEngine:
             "stability_proxy": round(float(stability_proxy), 6),
             "rule": "trade_allowed only when sensitive assets provide price confirmation; pure narratives remain observe_only",
         }
+
+    @staticmethod
+    def _default_side_quant_inputs(
+        domains: Mapping[str, float],
+        context_rules: Sequence[ContextRule],
+        price_rules: Sequence[PricingAssetRule],
+    ) -> List[str]:
+        inputs: List[str] = []
+        for domain in domains:
+            factor_id = GameCausalAnalysisEngine._domain_intensity_factor_id(domain)
+            inputs.extend(
+                [
+                    f"event_zscore_{factor_id}",
+                    f"event_decay_pressure_{factor_id}",
+                ]
+            )
+        inputs.extend(rule.path for rule in context_rules)
+        inputs.extend(rule.asset for rule in price_rules)
+        return sorted({str(item) for item in inputs if str(item).strip()})
+
+    @staticmethod
+    def _domain_intensity_factor_id(domain: str) -> str:
+        mapping = {
+            "geopolitical_energy": "geopolitical_energy",
+            "monetary_inflation": "policy_risk",
+            "ai_technology": "ai_capex",
+            "trade_credit": "trade_credit",
+            "market_sentiment": "market_sentiment",
+        }
+        return mapping.get(domain, domain)
 
     @staticmethod
     def _asset_signal(market_context: Mapping[str, Any], asset: str) -> Dict[str, Any]:

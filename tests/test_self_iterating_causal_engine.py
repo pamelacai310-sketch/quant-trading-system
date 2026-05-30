@@ -183,6 +183,41 @@ class SelfIteratingCausalEngineTests(unittest.TestCase):
         self.assertIn("kernel_analog_forward_mean", matrix.columns)
         self.assertIn("noisy_channel_long_posterior", matrix.columns)
 
+    def test_candidate_matrix_includes_event_intensity_features(self) -> None:
+        rows = 90
+        dates = pd.date_range("2026-01-01", periods=rows, freq="D")
+        close = pd.Series(np.linspace(100.0, 118.0, rows) + np.sin(np.linspace(0, 8, rows)))
+        frame = pd.DataFrame(
+            {
+                "date": dates,
+                "open": close * 0.998,
+                "high": close * 1.01,
+                "low": close * 0.99,
+                "close": close,
+                "volume": np.linspace(1000, 1800, rows),
+            }
+        )
+
+        matrix = self.engine._build_candidate_factor_matrix(
+            frame,
+            symbol="SC2608",
+            market_context={
+                "news_items": [
+                    {
+                        "timestamp": "2026-02-10",
+                        "title": "Iran war threatens Hormuz oil shipping supply disruption",
+                        "relevance_score": 1.0,
+                        "sentiment_score": -0.8,
+                    }
+                ]
+            },
+        )
+
+        self.assertIn("event_intensity_geopolitical_energy", matrix.columns)
+        self.assertIn("event_zscore_geopolitical_energy", matrix.columns)
+        self.assertIn("event_asset_sc_exposure", matrix.columns)
+        self.assertGreater(float(matrix["event_asset_sc_exposure"].sum()), 0.0)
+
     def test_learning_cycle_tracks_global_peer_count_for_futures(self) -> None:
         rows = 120
         dates = pd.date_range("2025-01-01", periods=rows, freq="D")
@@ -286,6 +321,46 @@ class SelfIteratingCausalEngineTests(unittest.TestCase):
 
         self.assertGreater(ensemble["state_conditioning"]["base_ret_5"], ensemble["state_conditioning"]["base_drawdown_20"])
         self.assertGreater(ensemble["factor_weights"]["base_ret_5"], ensemble["factor_weights"]["base_drawdown_20"])
+
+    def test_macro_event_overlay_boosts_csi1000_ai_momentum_and_haircuts_rate_sensitive(self) -> None:
+        idx = pd.RangeIndex(90)
+        driver = pd.Series(np.linspace(-2.0, 2.0, len(idx)), index=idx)
+        factors = pd.DataFrame(
+            {
+                "base_ret_5": driver,
+                "rate_sensitive_duration_factor": driver,
+            },
+            index=idx,
+        )
+        target = driver.shift(-1).fillna(driver.iloc[-1])
+        selected = [
+            SelectedFeature("base_ret_5", "momentum", "x", 90.0, 0.9, 0.9, 1.0, 1, True, can_trade=True),
+            SelectedFeature("rate_sensitive_duration_factor", "rate", "x", 90.0, 0.9, 0.9, 1.0, 1, True, can_trade=True),
+        ]
+        macro_context = {
+            "symbol_tags": {"IM0": ["csi1000", "small_cap", "ai_industrial_chain"]},
+            "macro_event_state": {
+                "factor_weight_overlays": {
+                    "ai_small_cap_momentum_multiplier": 1.30,
+                    "rate_sensitive_multiplier": 0.60,
+                    "earnings_driven_multiplier": 1.0,
+                    "volatility_multiplier": 1.0,
+                    "fx_cny_resilience_multiplier": 1.0,
+                }
+            },
+        }
+
+        ensemble = self.engine._train_factor_ensemble(
+            factors,
+            target,
+            selected,
+            symbol="IM0",
+            market_context=macro_context,
+        )
+
+        self.assertGreater(ensemble["macro_event_overlay"]["base_ret_5"], 1.0)
+        self.assertLess(ensemble["macro_event_overlay"]["rate_sensitive_duration_factor"], 1.0)
+        self.assertGreater(ensemble["factor_weights"]["base_ret_5"], ensemble["factor_weights"]["rate_sensitive_duration_factor"])
 
     def test_fractional_kelly_caps_position_size(self) -> None:
         high_plan = self.engine.optimize_portfolio(

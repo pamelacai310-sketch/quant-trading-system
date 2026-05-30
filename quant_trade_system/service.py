@@ -16,6 +16,7 @@ from .models import OrderRequest
 from .risk import RiskManager
 from .storage import Storage
 from .strategy_engine import run_strategy_once
+from .strategies.strategy_causal_analysis import attach_formula_gate_metadata
 from .universe_provider import MarketUniverseProvider
 
 
@@ -137,7 +138,13 @@ class QuantTradingService:
             },
         ]
         for item in samples:
-            self.storage.upsert_strategy(None, item["name"], item["dataset"], item["spec"], item["status"])
+            self.storage.upsert_strategy(
+                None,
+                item["name"],
+                item["dataset"],
+                attach_formula_gate_metadata(item["spec"]),
+                item["status"],
+            )
 
     def list_datasets(self) -> List[Dict[str, Any]]:
         items = []
@@ -169,11 +176,12 @@ class QuantTradingService:
     def save_strategy(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         if "name" not in payload or "spec" not in payload or "dataset" not in payload:
             raise ValueError("Strategy payload must include name, dataset and spec")
+        spec = attach_formula_gate_metadata(payload["spec"])
         return self.storage.upsert_strategy(
             payload.get("id"),
             payload["name"],
             payload["dataset"],
-            payload["spec"],
+            spec,
             payload.get("status", "draft"),
         )
 

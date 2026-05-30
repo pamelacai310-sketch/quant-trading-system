@@ -15,7 +15,13 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from .causal_ai import AccountHealthMonitor, EnhancedCausalTradingAgent
-from .core.causal import CausalFactorLibrary, CrossAssetCausalEngine, GameCausalAnalysisEngine, SelfIteratingCausalEngine
+from .core.causal import (
+    CausalFactorLibrary,
+    CrossAssetCausalEngine,
+    GameCausalAnalysisEngine,
+    MacroEventStateEngine,
+    SelfIteratingCausalEngine,
+)
 from .factors.factor_library import FactorLibrary
 from .futures_specs import build_one_lot_margin_table
 from .universe_provider import MarketUniverseProvider
@@ -23,6 +29,7 @@ from .universe_provider import MarketUniverseProvider
 
 CHINA_TZ = ZoneInfo("Asia/Shanghai")
 STATE_DIRNAME = "nightly_reports"
+LOG_DIRNAME = "nightly_logs"
 
 CN_FUTURES_EXCHANGES = ["SHFE", "INE", "DCE", "CZCE", "CFFEX", "GFEX"]
 US_TAIL_HEDGE_SYMBOL = "GLD"
@@ -37,8 +44,14 @@ US_EXECUTION_SUPPORT_UNIVERSE = [US_TAIL_HEDGE_SYMBOL]
 HK_EXECUTION_SUPPORT_UNIVERSE = [HK_TAIL_HEDGE_SYMBOL]
 FUTURES_SETTLE_FALLBACK_ENV = "QTS_FUTURES_SETTLE_FALLBACK"
 FUTURES_SETTLE_FALLBACK_DAILY = "daily_main_contract"
+CFFEX_SETTLE_FALLBACK_CONTRACT_SPECS = "daily_main_contract+contract_specs"
 US_CLOSE_AVAILABLE_CHINA_HOUR = 5
 US_CLOSE_AVAILABLE_CHINA_MINUTE = 30
+FAILURE_NONE = "NONE"
+FAILURE_SCHEDULER_NOT_RUN = "SCHEDULER_NOT_RUN"
+FAILURE_DATA_VALIDATION_PARTIAL = "DATA_VALIDATION_PARTIAL"
+FAILURE_ALL_MARKETS_INVALID = "ALL_MARKETS_INVALID"
+FAILURE_RUNTIME_EXCEPTION = "RUNTIME_EXCEPTION"
 
 
 @dataclass
@@ -49,6 +62,8 @@ class MarketValidation:
     passed: bool
     reason: str
     sample_count: int = 0
+    settlement_fallback: Optional[str] = None
+    margin_source: Optional[str] = None
 
 
 def _require_module(name: str):
@@ -90,6 +105,10 @@ def _state_dir(repo_root: Path) -> Path:
     return repo_root / "state" / STATE_DIRNAME
 
 
+def _log_dir(repo_root: Path) -> Path:
+    return repo_root / "state" / LOG_DIRNAME
+
+
 def _normalize_live_frame(frame: pd.DataFrame) -> pd.DataFrame:
     result = frame.copy()
     result.columns = [str(column).lower() for column in result.columns]
@@ -120,6 +139,45 @@ def _pct_change_over_window(frame: pd.DataFrame, window: int) -> float:
     if len(close) <= window:
         return 0.0
     return float(close.iloc[-1] / close.iloc[-window - 1] - 1.0)
+
+
+def _optional_yf_frame(yf: Any, symbol: str, period: str = "3mo") -> pd.DataFrame:
+    try:
+        raw = yf.download(symbol, period=period, interval="1d", auto_adjust=False, progress=False)
+    except Exception:
+        return pd.DataFrame()
+    if raw is None or raw.empty:
+        return pd.DataFrame()
+    try:
+        return _normalize_yfinance_frame(raw)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _latest_close(frame: pd.DataFrame) -> Optional[float]:
+    if frame is None or frame.empty or "close" not in frame.columns:
+        return None
+    values = pd.to_numeric(frame["close"], errors="coerce").dropna()
+    if values.empty:
+        return None
+    return float(values.iloc[-1])
+
+
+def _env_float(name: str) -> Optional[float]:
+    value = os.getenv(name)
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return float(str(value).strip())
+    except ValueError:
+        return None
+
+
+def _env_bool(name: str) -> Optional[bool]:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "signed"}
 
 
 def _run_git(repo_root: Path, *args: str) -> str:
@@ -429,6 +487,30 @@ def _validate_futures_close(
     settle_validation: MarketValidation,
 ) -> MarketValidation:
     actual_date, sample_count = _latest_sample_date(futures_data)
+    if (
+        exchange.upper() == "CFFEX"
+        and actual_date
+        and actual_date == settle_validation.requested_date
+        and settle_validation.actual_date != actual_date
+    ):
+        if settle_validation.actual_date:
+            settle_note = f"结算参数未命中 T 日（最近有效日期 {settle_validation.actual_date}）"
+        else:
+            settle_note = "结算参数不可用"
+        return MarketValidation(
+            market=exchange,
+            requested_date=settle_validation.requested_date,
+            actual_date=actual_date,
+            passed=True,
+            reason=(
+                f"{exchange} {settle_note}，但主力连续合约日线命中 T 日；"
+                f"settlement_fallback={CFFEX_SETTLE_FALLBACK_CONTRACT_SPECS}，"
+                "最低保证金使用项目内置合约乘数和交易所保证金率估算。"
+            ),
+            sample_count=sample_count,
+            settlement_fallback=CFFEX_SETTLE_FALLBACK_CONTRACT_SPECS,
+            margin_source="contract_specs",
+        )
     if not settle_validation.passed or settle_validation.actual_date is None:
         fallback_mode = _futures_settle_fallback_mode()
         if actual_date and fallback_mode in {FUTURES_SETTLE_FALLBACK_DAILY, "daily", "main_contract", "recent_daily"}:
@@ -450,6 +532,7 @@ def _validate_futures_close(
                 passed=True,
                 reason=reason,
                 sample_count=sample_count,
+                settlement_fallback=fallback_mode,
             )
         return settle_validation
     if not actual_date:
@@ -500,19 +583,17 @@ def _build_futures_peer_datasets(
 
 
 def _market_status_from_validation(validation: MarketValidation) -> Dict[str, Any]:
-    if validation.passed:
-        return {
-            "status": "OK",
-            "tradable": True,
-            "actual_date": validation.actual_date,
-            "reason": validation.reason,
-        }
-    return {
-        "status": "NO_TRADE_DATA_INVALID",
-        "tradable": False,
+    status = {
+        "status": "OK" if validation.passed else "NO_TRADE_DATA_INVALID",
+        "tradable": bool(validation.passed),
         "actual_date": validation.actual_date,
         "reason": validation.reason,
     }
+    if validation.settlement_fallback:
+        status["settlement_fallback"] = validation.settlement_fallback
+    if validation.margin_source:
+        status["margin_source"] = validation.margin_source
+    return status
 
 
 def _build_market_status(
@@ -539,6 +620,17 @@ def _any_market_tradable(market_status: Dict[str, Dict[str, Any]]) -> bool:
 
 def _all_markets_tradable(market_status: Dict[str, Dict[str, Any]]) -> bool:
     return all(bool(item.get("tradable")) for item in market_status.values())
+
+
+def _failure_category_from_market_status(market_status: Dict[str, Dict[str, Any]]) -> str:
+    if not market_status:
+        return FAILURE_SCHEDULER_NOT_RUN
+    tradable = [bool(item.get("tradable")) for item in market_status.values()]
+    if all(tradable):
+        return FAILURE_NONE
+    if any(tradable):
+        return FAILURE_DATA_VALIDATION_PARTIAL
+    return FAILURE_ALL_MARKETS_INVALID
 
 
 def _real_rates_rising(market_context: Dict[str, Any]) -> bool:
@@ -588,7 +680,71 @@ def _tail_hedge_effectiveness_gate(
     }
 
 
-def _build_market_context(cross_asset_engine: CrossAssetCausalEngine, qqq: pd.DataFrame, gold: pd.DataFrame, copper: pd.DataFrame) -> tuple[Dict[str, Any], Dict[str, Any]]:
+def _build_macro_event_inputs(
+    yf: Any,
+    futures_market_data: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Build optional macro/event signals without blocking nightly execution."""
+    asset_signals: Dict[str, Dict[str, Any]] = {}
+    result: Dict[str, Any] = {"asset_signals": asset_signals, "symbol_tags": {}}
+
+    cffex_data = futures_market_data.get("CFFEX", {}).get("data", {})
+    im_frame = cffex_data.get("IM0")
+    ic_frame = cffex_data.get("IC0")
+    if im_frame is not None and ic_frame is not None and not im_frame.empty and not ic_frame.empty:
+        im_momentum = _pct_change_over_window(im_frame, 20)
+        ic_momentum = _pct_change_over_window(ic_frame, 20)
+        result["csi1000_500_excess_return"] = round(im_momentum - ic_momentum, 6)
+        asset_signals["CSI1000"] = _directional_signal(im_momentum)
+        asset_signals["CSI500"] = _directional_signal(ic_momentum)
+        asset_signals["IM0"] = asset_signals["CSI1000"]
+        asset_signals["IC0"] = asset_signals["CSI500"]
+        result["symbol_tags"]["IM0"] = ["csi1000", "small_cap", "ai_industrial_chain_proxy"]
+        result["symbol_tags"]["IC0"] = ["csi500", "mid_cap"]
+
+    for symbol, key in [("^TNX", "us10y_yield"), ("^TYX", "us30y_yield"), ("^MOVE", "move_index")]:
+        close = _latest_close(_optional_yf_frame(yf, symbol))
+        if close is not None:
+            result[key] = close
+
+    dxy_frame = _optional_yf_frame(yf, "DX-Y.NYB")
+    if dxy_frame.empty:
+        dxy_frame = _optional_yf_frame(yf, "DX=F")
+    if not dxy_frame.empty:
+        dxy_return = _pct_change_over_window(dxy_frame, 5)
+        result["dxy_return_5d"] = round(dxy_return, 6)
+        asset_signals["DXY"] = _directional_signal(dxy_return)
+
+    usdcny_frame = _optional_yf_frame(yf, "USDCNY=X")
+    if not usdcny_frame.empty:
+        asset_signals["USDCNY"] = _directional_signal(_pct_change_over_window(usdcny_frame, 5))
+
+    for key, env_name in {
+        "sofr_5d_change": "QTS_SOFR_5D_CHANGE",
+        "bond_straddle_activity": "QTS_BOND_STRADDLE_ACTIVITY",
+        "hormuz_reopen_probability": "QTS_HORMUZ_REOPEN_PROBABILITY",
+    }.items():
+        env_value = _env_float(env_name)
+        if env_value is not None:
+            result[key] = env_value
+    signed = _env_bool("QTS_HORMUZ_REOPEN_SIGNED")
+    if signed is not None:
+        result["hormuz_reopen_signed"] = signed
+    if "hormuz_reopen_probability" in result or "hormuz_reopen_signed" in result:
+        result["event_probabilities"] = {
+            "hormuz_reopen_probability": result.get("hormuz_reopen_probability", 0.0),
+            "hormuz_reopen_signed": result.get("hormuz_reopen_signed", False),
+        }
+    return result
+
+
+def _build_market_context(
+    cross_asset_engine: CrossAssetCausalEngine,
+    qqq: pd.DataFrame,
+    gold: pd.DataFrame,
+    copper: pd.DataFrame,
+    macro_event_inputs: Optional[Dict[str, Any]] = None,
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
     qqq_mom = _pct_change_over_window(qqq, 60)
     gold_mom = _pct_change_over_window(gold, 60)
     copper_mom = _pct_change_over_window(copper, 30)
@@ -619,6 +775,20 @@ def _build_market_context(cross_asset_engine: CrossAssetCausalEngine, qqq: pd.Da
         },
         "real_rates_direction": "up" if gold_mom < 0 and copper_mom < 0 else "flat_or_down",
     }
+    macro_event_inputs = macro_event_inputs or {}
+    for key, value in macro_event_inputs.items():
+        if key == "asset_signals" and isinstance(value, dict):
+            market_context["asset_signals"].update(value)
+        elif key == "symbol_tags" and isinstance(value, dict):
+            market_context.setdefault("symbol_tags", {}).update(value)
+        else:
+            market_context[key] = value
+    macro_event_state = MacroEventStateEngine().analyze(market_context)
+    market_context["macro_event_state"] = macro_event_state
+    market_context["crisis_probability"] = round(
+        max(float(market_context["crisis_probability"]), float(macro_event_state.get("tail_risk_score", 0.0) or 0.0)),
+        4,
+    )
     game_analysis = GameCausalAnalysisEngine().analyze(
         news_items=[],
         policy_records=[],
@@ -638,6 +808,7 @@ def _build_market_context(cross_asset_engine: CrossAssetCausalEngine, qqq: pd.Da
         "game_causal_analysis": game_analysis,
         "dominant_game_logics": game_analysis.get("dominant_game_logics", []),
         "game_relation_reports": game_analysis.get("game_relation_reports", []),
+        "macro_event_state": macro_event_state,
     }
     return market_context, market_data
 
@@ -811,6 +982,7 @@ def _futures_margin_fields(
         "one_lot_notional": row["one_lot_notional"],
         "one_lot_min_margin": row["one_lot_margin"],
         "margin_formula": "latest_price * contract_multiplier * margin_rate",
+        "margin_source": "contract_specs",
     }
 
 
@@ -1158,13 +1330,16 @@ def _build_evidence_snapshot(
         },
         "input_events": game_analysis.get("events", [])[:12],
         "event_windows": game_analysis.get("event_windows", [])[:12],
+        "event_intensity": game_analysis.get("event_intensity", {}),
         "event_driven_causal_chains": game_analysis.get("event_causal_chains", [])[:10],
+        "macro_event_state": market_data.get("macro_event_state", {}),
         "sensitive_asset_confirmations": [
             {
                 "relation_id": item.get("relation_id"),
                 "winner": item.get("current_judgement", {}).get("winner"),
                 "confidence": item.get("current_judgement", {}).get("confidence"),
                 "price_confirmation": item.get("price_confirmation"),
+                "bilateral_probability": item.get("bilateral_probability"),
                 "identification_status": item.get("identification_status"),
                 "actionability": item.get("actionability"),
             }
@@ -1269,9 +1444,11 @@ def generate_report(target_day: date) -> Dict[str, Any]:
     futures_execution_data = _fetch_futures_data(ak, [CN_FUTURES_TAIL_HEDGE_SYMBOL], end_date=target_date)
     futures_execution_last = _latest_price_map(futures_execution_data)
     market_status = _build_market_status(us_validation, hk_validation, futures_market_data)
+    failure_category = _failure_category_from_market_status(market_status)
 
     report: Dict[str, Any] = {
         "status": "failed_validation",
+        "failure_category": failure_category,
         "report_date": target_date,
         "generated_at": datetime.now(CHINA_TZ).isoformat(timespec="seconds"),
         "repo": repo_status,
@@ -1308,6 +1485,7 @@ def generate_report(target_day: date) -> Dict[str, Any]:
     report["recap_lines"] = _build_recap(previous_report, current_price_map)
 
     if not _any_market_tradable(market_status):
+        report["failure_category"] = FAILURE_ALL_MARKETS_INVALID
         report["evidence_snapshot"] = _build_evidence_snapshot(report, {})
         report["report_text"] = render_report_text(report)
         _save_report(report_dir, report)
@@ -1332,7 +1510,14 @@ def generate_report(target_day: date) -> Dict[str, Any]:
         ),
         copper_peer,
     )
-    market_context, market_data = _build_market_context(cross_asset_engine, qqq, gold, copper_proxy)
+    macro_event_inputs = _build_macro_event_inputs(yf, futures_market_data)
+    market_context, market_data = _build_market_context(
+        cross_asset_engine,
+        qqq,
+        gold,
+        copper_proxy,
+        macro_event_inputs=macro_event_inputs,
+    )
     tail_hedge_gates = {
         "US": _tail_hedge_effectiveness_gate(us_execution_data.get(US_TAIL_HEDGE_SYMBOL), market_context),
         "HK": _tail_hedge_effectiveness_gate(hk_execution_data.get(HK_TAIL_HEDGE_SYMBOL), market_context),
@@ -1376,6 +1561,7 @@ def generate_report(target_day: date) -> Dict[str, Any]:
     report.update(
         {
             "status": "ok" if _all_markets_tradable(market_status) else "partial_ok",
+            "failure_category": FAILURE_NONE if _all_markets_tradable(market_status) else FAILURE_DATA_VALIDATION_PARTIAL,
             "market_context": market_context,
             "market_data": market_data,
             "us_cycle_status": us_cycle.get("status"),
@@ -1518,6 +1704,8 @@ def render_report_text(report: Dict[str, Any]) -> str:
     lines.append(f"状态：{report.get('status')}")
     lines.append(f"报告日期：{report.get('report_date')}")
     lines.append(f"生成时间：{report.get('generated_at')}")
+    if report.get("failure_category") and report.get("failure_category") != FAILURE_NONE:
+        lines.append(f"失败分类：{report.get('failure_category')}")
     repo = report.get("repo", {})
     lines.append(
         "代码基线："
@@ -1583,6 +1771,25 @@ def render_report_text(report: Dict[str, Any]) -> str:
         lines.append("")
         lines.append("证据快照：")
         lines.append(f"- 因果验证：{validation_text or '本次无可交易因果边'}")
+        event_intensity = snapshot.get("event_intensity", {})
+        if event_intensity:
+            latest_values = event_intensity.get("latest_values", {})
+            top_event_values = sorted(
+                (
+                    (name, float(value or 0.0))
+                    for name, value in latest_values.items()
+                    if str(name).startswith("event_zscore_")
+                ),
+                key=lambda item: abs(item[1]),
+                reverse=True,
+            )[:3]
+            intensity_text = ", ".join(f"{name}={value:.2f}" for name, value in top_event_values) or "无显著事件Z分数"
+            lines.append(
+                "- 事件强度因子："
+                f"status={event_intensity.get('status')} "
+                f"events={event_intensity.get('event_count', 0)} "
+                f"{intensity_text}"
+            )
         decoder_snapshot = snapshot.get("invariance_decoder", {})
         if decoder_snapshot:
             decoder_text = "; ".join(
@@ -1601,6 +1808,20 @@ def render_report_text(report: Dict[str, Any]) -> str:
                 for market, item in scm_snapshot.items()
             )
             lines.append(f"- SCM/DAG因果图：{scm_text}")
+        macro_event_snapshot = snapshot.get("macro_event_state", {})
+        if macro_event_snapshot:
+            overlays = macro_event_snapshot.get("factor_weight_overlays", {})
+            alerts = macro_event_snapshot.get("alerts", [])
+            lines.append(
+                "- 宏观事件状态："
+                f"status={macro_event_snapshot.get('status')} "
+                f"tail={float(macro_event_snapshot.get('tail_risk_score', 0.0) or 0.0):.3f} "
+                f"hedge_mult={float(macro_event_snapshot.get('tail_hedge_multiplier', 1.0) or 1.0):.2f} "
+                f"ai_small_cap={float(overlays.get('ai_small_cap_momentum_multiplier', 1.0) or 1.0):.2f} "
+                f"rate_sensitive={float(overlays.get('rate_sensitive_multiplier', 1.0) or 1.0):.2f} "
+                f"vol={float(overlays.get('volatility_multiplier', 1.0) or 1.0):.2f} "
+                f"alerts={len(alerts)}"
+            )
         abstention_snapshot = snapshot.get("causal_abstention_gate", {})
         if abstention_snapshot:
             abstention_text = "; ".join(

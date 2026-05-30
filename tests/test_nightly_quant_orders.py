@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+import json
+from pathlib import Path
+import tempfile
 import unittest
 
 import pandas as pd
 
+from quant_trade_system.nightly_health_check import check_nightly_health
 from quant_trade_system.nightly_quant_orders import (
     CHINA_TZ,
+    CFFEX_SETTLE_FALLBACK_CONTRACT_SPECS,
+    FAILURE_ALL_MARKETS_INVALID,
+    FAILURE_DATA_VALIDATION_PARTIAL,
+    FAILURE_NONE,
+    FAILURE_SCHEDULER_NOT_RUN,
     MarketValidation,
     _aggregate_weekly_quality_metrics,
     _build_evidence_snapshot,
@@ -17,6 +26,7 @@ from quant_trade_system.nightly_quant_orders import (
     _materialize_execution_actions,
     _next_weekday,
     _observation_lines,
+    _failure_category_from_market_status,
     _tail_hedge_effectiveness_gate,
     _validate_futures_close,
     _validate_hk_close,
@@ -81,6 +91,35 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertTrue(validation.passed)
         self.assertEqual(validation.actual_date, "2026-05-15")
         self.assertIn("显式降级", validation.reason)
+
+    def test_validate_cffex_uses_contract_specs_fallback_when_settle_is_stale(self) -> None:
+        settle = MarketValidation(
+            market="CFFEX",
+            requested_date="2026-05-27",
+            actual_date="2026-05-18",
+            passed=True,
+            reason="CFFEX T 日无结算参数，最近有效交易日回退到 2026-05-18。",
+            sample_count=46,
+        )
+        validation = _validate_futures_close("CFFEX", {"IF0": _frame("2026-05-27", 4200.0)}, settle)
+        self.assertTrue(validation.passed)
+        self.assertEqual(validation.actual_date, "2026-05-27")
+        self.assertEqual(validation.settlement_fallback, CFFEX_SETTLE_FALLBACK_CONTRACT_SPECS)
+        self.assertEqual(validation.margin_source, "contract_specs")
+        self.assertIn("settlement_fallback=daily_main_contract+contract_specs", validation.reason)
+
+    def test_non_cffex_settle_daily_mismatch_still_fails(self) -> None:
+        settle = MarketValidation(
+            market="SHFE",
+            requested_date="2026-05-27",
+            actual_date="2026-05-18",
+            passed=True,
+            reason="SHFE T 日无结算参数，最近有效交易日回退到 2026-05-18。",
+            sample_count=46,
+        )
+        validation = _validate_futures_close("SHFE", {"CU0": _frame("2026-05-27", 100000.0)}, settle)
+        self.assertFalse(validation.passed)
+        self.assertIn("时间戳不一致", validation.reason)
 
     def test_build_instruction_uses_reference_close(self) -> None:
         long_line = _build_instruction(
@@ -205,6 +244,7 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertEqual(execution[0]["contract_multiplier"], 5.0)
         self.assertAlmostEqual(execution[0]["one_lot_min_margin"], 63_510.0, places=2)
         self.assertEqual(execution[0]["margin_formula"], "latest_price * contract_multiplier * margin_rate")
+        self.assertEqual(execution[0]["margin_source"], "contract_specs")
 
     def test_evaluate_execution_actions_quantifies_nav(self) -> None:
         actions = [
@@ -276,6 +316,7 @@ class NightlyQuantOrdersTests(unittest.TestCase):
     def test_render_report_text_marks_invalid_market_without_global_failure(self) -> None:
         report = {
             "status": "partial_ok",
+            "failure_category": FAILURE_DATA_VALIDATION_PARTIAL,
             "report_date": "2026-05-15",
             "generated_at": "2026-05-16T06:00:00+08:00",
             "repo": {"branch": "main", "head": "abc", "origin_main": "abc", "synced_with_origin_main": True},
@@ -297,8 +338,58 @@ class NightlyQuantOrdersTests(unittest.TestCase):
             "evidence_snapshot": {},
         }
         text = render_report_text(report)
+        self.assertIn("失败分类：DATA_VALIDATION_PARTIAL", text)
         self.assertIn("DCE：NO_TRADE_DATA_INVALID", text)
         self.assertNotIn("没有任何市场通过数据校验", text)
+
+    def test_failure_category_from_market_status(self) -> None:
+        self.assertEqual(_failure_category_from_market_status({}), FAILURE_SCHEDULER_NOT_RUN)
+        self.assertEqual(
+            _failure_category_from_market_status({"US": {"tradable": True}, "HK": {"tradable": True}}),
+            FAILURE_NONE,
+        )
+        self.assertEqual(
+            _failure_category_from_market_status({"US": {"tradable": True}, "DCE": {"tradable": False}}),
+            FAILURE_DATA_VALIDATION_PARTIAL,
+        )
+        self.assertEqual(
+            _failure_category_from_market_status({"US": {"tradable": False}, "HK": {"tradable": False}}),
+            FAILURE_ALL_MARKETS_INVALID,
+        )
+
+    def test_nightly_health_check_detects_missing_and_failed_reports(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            report_dir = repo_root / "state" / "nightly_reports"
+            report_dir.mkdir(parents=True)
+
+            missing = check_nightly_health(date(2026, 5, 20), repo_root=repo_root)
+            self.assertEqual(missing["failure_category"], FAILURE_SCHEDULER_NOT_RUN)
+            self.assertFalse(missing["report_exists"])
+
+            failed_report = {
+                "status": "failed_validation",
+                "failure_category": FAILURE_ALL_MARKETS_INVALID,
+                "report_date": "2026-05-20",
+                "generated_at": "2026-05-20T20:00:00+08:00",
+                "market_status": {"US": {"tradable": False, "status": "NO_TRADE_DATA_INVALID"}},
+            }
+            (report_dir / "2026-05-20.json").write_text(json.dumps(failed_report), encoding="utf-8")
+            failed = check_nightly_health(date(2026, 5, 20), repo_root=repo_root)
+            self.assertEqual(failed["status"], "failed")
+            self.assertEqual(failed["failure_category"], FAILURE_ALL_MARKETS_INVALID)
+
+            ok_report = {
+                "status": "partial_ok",
+                "failure_category": FAILURE_DATA_VALIDATION_PARTIAL,
+                "report_date": "2026-05-21",
+                "generated_at": "2026-05-21T20:00:00+08:00",
+                "market_status": {"US": {"tradable": True}, "DCE": {"tradable": False}},
+            }
+            (report_dir / "2026-05-21.json").write_text(json.dumps(ok_report), encoding="utf-8")
+            ok = check_nightly_health(date(2026, 5, 21), repo_root=repo_root)
+            self.assertEqual(ok["status"], "ok")
+            self.assertEqual(ok["failure_category"], FAILURE_DATA_VALIDATION_PARTIAL)
 
     def test_evidence_snapshot_links_models_features_and_confirmations(self) -> None:
         report = {
