@@ -453,6 +453,54 @@ class SelfIteratingCausalEngineTests(unittest.TestCase):
         no_signal_plan = self.engine.optimize_portfolio([], high_context)
         self.assertGreater(no_signal_plan.tail_hedge_weight, 0.10)
 
+    def test_hmm_crisis_state_forces_dynamic_barbell_defense(self) -> None:
+        plan = self.engine.optimize_portfolio(
+            [
+                {
+                    "symbol": "AAPL",
+                    "asset_type": "stock",
+                    "direction": "long",
+                    "raw_score": 0.9,
+                    "confidence": 0.9,
+                    "objective_score": 0.9,
+                    "objective_metrics": {"win_rate": 0.7, "payoff_ratio": 2.0, "elasticity": 1.5},
+                    "selected_features": ["noisy_channel_long_posterior"],
+                    "decoder_state_entropy": 0.15,
+                    "decoder_risk_off_probability": 0.88,
+                }
+            ],
+            market_context={"crisis_probability": 0.12},
+        )
+
+        self.assertEqual(plan.hmm_barbell_state, "state2_liquidity_crisis")
+        self.assertLessEqual(plan.active_weight, 0.15)
+        self.assertGreaterEqual(plan.safe_weight, 0.70)
+        self.assertGreaterEqual(plan.tail_hedge_weight, 0.15)
+
+    def test_hmm_trend_state_releases_active_risk_budget(self) -> None:
+        plan = self.engine.optimize_portfolio(
+            [
+                {
+                    "symbol": "AAPL",
+                    "asset_type": "stock",
+                    "direction": "long",
+                    "raw_score": 0.9,
+                    "confidence": 0.9,
+                    "objective_score": 0.9,
+                    "objective_metrics": {"win_rate": 0.7, "payoff_ratio": 2.0, "elasticity": 1.5},
+                    "selected_features": ["base_ret_5"],
+                    "decoder_state_entropy": 0.10,
+                    "decoder_risk_off_probability": 0.05,
+                }
+            ],
+            market_context={"hmm_barbell_state": "risk_on", "crisis_probability": 0.05},
+        )
+
+        self.assertEqual(plan.hmm_barbell_state, "state1_trend_or_normal")
+        self.assertGreaterEqual(max(plan.hmm_barbell_audit["active_weight_grid"]), 0.85)
+        self.assertGreater(plan.active_weight, 0.0)
+        self.assertLessEqual(plan.tail_hedge_weight, 0.12)
+
     def test_validation_gate_marks_unstable_features_observation_only(self) -> None:
         idx = pd.RangeIndex(80)
         feature = pd.Series(np.r_[np.linspace(0, 1, 40), np.linspace(1, 0, 40)], index=idx)

@@ -163,6 +163,8 @@ class PortfolioPlan:
     estimated_capacity_penalty: float = 0.0
     estimated_margin_penalty: float = 0.0
     estimated_tail_risk_penalty: float = 0.0
+    hmm_barbell_state: str = "unclassified"
+    hmm_barbell_audit: Dict[str, Any] = field(default_factory=dict)
 
 
 class SelfIteratingCausalEngine:
@@ -608,8 +610,9 @@ class SelfIteratingCausalEngine:
             reverse=True,
         )[: self.constraints.max_positions]
         tail_risk = self._extract_tail_risk_score(market_context)
+        barbell_profile = self._hmm_barbell_profile(candidates, market_context, tail_risk)
         if not candidates:
-            tail_weight = float(np.clip(0.10 + tail_risk * 0.60, 0.10, 0.45))
+            tail_weight = float(barbell_profile["default_tail_weight"])
             return PortfolioPlan(
                 active_weight=0.0,
                 safe_weight=round(1.0 - tail_weight, 6),
@@ -618,16 +621,21 @@ class SelfIteratingCausalEngine:
                 projected_objective_score=0.0,
                 barbell_ratio=round(tail_weight, 6),
                 residual_cash_weight=0.0,
+                hmm_barbell_state=str(barbell_profile["state"]),
+                hmm_barbell_audit=barbell_profile,
             )
 
         best_plan: Optional[PortfolioPlan] = None
         best_score = -np.inf
 
-        for active_weight in [0.35, 0.45, 0.55, 0.65, 0.75]:
+        for active_weight in barbell_profile["active_weight_grid"]:
             barbell_budget = max(0.0, 1.0 - active_weight)
-            for hedge_ratio in [0.10, 0.20, 0.30, 0.40]:
-                tail_weight = barbell_budget * hedge_ratio
+            for tail_weight in barbell_profile["tail_weight_grid"]:
+                if tail_weight > barbell_budget:
+                    continue
                 safe_weight = barbell_budget - tail_weight
+                if safe_weight < float(barbell_profile["min_safe_weight"]):
+                    continue
                 allocations = self._allocate_signal_weights(candidates, active_weight, market_context)
                 allocations, residual_cash = self._enforce_portfolio_constraints(allocations)
                 projected_score = self._score_portfolio(
@@ -646,7 +654,7 @@ class SelfIteratingCausalEngine:
                         tail_hedge_weight=round(tail_weight, 6),
                         signal_allocations=allocations,
                         projected_objective_score=round(projected_score, 6),
-                        barbell_ratio=round(hedge_ratio, 6),
+                        barbell_ratio=round(tail_weight / max(barbell_budget, 1e-9), 6),
                         residual_cash_weight=0.0,
                         estimated_cost_penalty=round(penalties["transaction_cost"], 6),
                         estimated_impact_penalty=round(penalties["impact_cost"], 6),
@@ -654,17 +662,77 @@ class SelfIteratingCausalEngine:
                         estimated_capacity_penalty=round(penalties["capacity_penalty"], 6),
                         estimated_margin_penalty=round(penalties["margin_penalty"], 6),
                         estimated_tail_risk_penalty=round(penalties["tail_risk_penalty"], 6),
+                        hmm_barbell_state=str(barbell_profile["state"]),
+                        hmm_barbell_audit=barbell_profile,
                     )
 
         return best_plan or PortfolioPlan(
             active_weight=0.0,
-            safe_weight=0.90,
-            tail_hedge_weight=0.10,
+            safe_weight=round(1.0 - float(barbell_profile["default_tail_weight"]), 6),
+            tail_hedge_weight=round(float(barbell_profile["default_tail_weight"]), 6),
             signal_allocations=[],
             projected_objective_score=0.0,
-            barbell_ratio=0.10,
+            barbell_ratio=round(float(barbell_profile["default_tail_weight"]), 6),
             residual_cash_weight=0.0,
+            hmm_barbell_state=str(barbell_profile["state"]),
+            hmm_barbell_audit=barbell_profile,
         )
+
+    def _hmm_barbell_profile(
+        self,
+        candidates: List[Dict[str, Any]],
+        market_context: Dict[str, Any],
+        tail_risk: float,
+    ) -> Dict[str, Any]:
+        """Map decoded hidden states into dynamic Taleb barbell budgets."""
+
+        risk_off_values = [float(item.get("decoder_risk_off_probability", 0.0) or 0.0) for item in candidates]
+        entropy_values = [float(item.get("decoder_state_entropy", 1.0) or 1.0) for item in candidates]
+        risk_off = max(risk_off_values or [0.0])
+        avg_entropy = float(np.mean(entropy_values)) if entropy_values else 1.0
+        cross_asset_regime = market_context.get("cross_asset_regime", {})
+        cross_asset_regime_name = cross_asset_regime.get("regime", "") if isinstance(cross_asset_regime, dict) else str(cross_asset_regime)
+        explicit_state = str(
+            market_context.get("hmm_barbell_state")
+            or market_context.get("hmm_state")
+            or market_context.get("regime")
+            or cross_asset_regime_name
+        ).lower()
+
+        if explicit_state in {"risk_off", "liquidity_stress", "crisis", "bear"} or risk_off >= 0.65 or tail_risk >= 0.55:
+            state = "state2_liquidity_crisis"
+            active_grid = [0.0, 0.05, 0.10, 0.15]
+            tail_grid = [0.15, 0.18, 0.20]
+            min_safe = 0.70
+            default_tail = 0.15
+            rule = "crisis: cut active risk; keep about 85% safe bucket and 15% convex tail hedge."
+        elif explicit_state in {"risk_on", "trend", "bull", "soft_landing"} or risk_off <= 0.25 and avg_entropy <= 0.55:
+            state = "state1_trend_or_normal"
+            active_grid = [0.55, 0.65, 0.75, 0.85]
+            tail_grid = [0.06, 0.08, 0.10, 0.12]
+            min_safe = 0.05
+            default_tail = float(np.clip(0.08 + tail_risk * 0.20, 0.08, 0.16))
+            rule = "normal/trend: release risk budget to validated high-IC signals with modest tail hedge."
+        else:
+            state = "state0_transition_choppy"
+            active_grid = [0.25, 0.35, 0.45, 0.55]
+            tail_grid = [0.10, 0.12, 0.16, 0.20]
+            min_safe = 0.20
+            default_tail = float(np.clip(0.10 + tail_risk * 0.35, 0.10, 0.25))
+            rule = "transition/choppy: reduce active risk and raise safe reserve until HMM entropy falls."
+
+        return {
+            "state": state,
+            "risk_off_probability": round(float(risk_off), 6),
+            "avg_state_entropy": round(float(avg_entropy), 6),
+            "tail_risk_score": round(float(tail_risk), 6),
+            "active_weight_grid": active_grid,
+            "tail_weight_grid": tail_grid,
+            "min_safe_weight": min_safe,
+            "default_tail_weight": round(float(default_tail), 6),
+            "rule": rule,
+            "formula": "HMM/risk_off/tail_risk -> active grid + safe floor + convex tail hedge grid",
+        }
 
     def _validate_selected_features(
         self,
@@ -1861,6 +1929,8 @@ class SelfIteratingCausalEngine:
             "estimated_capacity_penalty": plan.estimated_capacity_penalty,
             "estimated_margin_penalty": plan.estimated_margin_penalty,
             "estimated_tail_risk_penalty": plan.estimated_tail_risk_penalty,
+            "hmm_barbell_state": plan.hmm_barbell_state,
+            "hmm_barbell_audit": plan.hmm_barbell_audit,
             "signal_allocations": [asdict(item) for item in plan.signal_allocations],
         }
 
@@ -1900,6 +1970,7 @@ class SelfIteratingCausalEngine:
                         "risk_score": allocation.abstention_risk_score,
                         "reasons": allocation.abstention_reasons,
                     },
+                    "hmm_barbell_state": plan.hmm_barbell_state,
                 }
             )
         if plan.tail_hedge_weight > 0:
@@ -1909,6 +1980,7 @@ class SelfIteratingCausalEngine:
                     "symbol": "TAIL_RISK_PROTECTION",
                     "target_weight": plan.tail_hedge_weight,
                     "reason": "塔勒布杠铃尾部保护与主信号联合优化",
+                    "hmm_barbell_state": plan.hmm_barbell_state,
                 }
             )
         if plan.safe_weight > 0:
@@ -1918,6 +1990,7 @@ class SelfIteratingCausalEngine:
                     "symbol": "SAFE_ASSET_BUCKET",
                     "target_weight": plan.safe_weight,
                     "reason": "杠铃安全端与残余现金缓冲",
+                    "hmm_barbell_state": plan.hmm_barbell_state,
                 }
             )
         return actions

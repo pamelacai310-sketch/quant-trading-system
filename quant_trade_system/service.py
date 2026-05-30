@@ -193,11 +193,45 @@ class QuantTradingService:
         frame = self.load_dataset(strategy["dataset"])
         result = backtest_strategy(strategy["id"], strategy["name"], frame, strategy["spec"])
         payload = serialize_backtest(result)
-        self.storage.save_backtest(strategy_id, payload)
+        backtest_id = self.storage.save_backtest(strategy_id, payload)
+        self._apply_mae_mfe_feedback_to_strategy(strategy, payload, backtest_id)
         return payload
 
     def list_backtests(self, strategy_id: str | None = None) -> List[Dict[str, Any]]:
         return self.storage.list_backtests(strategy_id)
+
+    def _apply_mae_mfe_feedback_to_strategy(
+        self,
+        strategy: Dict[str, Any],
+        backtest_payload: Dict[str, Any],
+        backtest_id: str,
+    ) -> None:
+        feedback = (
+            backtest_payload.get("stats", {})
+            .get("mae_mfe_feedback", {})
+        )
+        recommended = feedback.get("recommended_risk_limits", {}) if isinstance(feedback, dict) else {}
+        if not isinstance(recommended, dict) or not recommended.get("enabled"):
+            return
+        spec = dict(strategy["spec"])
+        risk_limits = dict(spec.get("risk_limits", {}) or {})
+        risk_limits["mae_mfe_feedback"] = {
+            "enabled": True,
+            "source_backtest_id": backtest_id,
+            "sample_size": int(feedback.get("sample_size", recommended.get("sample_size", 0))),
+            "method": feedback.get("method", "mae_mfe_closed_trade_quantiles"),
+            "recommended_risk_limits": recommended,
+            "diagnostics": feedback.get("diagnostics", {}),
+            "applied_on_next_run": True,
+        }
+        spec["risk_limits"] = risk_limits
+        self.storage.upsert_strategy(
+            strategy["id"],
+            strategy["name"],
+            strategy["dataset"],
+            attach_formula_gate_metadata(spec),
+            strategy.get("status", "draft"),
+        )
 
     def _latest_drawdown(self) -> float:
         snapshots = self.storage.list_portfolio_snapshots(limit=1)
