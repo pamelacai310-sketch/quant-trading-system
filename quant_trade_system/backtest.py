@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from .models import BacktestResult
+from .core.robustness import deflated_sharpe_ratio, evaluate_cpcv_returns
 from .strategy_engine import prepare_frame
 
 
@@ -383,6 +384,27 @@ def backtest_strategy(
         if closed_trades
         else 0.0
     )
+    validation_spec = spec.get("validation", {}) if isinstance(spec.get("validation", {}), dict) else {}
+    effective_trials = int(_as_float(validation_spec.get("effective_trials", validation_spec.get("trial_count", 1)), 1))
+    cpcv_config = validation_spec.get("cpcv", {}) if isinstance(validation_spec.get("cpcv", {}), dict) else {}
+    purge_window = cpcv_config.get("purge_window", validation_spec.get("purge_window", 5))
+    robustness_validation = {
+        "deflated_sharpe_ratio": deflated_sharpe_ratio(
+            returns,
+            effective_trials=effective_trials,
+            periods_per_year=int(_as_float(validation_spec.get("periods_per_year", 252), 252)),
+        ),
+        "cpcv": evaluate_cpcv_returns(
+            returns,
+            n_groups=int(_as_float(cpcv_config.get("n_groups", 6), 6)),
+            test_group_count=int(_as_float(cpcv_config.get("test_group_count", 2), 2)),
+            purge_window=int(_as_float(purge_window, 5)),
+            embargo_pct=float(_as_float(cpcv_config.get("embargo_pct", validation_spec.get("embargo_pct", 0.01)), 0.01)),
+            max_paths=int(_as_float(cpcv_config.get("max_paths", 30), 30)),
+            periods_per_year=int(_as_float(validation_spec.get("periods_per_year", 252), 252)),
+        ),
+        "gate": "CPCV and DSR are audit gates; complexity upgrades should not promote if either fails.",
+    }
 
     result = BacktestResult(
         strategy_id=strategy_id,
@@ -407,6 +429,7 @@ def backtest_strategy(
             },
             "closed_trades": closed_trades[-100:],
             "mae_mfe_feedback": mae_mfe_feedback,
+            "robustness_validation": robustness_validation,
         },
     )
     return result

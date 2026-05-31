@@ -42,6 +42,9 @@ class BacktestAdaptiveRiskTests(unittest.TestCase):
         self.assertGreaterEqual(feedback["sample_size"], 2)
         self.assertIn("closed_trades", result.stats)
         self.assertGreaterEqual(len(result.stats["closed_trades"]), 2)
+        self.assertIn("robustness_validation", result.stats)
+        self.assertIn("deflated_sharpe_ratio", result.stats["robustness_validation"])
+        self.assertIn("cpcv", result.stats["robustness_validation"])
 
     def test_backtest_applies_previous_mae_mfe_feedback(self) -> None:
         first = backtest_strategy("s1", "adaptive", self._frame(), self._spec())

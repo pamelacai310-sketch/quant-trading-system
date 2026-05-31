@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 from ...factors.factor_library import FactorLibrary
+from ..robustness import democratic_orthogonalize, effective_breadth, shapley_deployment_policy
 from .causal_factor_library import AssetClass, CausalFactorLibrary
 from .causal_graph_layer import CausalDAGEdge, CausalGraphLayer
 from .invariance_market_decoder import InvarianceMarketDecoder, InvariantDecoderConfig
@@ -163,8 +164,10 @@ class PortfolioPlan:
     estimated_capacity_penalty: float = 0.0
     estimated_margin_penalty: float = 0.0
     estimated_tail_risk_penalty: float = 0.0
+    estimated_breadth_penalty: float = 0.0
     hmm_barbell_state: str = "unclassified"
     hmm_barbell_audit: Dict[str, Any] = field(default_factory=dict)
+    robustness_audit: Dict[str, Any] = field(default_factory=dict)
 
 
 class SelfIteratingCausalEngine:
@@ -433,6 +436,7 @@ class SelfIteratingCausalEngine:
                         "state_conditioning": ensemble.get("state_conditioning", {}),
                         "cross_asset_transfer": ensemble.get("cross_asset_transfer", {}),
                         "macro_event_overlay": ensemble.get("macro_event_overlay", {}),
+                        "robustness_audit": ensemble.get("robustness_audit", {}),
                         "abstention_decision": abstention.decision,
                         "abstention_weight_multiplier": abstention.weight_multiplier,
                         "abstention_risk_score": abstention.risk_score,
@@ -454,6 +458,7 @@ class SelfIteratingCausalEngine:
                 "state_conditioning": ensemble.get("state_conditioning", {}),
                 "cross_asset_transfer": ensemble.get("cross_asset_transfer", {}),
                 "macro_event_overlay": ensemble.get("macro_event_overlay", {}),
+                "robustness_audit": ensemble.get("robustness_audit", {}),
                 "objective_metrics": asdict(ensemble["objective_metrics"]),
                 "latest_signal_score": latest_score,
                 "latest_confidence": latest_confidence,
@@ -489,6 +494,7 @@ class SelfIteratingCausalEngine:
             "instrument_registry": self.instrument_registry.latest_records(limit=50),
             "causal_llm_audit": self.latest_llm_audit_records,
             "monolithic_research_factory": self._summarize_cross_asset_factor_memory(),
+            "robustness_controls": portfolio_plan.robustness_audit,
             "experiment_record": asdict(experiment_record),
             "model_registry_record": asdict(model_record),
             "feature_store_records": self.feature_store.latest_records(limit=25),
@@ -604,11 +610,14 @@ class SelfIteratingCausalEngine:
         market_context: Dict[str, Any],
     ) -> PortfolioPlan:
         """把组合约束和杠铃配置联合纳入目标优化。"""
+        market_context = dict(market_context or {})
         candidates = sorted(
             signal_candidates,
             key=lambda item: (item["objective_score"], abs(item["raw_score"]), item["confidence"]),
             reverse=True,
         )[: self.constraints.max_positions]
+        breadth_audit = self._candidate_breadth_audit(candidates, market_context)
+        market_context["effective_breadth_audit"] = breadth_audit
         tail_risk = self._extract_tail_risk_score(market_context)
         barbell_profile = self._hmm_barbell_profile(candidates, market_context, tail_risk)
         if not candidates:
@@ -623,6 +632,7 @@ class SelfIteratingCausalEngine:
                 residual_cash_weight=0.0,
                 hmm_barbell_state=str(barbell_profile["state"]),
                 hmm_barbell_audit=barbell_profile,
+                robustness_audit={"effective_breadth": breadth_audit},
             )
 
         best_plan: Optional[PortfolioPlan] = None
@@ -662,8 +672,10 @@ class SelfIteratingCausalEngine:
                         estimated_capacity_penalty=round(penalties["capacity_penalty"], 6),
                         estimated_margin_penalty=round(penalties["margin_penalty"], 6),
                         estimated_tail_risk_penalty=round(penalties["tail_risk_penalty"], 6),
+                        estimated_breadth_penalty=round(penalties["breadth_penalty"], 6),
                         hmm_barbell_state=str(barbell_profile["state"]),
                         hmm_barbell_audit=barbell_profile,
+                        robustness_audit={"effective_breadth": breadth_audit},
                     )
 
         return best_plan or PortfolioPlan(
@@ -676,6 +688,7 @@ class SelfIteratingCausalEngine:
             residual_cash_weight=0.0,
             hmm_barbell_state=str(barbell_profile["state"]),
             hmm_barbell_audit=barbell_profile,
+            robustness_audit={"effective_breadth": breadth_audit},
         )
 
     def _hmm_barbell_profile(
@@ -698,40 +711,68 @@ class SelfIteratingCausalEngine:
             or market_context.get("regime")
             or cross_asset_regime_name
         ).lower()
+        previous_state = str(
+            market_context.get("previous_hmm_barbell_state")
+            or market_context.get("prior_hmm_barbell_state")
+            or ""
+        ).lower()
+        crisis_entry_threshold = float(market_context.get("hmm_crisis_entry_threshold", 0.85))
+        crisis_exit_threshold = float(market_context.get("hmm_crisis_exit_threshold", 0.25))
+        explicit_crisis = explicit_state in {"risk_off", "liquidity_stress", "crisis", "bear"}
+        explicit_normal = explicit_state in {"risk_on", "trend", "bull", "soft_landing"}
+        crisis_probability = max(risk_off, tail_risk, 0.90 if explicit_crisis else 0.0)
+        retained_crisis = previous_state in {"state2_liquidity_crisis", "risk_off", "crisis"} and crisis_probability >= crisis_exit_threshold
+        enter_crisis = crisis_probability >= crisis_entry_threshold or explicit_crisis
+        release_normal = explicit_normal or (risk_off <= 0.25 and avg_entropy <= 0.55 and crisis_probability < crisis_exit_threshold)
+        sigmoid_crisis = 1.0 / (1.0 + np.exp(-10.0 * (crisis_probability - 0.55)))
 
-        if explicit_state in {"risk_off", "liquidity_stress", "crisis", "bear"} or risk_off >= 0.65 or tail_risk >= 0.55:
+        if enter_crisis or retained_crisis:
             state = "state2_liquidity_crisis"
-            active_grid = [0.0, 0.05, 0.10, 0.15]
-            tail_grid = [0.15, 0.18, 0.20]
-            min_safe = 0.70
-            default_tail = 0.15
-            rule = "crisis: cut active risk; keep about 85% safe bucket and 15% convex tail hedge."
-        elif explicit_state in {"risk_on", "trend", "bull", "soft_landing"} or risk_off <= 0.25 and avg_entropy <= 0.55:
+            active_cap = float(np.clip(0.18 - 0.10 * sigmoid_crisis, 0.05, 0.15))
+            active_grid = sorted({0.0, 0.05, round(active_cap * 0.70, 2), round(active_cap, 2)})
+            tail_center = float(np.clip(0.15 + 0.08 * sigmoid_crisis + 0.08 * tail_risk, 0.15, 0.25))
+            tail_grid = sorted({0.15, round(tail_center, 2), round(min(tail_center + 0.03, 0.25), 2)})
+            min_safe = float(np.clip(1.0 - active_cap - max(tail_grid), 0.70, 0.90))
+            default_tail = float(np.clip(tail_center, 0.15, 0.25))
+            rule = "crisis hysteresis: enter above 0.85/explicit crisis, exit only below 0.25; soft sigmoid mapping avoids hard 85/15 jumps."
+        elif release_normal:
             state = "state1_trend_or_normal"
-            active_grid = [0.55, 0.65, 0.75, 0.85]
+            active_cap = float(np.clip(0.85 - 0.20 * sigmoid_crisis - 0.10 * avg_entropy, 0.55, 0.90))
+            active_grid = sorted({0.55, 0.65, 0.75, round(active_cap, 2), 0.85})
             tail_grid = [0.06, 0.08, 0.10, 0.12]
             min_safe = 0.05
             default_tail = float(np.clip(0.08 + tail_risk * 0.20, 0.08, 0.16))
-            rule = "normal/trend: release risk budget to validated high-IC signals with modest tail hedge."
+            rule = "normal/trend: release risk budget only after crisis probability leaves hysteresis band; retain modest tail hedge."
         else:
             state = "state0_transition_choppy"
-            active_grid = [0.25, 0.35, 0.45, 0.55]
-            tail_grid = [0.10, 0.12, 0.16, 0.20]
+            active_cap = float(np.clip(0.58 - 0.30 * sigmoid_crisis - 0.15 * avg_entropy, 0.20, 0.55))
+            active_grid = sorted({0.20, 0.30, 0.40, round(active_cap, 2)})
+            tail_center = float(np.clip(0.10 + 0.10 * sigmoid_crisis + tail_risk * 0.20, 0.10, 0.23))
+            tail_grid = sorted({0.10, 0.12, round(tail_center, 2), round(min(tail_center + 0.04, 0.25), 2)})
             min_safe = 0.20
-            default_tail = float(np.clip(0.10 + tail_risk * 0.35, 0.10, 0.25))
-            rule = "transition/choppy: reduce active risk and raise safe reserve until HMM entropy falls."
+            default_tail = float(np.clip(tail_center, 0.10, 0.25))
+            rule = "transition/choppy hysteresis band: reduce active risk, smooth tail hedge, avoid whipsaw near a single threshold."
 
         return {
             "state": state,
             "risk_off_probability": round(float(risk_off), 6),
             "avg_state_entropy": round(float(avg_entropy), 6),
             "tail_risk_score": round(float(tail_risk), 6),
+            "crisis_probability": round(float(crisis_probability), 6),
+            "sigmoid_crisis_mapping": round(float(sigmoid_crisis), 6),
+            "previous_state": previous_state or "none",
+            "hysteresis": {
+                "entry_threshold": round(crisis_entry_threshold, 6),
+                "exit_threshold": round(crisis_exit_threshold, 6),
+                "retained_crisis": bool(retained_crisis),
+                "entered_crisis": bool(enter_crisis),
+            },
             "active_weight_grid": active_grid,
             "tail_weight_grid": tail_grid,
             "min_safe_weight": min_safe,
             "default_tail_weight": round(float(default_tail), 6),
             "rule": rule,
-            "formula": "HMM/risk_off/tail_risk -> active grid + safe floor + convex tail hedge grid",
+            "formula": "HMM posterior + tail risk -> hysteresis gate -> sigmoid-smoothed active/safe/tail grids",
         }
 
     def _validate_selected_features(
@@ -873,6 +914,11 @@ class SelfIteratingCausalEngine:
                 "instrument_registry": self.instrument_registry.latest_records(limit=50),
                 "causal_llm_audit": self.latest_llm_audit_records,
                 "monolithic_research_factory": transfer_summary,
+                "robustness_controls": portfolio_plan.robustness_audit,
+                "complexity_defense_gate": (
+                    "Shapley attribution is offline-only; effective breadth penalizes correlated bets; "
+                    "CPCV/DSR required before production promotion."
+                ),
             },
             failure_reasons=failure_reasons,
             status="completed",
@@ -914,12 +960,23 @@ class SelfIteratingCausalEngine:
                 "estimated_impact_penalty": portfolio_plan.estimated_impact_penalty,
                 "estimated_slippage_penalty": portfolio_plan.estimated_slippage_penalty,
                 "estimated_capacity_penalty": portfolio_plan.estimated_capacity_penalty,
+                "estimated_breadth_penalty": portfolio_plan.estimated_breadth_penalty,
                 "invariance_decoder": decoder_summary,
                 "scm_dag": scm_summary,
                 "abstention_gate": abstention_summary,
                 "instrument_registry": self.instrument_registry.latest_records(limit=50),
                 "causal_llm_audit": self.latest_llm_audit_records,
                 "monolithic_research_factory": transfer_summary,
+                "robustness_controls": portfolio_plan.robustness_audit,
+                "shapley_deployment_policy": shapley_deployment_policy(
+                    model_family="tree_or_ensemble_factor_model",
+                    feature_count=sum(
+                        len(report.get("selected_features", []))
+                        for report in symbol_reports.values()
+                        if isinstance(report, dict)
+                    ),
+                    frequency="weekly",
+                ),
             },
             promotion_status=promotion_status,
             promotion_reason=promotion_reason,
@@ -1261,6 +1318,11 @@ class SelfIteratingCausalEngine:
         state_conditioning: Dict[str, float] = {}
         transfer_multipliers: Dict[str, float] = {}
         macro_event_multipliers: Dict[str, float] = {}
+        selected_names = [feature.factor_name for feature in selected_features if feature.factor_name in factor_matrix.columns]
+        _, orthogonalization_audit = democratic_orthogonalize(factor_matrix[selected_names]) if selected_names else (
+            pd.DataFrame(index=factor_matrix.index),
+            {"status": "empty"},
+        )
 
         for feature in selected_features:
             series = pd.to_numeric(factor_matrix[feature.factor_name], errors="coerce")
@@ -1318,6 +1380,17 @@ class SelfIteratingCausalEngine:
             },
             "macro_event_overlay": {
                 name: round(multiplier, 6) for name, multiplier in macro_event_multipliers.items()
+            },
+            "robustness_audit": {
+                "democratic_orthogonalization": orthogonalization_audit,
+                "effective_factor_breadth": effective_breadth(
+                    pd.DataFrame(weighted_signals) if weighted_signals else pd.DataFrame(index=factor_matrix.index)
+                ),
+                "shapley_deployment_policy": shapley_deployment_policy(
+                    model_family="tree_or_ensemble_factor_model",
+                    feature_count=len(selected_names),
+                    frequency="weekly",
+                ),
             },
             "objective_metrics": objective_metrics,
             "latest_signal_score": round(latest_score, 6),
@@ -1803,6 +1876,7 @@ class SelfIteratingCausalEngine:
             - penalties["capacity_penalty"]
             - penalties["margin_penalty"]
             - penalties["tail_risk_penalty"]
+            - penalties["breadth_penalty"]
         )
 
     def _portfolio_penalties(
@@ -1821,6 +1895,9 @@ class SelfIteratingCausalEngine:
         unhedged_tail = max(0.0, tail_risk - tail_weight)
         decoder_uncertainty = sum(abs(item.target_weight) * float(item.decoder_state_entropy) for item in allocations)
         decoder_risk_off = sum(abs(item.target_weight) * float(item.decoder_risk_off_probability) for item in allocations)
+        breadth_audit = market_context.get("effective_breadth_audit", {})
+        breadth_ratio = float(breadth_audit.get("breadth_ratio", 1.0) or 1.0) if isinstance(breadth_audit, dict) else 1.0
+        breadth_penalty = gross_weight * max(0.0, 0.55 - breadth_ratio) * 0.030
         transaction_cost = 0.0
         slippage_cost = 0.0
         impact_cost = liquidity_penalty
@@ -1839,7 +1916,61 @@ class SelfIteratingCausalEngine:
             "capacity_penalty": capacity_penalty,
             "margin_penalty": futures_weight * margin_penalty_rate,
             "tail_risk_penalty": unhedged_tail * 0.035 + decoder_uncertainty * 0.006 + decoder_risk_off * 0.010,
+            "breadth_penalty": breadth_penalty,
         }
+
+    def _candidate_breadth_audit(
+        self,
+        candidates: List[Dict[str, Any]],
+        market_context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Estimate true independent bets instead of trusting nominal count."""
+
+        nominal = len(candidates)
+        if nominal <= 1:
+            return {
+                "status": "single_or_empty",
+                "nominal_breadth": nominal,
+                "effective_breadth": float(nominal),
+                "breadth_ratio": 1.0 if nominal else 0.0,
+                "average_signal_overlap": 0.0,
+                "gate": "single candidate cannot diversify portfolio breadth",
+            }
+
+        correlation_panel = market_context.get("candidate_return_matrix")
+        if correlation_panel is None:
+            correlation_panel = market_context.get("signal_return_matrix")
+        if isinstance(correlation_panel, pd.DataFrame) and not correlation_panel.empty:
+            audit = effective_breadth(correlation_panel)
+            audit["source"] = "market_context_return_matrix"
+        else:
+            feature_sets = [set(map(str, item.get("selected_features", []))) for item in candidates]
+            overlaps = []
+            for i in range(nominal):
+                for j in range(i + 1, nominal):
+                    union = feature_sets[i] | feature_sets[j]
+                    overlap = len(feature_sets[i] & feature_sets[j]) / max(len(union), 1)
+                    overlaps.append(overlap)
+            avg_overlap = float(np.mean(overlaps)) if overlaps else 0.0
+            effective = float(nominal / (1.0 + avg_overlap * (nominal - 1)))
+            audit = {
+                "status": "ready",
+                "source": "selected_feature_jaccard_overlap",
+                "nominal_breadth": nominal,
+                "average_signal_overlap": round(avg_overlap, 6),
+                "effective_breadth": round(effective, 6),
+                "breadth_ratio": round(float(effective / max(nominal, 1)), 6),
+                "formula": "N / (1 + avg_feature_overlap * (N - 1))",
+            }
+        audit["breadth_gate"] = (
+            "ALLOW" if float(audit.get("breadth_ratio", 0.0) or 0.0) >= 0.55 else "PENALIZE_ACTIVE_RISK"
+        )
+        audit["shapley_policy"] = shapley_deployment_policy(
+            model_family="tree_or_ensemble_factor_model",
+            feature_count=sum(len(item.get("selected_features", [])) for item in candidates),
+            frequency="weekly",
+        )
+        return audit
 
     def _allocation_tail_risk_score(self, allocations: List[SignalAllocation]) -> float:
         if not allocations:
@@ -1929,8 +2060,10 @@ class SelfIteratingCausalEngine:
             "estimated_capacity_penalty": plan.estimated_capacity_penalty,
             "estimated_margin_penalty": plan.estimated_margin_penalty,
             "estimated_tail_risk_penalty": plan.estimated_tail_risk_penalty,
+            "estimated_breadth_penalty": plan.estimated_breadth_penalty,
             "hmm_barbell_state": plan.hmm_barbell_state,
             "hmm_barbell_audit": plan.hmm_barbell_audit,
+            "robustness_audit": plan.robustness_audit,
             "signal_allocations": [asdict(item) for item in plan.signal_allocations],
         }
 
