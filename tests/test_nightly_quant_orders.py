@@ -23,6 +23,7 @@ from quant_trade_system.nightly_quant_orders import (
     _build_market_status,
     _build_recap,
     _evaluate_execution_actions,
+    _fetch_futures_data,
     _materialize_execution_actions,
     _next_weekday,
     _observation_lines,
@@ -48,7 +49,39 @@ def _frame(last_date: str, last_close: float) -> pd.DataFrame:
     )
 
 
+def _futures_main_frame(last_date: str = "2026-05-29") -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "日期": ["2026-05-28", last_date],
+            "开盘价": [103000.0, 104450.0],
+            "最高价": [104000.0, 105500.0],
+            "最低价": [102000.0, 104100.0],
+            "收盘价": [103880.0, 105000.0],
+            "成交量": [1000, 2000],
+        }
+    )
+
+
+class FakeFuturesAK:
+    def futures_main_sina(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+        return _futures_main_frame()
+
+    def futures_zh_daily_sina(self, symbol: str) -> pd.DataFrame:
+        raise IndexError("legacy sina endpoint failed")
+
+    def get_futures_daily(self, start_date: str, end_date: str, market: str) -> pd.DataFrame:
+        raise AssertionError("exchange daily fallback should not be needed")
+
+
 class NightlyQuantOrdersTests(unittest.TestCase):
+    def test_fetch_futures_data_prefers_main_sina_when_legacy_endpoint_is_empty(self) -> None:
+        data = _fetch_futures_data(FakeFuturesAK(), ["CU0"], end_date="2026-05-29", exchange="SHFE")
+
+        self.assertIn("CU0", data)
+        self.assertEqual(str(data["CU0"]["date"].iloc[-1]), "2026-05-29")
+        self.assertEqual(float(data["CU0"]["close"].iloc[-1]), 105000.0)
+        self.assertEqual(data["CU0"].attrs.get("price_source"), "futures_main_sina")
+
     def test_next_weekday_skips_weekend(self) -> None:
         self.assertEqual(_next_weekday(date(2026, 5, 8)).isoformat(), "2026-05-11")
         self.assertEqual(_next_weekday(date(2026, 5, 11)).isoformat(), "2026-05-12")
@@ -91,6 +124,23 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertTrue(validation.passed)
         self.assertEqual(validation.actual_date, "2026-05-15")
         self.assertIn("显式降级", validation.reason)
+
+    def test_validate_futures_close_surfaces_price_source(self) -> None:
+        settle = MarketValidation(
+            market="SHFE",
+            requested_date="2026-05-29",
+            actual_date="2026-05-29",
+            passed=True,
+            reason="SHFE 结算参数直接命中 T 日。",
+            sample_count=10,
+        )
+        frame = _frame("2026-05-29", 105000.0)
+        frame.attrs["price_source"] = "futures_main_sina"
+        validation = _validate_futures_close("SHFE", {"CU0": frame}, settle)
+
+        self.assertTrue(validation.passed)
+        self.assertEqual(validation.price_source, "futures_main_sina")
+        self.assertIn("price_source=futures_main_sina", validation.reason)
 
     def test_validate_cffex_uses_contract_specs_fallback_when_settle_is_stale(self) -> None:
         settle = MarketValidation(

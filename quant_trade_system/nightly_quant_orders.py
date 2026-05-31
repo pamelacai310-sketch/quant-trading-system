@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import pandas as pd
 
 from .causal_ai import AccountHealthMonitor, EnhancedCausalTradingAgent
@@ -64,6 +65,7 @@ class MarketValidation:
     sample_count: int = 0
     settlement_fallback: Optional[str] = None
     margin_source: Optional[str] = None
+    price_source: Optional[str] = None
 
 
 def _require_module(name: str):
@@ -112,10 +114,43 @@ def _log_dir(repo_root: Path) -> Path:
 def _normalize_live_frame(frame: pd.DataFrame) -> pd.DataFrame:
     result = frame.copy()
     result.columns = [str(column).lower() for column in result.columns]
-    result["date"] = pd.to_datetime(result["date"]).dt.strftime("%Y-%m-%d")
+    result["date"] = pd.to_datetime(result["date"].astype(str), errors="coerce").dt.strftime("%Y-%m-%d")
     for column in ["open", "high", "low", "close", "volume"]:
         result[column] = pd.to_numeric(result[column], errors="coerce")
     return result[["date", "open", "high", "low", "close", "volume"]].dropna(subset=["close"]).reset_index(drop=True)
+
+
+def _normalize_futures_price_frame(frame: pd.DataFrame, source: str) -> pd.DataFrame:
+    """Normalize AKShare futures daily variants into the engine OHLCV contract."""
+
+    if frame is None or frame.empty:
+        return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+    rename_map = {
+        "日期": "date",
+        "时间": "date",
+        "开盘价": "open",
+        "开盘": "open",
+        "最高价": "high",
+        "最高": "high",
+        "最低价": "low",
+        "最低": "low",
+        "收盘价": "close",
+        "收盘": "close",
+        "成交量": "volume",
+    }
+    result = frame.rename(columns={column: rename_map.get(str(column), str(column).lower()) for column in frame.columns}).copy()
+    if "date" not in result.columns:
+        return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+    if "volume" not in result.columns:
+        result["volume"] = 0.0
+    result["date"] = pd.to_datetime(result["date"]).dt.strftime("%Y-%m-%d")
+    for column in ["open", "high", "low", "close", "volume"]:
+        if column not in result.columns:
+            result[column] = np.nan
+        result[column] = pd.to_numeric(result[column], errors="coerce")
+    result = result[["date", "open", "high", "low", "close", "volume"]].dropna(subset=["close"]).reset_index(drop=True)
+    result.attrs["price_source"] = source
+    return result
 
 
 def _normalize_yfinance_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -466,19 +501,135 @@ def _resolve_futures_settle(ak: Any, exchange: str, target_day: date, max_lookba
     )
 
 
-def _fetch_futures_data(ak: Any, symbols: Iterable[str], end_date: Optional[str] = None) -> Dict[str, pd.DataFrame]:
+def _futures_history_start_date(end_date: Optional[str]) -> str:
+    if not end_date:
+        return "19900101"
+    try:
+        end = datetime.strptime(end_date, "%Y-%m-%d").date()
+    except ValueError:
+        return "19900101"
+    return _compact_date(end - timedelta(days=210))
+
+
+def _fetch_exchange_daily_contract_frame(
+    ak: Any,
+    exchange: Optional[str],
+    symbol: str,
+    start_date: str,
+    end_date: Optional[str],
+) -> pd.DataFrame:
+    if not exchange or not end_date:
+        return pd.DataFrame()
+    try:
+        raw = ak.get_futures_daily(start_date=start_date, end_date=end_date, market=exchange)
+    except Exception:
+        return pd.DataFrame()
+    if raw is None or raw.empty:
+        return pd.DataFrame()
+    token = str(symbol).upper().removesuffix("0")
+    frame = raw.copy()
+    columns = {str(column).lower(): column for column in frame.columns}
+    variety_column = columns.get("variety")
+    if variety_column is None:
+        return pd.DataFrame()
+    subset = frame.loc[frame[variety_column].astype(str).str.upper() == token].copy()
+    if subset.empty:
+        return pd.DataFrame()
+    date_column = columns.get("date", "date")
+    for column in ["open_interest", "volume"]:
+        if column in subset.columns:
+            subset[column] = pd.to_numeric(subset[column], errors="coerce").fillna(0.0)
+    subset[date_column] = pd.to_datetime(subset[date_column].astype(str), errors="coerce").dt.strftime("%Y-%m-%d")
+    sort_columns = [date_column, *[column for column in ["open_interest", "volume"] if column in subset.columns]]
+    ascending = [True] + [False] * (len(sort_columns) - 1)
+    subset = subset.sort_values(sort_columns, ascending=ascending)
+    rows = []
+    for _, row in subset.groupby(date_column, sort=False).head(1).iterrows():
+        row = row.copy()
+        close = pd.to_numeric(pd.Series([row.get("close")]), errors="coerce").iloc[0]
+        settle = pd.to_numeric(pd.Series([row.get("settle")]), errors="coerce").iloc[0] if "settle" in row.index else np.nan
+        if pd.isna(close) or float(close) <= 0:
+            close = settle
+        if pd.isna(close) or float(close) <= 0:
+            continue
+        for column in ["open", "high", "low"]:
+            value = pd.to_numeric(pd.Series([row.get(column)]), errors="coerce").iloc[0]
+            if pd.isna(value) or float(value) <= 0:
+                row[column] = close
+        row["close"] = close
+        rows.append(row)
+    if not rows:
+        return pd.DataFrame()
+    normalized = _normalize_futures_price_frame(pd.DataFrame(rows), "get_futures_daily_main_contract")
+    normalized.attrs["settlement_fallback"] = "exchange_daily_main_contract"
+    return normalized
+
+
+def _fetch_futures_data(
+    ak: Any,
+    symbols: Iterable[str],
+    end_date: Optional[str] = None,
+    exchange: Optional[str] = None,
+) -> Dict[str, pd.DataFrame]:
     data: Dict[str, pd.DataFrame] = {}
+    start_date = _futures_history_start_date(end_date)
+    compact_end = end_date.replace("-", "") if end_date else "22220101"
     for symbol in symbols:
-        try:
-            frame = _normalize_live_frame(ak.futures_zh_daily_sina(symbol=symbol))
-        except Exception:
+        frame = pd.DataFrame()
+        for source, loader in [
+            (
+                "futures_main_sina",
+                lambda: _normalize_futures_price_frame(
+                    ak.futures_main_sina(symbol=symbol, start_date=start_date, end_date=compact_end),
+                    "futures_main_sina",
+                ),
+            ),
+            (
+                "futures_zh_daily_sina",
+                lambda: _normalize_futures_price_frame(ak.futures_zh_daily_sina(symbol=symbol), "futures_zh_daily_sina"),
+            ),
+            (
+                "get_futures_daily_main_contract",
+                lambda: _fetch_exchange_daily_contract_frame(ak, exchange, symbol, start_date, end_date),
+            ),
+        ]:
+            try:
+                frame = loader()
+            except Exception:
+                frame = pd.DataFrame()
+            if frame is not None and not frame.empty:
+                frame.attrs["price_source"] = frame.attrs.get("price_source", source)
+                break
+        if frame is None or frame.empty:
             continue
         if end_date:
             frame = frame.loc[frame["date"] <= end_date]
         if frame.empty:
             continue
-        data[symbol] = frame.tail(126).reset_index(drop=True)
+        frame.attrs["price_source"] = frame.attrs.get("price_source", "unknown")
+        source = frame.attrs.get("price_source", "unknown")
+        settlement_fallback = frame.attrs.get("settlement_fallback")
+        trimmed = frame.tail(126).reset_index(drop=True)
+        trimmed.attrs["price_source"] = source
+        if settlement_fallback:
+            trimmed.attrs["settlement_fallback"] = settlement_fallback
+        data[symbol] = trimmed
     return data
+
+
+def _futures_price_sources(futures_data: Dict[str, pd.DataFrame]) -> List[str]:
+    return sorted(
+        {
+            str(frame.attrs.get("price_source", "unknown"))
+            for frame in futures_data.values()
+            if frame is not None and not frame.empty
+        }
+    )
+
+
+def _futures_price_source_text(futures_data: Dict[str, pd.DataFrame]) -> str:
+    sources = _futures_price_sources(futures_data)
+    return f" price_source={'+'.join(sources)}。" if sources else ""
 
 
 def _validate_futures_close(
@@ -487,6 +638,8 @@ def _validate_futures_close(
     settle_validation: MarketValidation,
 ) -> MarketValidation:
     actual_date, sample_count = _latest_sample_date(futures_data)
+    price_source_text = _futures_price_source_text(futures_data)
+    price_source = "+".join(_futures_price_sources(futures_data)) or None
     if (
         exchange.upper() == "CFFEX"
         and actual_date
@@ -505,11 +658,12 @@ def _validate_futures_close(
             reason=(
                 f"{exchange} {settle_note}，但主力连续合约日线命中 T 日；"
                 f"settlement_fallback={CFFEX_SETTLE_FALLBACK_CONTRACT_SPECS}，"
-                "最低保证金使用项目内置合约乘数和交易所保证金率估算。"
+                f"最低保证金使用项目内置合约乘数和交易所保证金率估算。{price_source_text}"
             ),
             sample_count=sample_count,
             settlement_fallback=CFFEX_SETTLE_FALLBACK_CONTRACT_SPECS,
             margin_source="contract_specs",
+            price_source=price_source,
         )
     if not settle_validation.passed or settle_validation.actual_date is None:
         fallback_mode = _futures_settle_fallback_mode()
@@ -530,9 +684,10 @@ def _validate_futures_close(
                 requested_date=requested_date,
                 actual_date=actual_date,
                 passed=True,
-                reason=reason,
+                reason=reason + price_source_text,
                 sample_count=sample_count,
                 settlement_fallback=fallback_mode,
+                price_source=price_source,
             )
         return settle_validation
     if not actual_date:
@@ -550,8 +705,9 @@ def _validate_futures_close(
             requested_date=settle_validation.requested_date,
             actual_date=actual_date,
             passed=True,
-            reason=f"{settle_validation.reason} {exchange} 主力连续合约日线与该日期一致。",
+            reason=f"{settle_validation.reason} {exchange} 主力连续合约日线与该日期一致。{price_source_text}",
             sample_count=sample_count,
+            price_source=price_source,
         )
     return MarketValidation(
         market=exchange,
@@ -560,9 +716,10 @@ def _validate_futures_close(
         passed=False,
         reason=(
             f"{exchange} 结算参数有效日期为 {settle_validation.actual_date}，"
-            f"但主力连续合约最新日线为 {actual_date}，时间戳不一致。"
+            f"但主力连续合约最新日线为 {actual_date}，时间戳不一致。{price_source_text}"
         ),
         sample_count=sample_count,
+        price_source=price_source,
     )
 
 
@@ -593,6 +750,8 @@ def _market_status_from_validation(validation: MarketValidation) -> Dict[str, An
         status["settlement_fallback"] = validation.settlement_fallback
     if validation.margin_source:
         status["margin_source"] = validation.margin_source
+    if validation.price_source:
+        status["price_source"] = validation.price_source
     return status
 
 
@@ -1434,14 +1593,19 @@ def generate_report(target_day: date) -> Dict[str, Any]:
     futures_last: Dict[str, Dict[str, Dict[str, Any]]] = {}
     for exchange, symbols in futures_universe_by_exchange.items():
         _, settle_validation = _resolve_futures_settle(ak, exchange, target_day)
-        exchange_data = _fetch_futures_data(ak, symbols, end_date=target_date)
+        exchange_data = _fetch_futures_data(ak, symbols, end_date=target_date, exchange=exchange)
         validation = _validate_futures_close(exchange, exchange_data, settle_validation)
         futures_market_data[exchange] = {
             "validation": validation,
             "data": exchange_data,
         }
         futures_last[exchange] = _latest_price_map(exchange_data)
-    futures_execution_data = _fetch_futures_data(ak, [CN_FUTURES_TAIL_HEDGE_SYMBOL], end_date=target_date)
+    futures_execution_data = _fetch_futures_data(
+        ak,
+        [CN_FUTURES_TAIL_HEDGE_SYMBOL],
+        end_date=target_date,
+        exchange="SHFE",
+    )
     futures_execution_last = _latest_price_map(futures_execution_data)
     market_status = _build_market_status(us_validation, hk_validation, futures_market_data)
     failure_category = _failure_category_from_market_status(market_status)
@@ -1904,7 +2068,7 @@ def _fetch_historical_price_maps(target_date: str, hk_symbols: Iterable[str], sh
         if symbol.endswith("_CASH"):
             continue
         try:
-            frame = _normalize_live_frame(ak.futures_zh_daily_sina(symbol=symbol))
+            frame = _fetch_futures_data(ak, [symbol], end_date=target_date, exchange="SHFE").get(symbol, pd.DataFrame())
             snapshot = _price_on_or_before(frame, target_date)
             if snapshot:
                 price_map[symbol] = snapshot
