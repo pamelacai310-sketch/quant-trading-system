@@ -1316,6 +1316,23 @@ def _execution_cost_components(action: Dict[str, Any], is_cash: bool) -> Dict[st
     }
 
 
+def _return_quality_stats(realized_returns: List[float], weighted_return: float) -> Dict[str, float]:
+    wins = [item for item in realized_returns if item > 0]
+    losses = [item for item in realized_returns if item < 0]
+    payoff_ratio = (
+        float(sum(wins) / len(wins)) / abs(float(sum(losses) / len(losses)))
+        if wins and losses
+        else (float("inf") if wins else 0.0)
+    )
+    avg_abs_return = float(sum(abs(item) for item in realized_returns) / len(realized_returns)) if realized_returns else 0.0
+    elasticity = avg_abs_return / max(abs(weighted_return), 1e-9) if realized_returns and abs(weighted_return) > 1e-9 else 0.0
+    return {
+        "win_rate": round(len(wins) / len(realized_returns), 6) if realized_returns else 0.0,
+        "payoff_ratio": round(payoff_ratio, 6) if payoff_ratio != float("inf") else 999.0,
+        "elasticity": round(float(elasticity), 6),
+    }
+
+
 def _evaluate_execution_actions(
     actions: List[Dict[str, Any]],
     current_prices: Dict[str, Dict[str, Any]],
@@ -1325,7 +1342,8 @@ def _evaluate_execution_actions(
     execution_cost_return = 0.0
     gross_weight = 0.0
     futures_weight = 0.0
-    realized_returns: List[float] = []
+    realized_gross_returns: List[float] = []
+    realized_net_returns: List[float] = []
     price_unavailable_count = 0
     for action in actions:
         pnl = _compute_execution_action_return(action, current_prices)
@@ -1355,7 +1373,8 @@ def _evaluate_execution_actions(
             gross_weight += weight
             if str(action.get("market", "")).upper() in CN_FUTURES_EXCHANGES:
                 futures_weight += weight
-            realized_returns.append(pnl)
+            realized_gross_returns.append(pnl)
+            realized_net_returns.append(pnl - float(cost["total_bps"]) / 10000.0)
         else:
             cost = _execution_cost_components(action, is_cash)
             action_cost_return = 0.0
@@ -1375,16 +1394,9 @@ def _evaluate_execution_actions(
                 "price_status": "ok",
             }
         )
-    wins = [item for item in realized_returns if item > 0]
-    losses = [item for item in realized_returns if item < 0]
-    payoff_ratio = (
-        float(sum(wins) / len(wins)) / abs(float(sum(losses) / len(losses)))
-        if wins and losses
-        else (float("inf") if wins else 0.0)
-    )
-    avg_abs_return = float(sum(abs(item) for item in realized_returns) / len(realized_returns)) if realized_returns else 0.0
-    elasticity = avg_abs_return / max(abs(weighted_return), 1e-9) if realized_returns and abs(weighted_return) > 1e-9 else 0.0
     net_return = weighted_return - execution_cost_return
+    gross_quality = _return_quality_stats(realized_gross_returns, weighted_return)
+    net_quality = _return_quality_stats(realized_net_returns, net_return)
     effective_cost_bps = execution_cost_return / max(gross_weight, 1e-9) * 10000.0 if gross_weight > 0 else 0.0
     return {
         "portfolio_return": round(weighted_return, 6),
@@ -1392,18 +1404,21 @@ def _evaluate_execution_actions(
         "execution_cost_return": round(execution_cost_return, 8),
         "gross_weight": round(gross_weight, 6),
         "futures_weight": round(futures_weight, 6),
-        "risk_asset_count": len(realized_returns),
-        "win_rate": round(len(wins) / len(realized_returns), 6) if realized_returns else 0.0,
-        "payoff_ratio": round(payoff_ratio, 6) if payoff_ratio != float("inf") else 999.0,
-        "elasticity": round(float(elasticity), 6),
+        "risk_asset_count": len(realized_net_returns),
+        "win_rate": net_quality["win_rate"],
+        "payoff_ratio": net_quality["payoff_ratio"],
+        "elasticity": net_quality["elasticity"],
+        "gross_win_rate": gross_quality["win_rate"],
+        "gross_payoff_ratio": gross_quality["payoff_ratio"],
+        "gross_elasticity": gross_quality["elasticity"],
         "slippage_bps": round(float(effective_cost_bps), 6),
         "execution_cost_model": "round_trip_close_to_close_proxy_v1",
         "execution_quality": "close_to_close_net_of_cost_proxy",
         "price_unavailable_count": price_unavailable_count,
         "failure_attribution": (
             "price_unavailable"
-            if price_unavailable_count and not realized_returns
-            else ("partial_price_unavailable" if price_unavailable_count else ("not_evaluated" if realized_returns else "no_directional_fill"))
+            if price_unavailable_count and not realized_net_returns
+            else ("partial_price_unavailable" if price_unavailable_count else ("not_evaluated" if realized_net_returns else "no_directional_fill"))
         ),
         "details": details,
     }

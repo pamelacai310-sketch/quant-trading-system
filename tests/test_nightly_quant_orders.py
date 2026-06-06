@@ -428,6 +428,30 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertAlmostEqual(summary["futures_weight"], 0.3)
         self.assertEqual(summary["risk_asset_count"], 2)
 
+    def test_evaluate_execution_actions_uses_net_win_rate_after_costs(self) -> None:
+        actions = [
+            {
+                "market": "HK",
+                "bucket_action": "CORE_SIGNAL",
+                "action": "LONG",
+                "symbol": "00700.HK",
+                "target_weight": 1.0,
+                "reference_close": 100.0,
+                "return_model": "close_to_close",
+                "execution_cost_assumption": {"commission_bps": 4.0, "slippage_bps": 3.0, "impact_bps": 2.0},
+            }
+        ]
+        current_prices = {"00700.HK": {"close": 100.1}}
+        summary = _evaluate_execution_actions(actions, current_prices)
+
+        self.assertGreater(summary["portfolio_return"], 0.0)
+        self.assertLess(summary["net_portfolio_return"], 0.0)
+        self.assertEqual(summary["gross_win_rate"], 1.0)
+        self.assertEqual(summary["win_rate"], 0.0)
+        self.assertEqual(summary["payoff_ratio"], 0.0)
+        self.assertAlmostEqual(summary["details"][0]["return_pct"], 0.001)
+        self.assertAlmostEqual(summary["details"][0]["net_return_pct"], -0.0008)
+
     def test_evaluate_execution_actions_records_price_unavailable(self) -> None:
         actions = [
             {
