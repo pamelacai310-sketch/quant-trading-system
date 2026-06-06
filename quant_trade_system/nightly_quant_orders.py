@@ -2404,6 +2404,12 @@ def generate_weekly_execution_review(
         drawdown = nav / rolling_peak - 1.0
         max_drawdown = min(max_drawdown, drawdown)
 
+    quality_metrics = _aggregate_weekly_quality_metrics(quality_rows)
+    optimization_recommendations = _build_weekly_optimization_recommendations(
+        quality_metrics,
+        constraint_checks,
+        day_reviews,
+    )
     return {
         "week_start": week_start.isoformat(),
         "week_end": week_end.isoformat(),
@@ -2421,7 +2427,8 @@ def generate_weekly_execution_review(
         "combined_return": round(combined_nav - 1.0, 6),
         "max_drawdown": round(max_drawdown, 6),
         "constraint_checks": constraint_checks,
-        "quality_metrics": _aggregate_weekly_quality_metrics(quality_rows),
+        "quality_metrics": quality_metrics,
+        "optimization_recommendations": optimization_recommendations,
     }
 
 
@@ -2482,6 +2489,122 @@ def _aggregate_weekly_quality_metrics(rows: List[Dict[str, Any]]) -> Dict[str, A
         "price_unavailable_count": price_unavailable_count,
         "failure_attribution": sorted(failures),
     }
+
+
+def _build_weekly_optimization_recommendations(
+    quality_metrics: Dict[str, Any],
+    constraint_checks: Dict[str, bool],
+    day_reviews: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    recommendations: List[Dict[str, Any]] = []
+    failures = set(quality_metrics.get("failure_attribution", []) or [])
+    cost_drag_count = int(quality_metrics.get("cost_drag_count", 0) or 0)
+    slippage_bps = float(quality_metrics.get("slippage_bps", 0.0) or 0.0)
+    net_return = float(quality_metrics.get("net_portfolio_return", 0.0) or 0.0)
+    execution_cost = float(quality_metrics.get("execution_cost_return", 0.0) or 0.0)
+
+    if cost_drag_count > 0 or "cost_drag" in failures:
+        min_net_edge_bps = round(max(slippage_bps * 1.20, slippage_bps + 2.0, 5.0), 2)
+        recommendations.append(
+            {
+                "action": "raise_min_net_edge_bps",
+                "severity": "high" if net_return < 0 else "medium",
+                "reason": (
+                    f"{cost_drag_count} 个子组合/交易桶被执行成本吞噬；"
+                    f"本周成本贡献 {execution_cost:.6f}，净收益 {net_return:.6f}。"
+                ),
+                "suggested_parameters": {
+                    "min_expected_net_edge_bps": min_net_edge_bps,
+                    "apply_to": ["CORE_SIGNAL", "TAIL_HEDGE"],
+                    "allow_override_when": "tail_risk_score>=0.55 or causal_abstention_decision==ALLOW_high_confidence",
+                },
+            }
+        )
+        recommendations.append(
+            {
+                "action": "reduce_zero_edge_defensive_turnover",
+                "severity": "medium",
+                "reason": "防御腿或低边际信号在无价格贡献时仍产生交易成本，应减少无收益换手。",
+                "suggested_parameters": {
+                    "skip_rebalance_if_weight_change_below_pct": 0.03,
+                    "tail_hedge_rebalance_cooldown_days": 3,
+                    "cash_leg_transaction_cost": "zero_only_when_no_rebalance",
+                },
+            }
+        )
+
+    if int(quality_metrics.get("price_unavailable_count", 0) or 0) > 0 or "price_unavailable" in failures:
+        recommendations.append(
+            {
+                "action": "repair_price_data_before_position_change",
+                "severity": "high",
+                "reason": "存在无法估值的执行腿，继续调仓会放大不可审计风险。",
+                "suggested_parameters": {
+                    "missing_price_action": "NO_TRADE_DATA_INVALID",
+                    "fallback_order": ["primary_daily", "exchange_settlement", "nearest_valid_trading_day"],
+                },
+            }
+        )
+
+    if not constraint_checks.get("max_single_weight_ok", True):
+        recommendations.append(
+            {
+                "action": "cap_active_single_name_weight",
+                "severity": "high",
+                "reason": f"主动单标的权重超过 {MAX_ACTIVE_SINGLE_WEIGHT:.0%} 上限。",
+                "suggested_parameters": {"max_active_single_weight": MAX_ACTIVE_SINGLE_WEIGHT},
+            }
+        )
+    if not constraint_checks.get("max_tail_hedge_weight_ok", True):
+        recommendations.append(
+            {
+                "action": "cap_tail_hedge_weight",
+                "severity": "medium",
+                "reason": f"尾部保护单腿超过 {MAX_TAIL_HEDGE_WEIGHT:.0%} 上限，应避免保险腿本身成为集中风险。",
+                "suggested_parameters": {"max_tail_hedge_weight": MAX_TAIL_HEDGE_WEIGHT},
+            }
+        )
+    if not constraint_checks.get("max_futures_weight_ok", True):
+        recommendations.append(
+            {
+                "action": "reduce_cn_futures_gross_exposure",
+                "severity": "high",
+                "reason": f"中国期货总风险度超过 {MAX_FUTURES_GROSS_WEIGHT:.0%} 上限。",
+                "suggested_parameters": {
+                    "max_futures_gross_weight": MAX_FUTURES_GROSS_WEIGHT,
+                    "preferred_reduction_order": ["lowest_net_edge", "highest_cost_drag_ratio", "highest_margin_usage"],
+                },
+            }
+        )
+    if not constraint_checks.get("max_gross_weight_ok", True):
+        recommendations.append(
+            {
+                "action": "reduce_market_gross_exposure",
+                "severity": "high",
+                "reason": f"子组合毛敞口超过 {MAX_MARKET_GROSS_WEIGHT:.0%} 上限。",
+                "suggested_parameters": {"max_market_gross_weight": MAX_MARKET_GROSS_WEIGHT},
+            }
+        )
+
+    if net_return < 0 and not recommendations:
+        recommendations.append(
+            {
+                "action": "review_negative_net_return_drivers",
+                "severity": "medium",
+                "reason": "净收益为负但未命中显式成本/数据/约束归因，应检查信号方向或持仓周期。",
+                "suggested_parameters": {"review_window_days": len(day_reviews), "metric": "net_portfolio_return"},
+            }
+        )
+    if not recommendations:
+        recommendations.append(
+            {
+                "action": "keep_current_risk_settings",
+                "severity": "low",
+                "reason": "本周未发现成本拖累、数据缺失或约束违规，维持当前风险参数并继续观察样本外表现。",
+                "suggested_parameters": {"review_window_days": len(day_reviews)},
+            }
+        )
+    return recommendations
 
 
 def main(argv: Optional[List[str]] = None) -> int:

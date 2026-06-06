@@ -22,6 +22,7 @@ from quant_trade_system.nightly_quant_orders import (
     _build_evidence_snapshot,
     _build_instruction,
     _build_market_status,
+    _build_weekly_optimization_recommendations,
     _consolidate_shared_futures_defensive_actions,
     _build_recap,
     _evaluate_execution_actions,
@@ -580,6 +581,7 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertAlmostEqual(review["combined_return"], 0.015899, places=6)
         self.assertAlmostEqual(review["cn_futures_return"], 0.031798, places=6)
         self.assertEqual(review["shfe_return"], review["cn_futures_return"])
+        self.assertTrue(review["optimization_recommendations"])
 
     def test_weekly_execution_review_flags_tail_hedge_cap_separately(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -623,6 +625,9 @@ class NightlyQuantOrdersTests(unittest.TestCase):
 
         self.assertTrue(review["constraint_checks"]["max_single_weight_ok"])
         self.assertFalse(review["constraint_checks"]["max_tail_hedge_weight_ok"])
+        self.assertTrue(
+            any(item["action"] == "cap_tail_hedge_weight" for item in review["optimization_recommendations"])
+        )
 
     def test_weekly_quality_metrics_preserve_price_unavailable(self) -> None:
         metrics = _aggregate_weekly_quality_metrics(
@@ -666,6 +671,33 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertEqual(metrics["cost_drag_count"], 1)
         self.assertAlmostEqual(metrics["execution_cost_return"], 0.0003)
         self.assertAlmostEqual(metrics["net_portfolio_return"], 0.009)
+
+    def test_weekly_optimization_recommendations_surface_cost_drag(self) -> None:
+        recommendations = _build_weekly_optimization_recommendations(
+            {
+                "failure_attribution": ["cost_drag"],
+                "cost_drag_count": 2,
+                "slippage_bps": 13.0,
+                "execution_cost_return": 0.000598,
+                "net_portfolio_return": -0.000598,
+            },
+            {
+                "max_single_weight_ok": True,
+                "max_tail_hedge_weight_ok": True,
+                "max_futures_weight_ok": True,
+                "max_gross_weight_ok": True,
+            },
+            [{"report_date": "2026-05-29"}],
+        )
+
+        actions = {item["action"]: item for item in recommendations}
+        self.assertIn("raise_min_net_edge_bps", actions)
+        self.assertIn("reduce_zero_edge_defensive_turnover", actions)
+        self.assertEqual(actions["raise_min_net_edge_bps"]["severity"], "high")
+        self.assertGreaterEqual(
+            actions["raise_min_net_edge_bps"]["suggested_parameters"]["min_expected_net_edge_bps"],
+            15.6,
+        )
 
     def test_render_report_text_marks_invalid_market_without_global_failure(self) -> None:
         report = {
