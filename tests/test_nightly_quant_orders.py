@@ -449,6 +449,9 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertEqual(summary["gross_win_rate"], 1.0)
         self.assertEqual(summary["win_rate"], 0.0)
         self.assertEqual(summary["payoff_ratio"], 0.0)
+        self.assertEqual(summary["failure_attribution"], "cost_drag")
+        self.assertTrue(summary["cost_drag_flag"])
+        self.assertAlmostEqual(summary["cost_drag_ratio"], 1.8)
         self.assertAlmostEqual(summary["details"][0]["return_pct"], 0.001)
         self.assertAlmostEqual(summary["details"][0]["net_return_pct"], -0.0008)
 
@@ -630,7 +633,25 @@ class NightlyQuantOrdersTests(unittest.TestCase):
                     "payoff_ratio": 2.0,
                     "elasticity": 1.5,
                     "price_unavailable_count": 0,
-                    "failure_attribution": "not_evaluated",
+                    "execution_cost_return": 0.0001,
+                    "net_portfolio_return": 0.01,
+                    "gross_weight": 0.5,
+                    "slippage_bps": 2.0,
+                    "failure_attribution": "net_positive",
+                },
+                {
+                    "risk_asset_count": 1,
+                    "win_rate": 0.0,
+                    "payoff_ratio": 0.0,
+                    "elasticity": 0.8,
+                    "price_unavailable_count": 0,
+                    "execution_cost_return": 0.0002,
+                    "net_portfolio_return": -0.001,
+                    "gross_weight": 0.5,
+                    "slippage_bps": 4.0,
+                    "cost_drag_flag": True,
+                    "cost_drag_ratio": 1.5,
+                    "failure_attribution": "cost_drag",
                 },
                 {
                     "risk_asset_count": 0,
@@ -641,6 +662,10 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         )
         self.assertEqual(metrics["price_unavailable_count"], 1)
         self.assertIn("price_unavailable", metrics["failure_attribution"])
+        self.assertIn("cost_drag", metrics["failure_attribution"])
+        self.assertEqual(metrics["cost_drag_count"], 1)
+        self.assertAlmostEqual(metrics["execution_cost_return"], 0.0003)
+        self.assertAlmostEqual(metrics["net_portfolio_return"], 0.009)
 
     def test_render_report_text_marks_invalid_market_without_global_failure(self) -> None:
         report = {

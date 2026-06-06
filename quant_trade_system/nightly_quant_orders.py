@@ -1333,6 +1333,29 @@ def _return_quality_stats(realized_returns: List[float], weighted_return: float)
     }
 
 
+def _execution_failure_attribution(
+    price_unavailable_count: int,
+    realized_count: int,
+    gross_return: float,
+    net_return: float,
+    execution_cost_return: float,
+) -> str:
+    if price_unavailable_count and realized_count == 0:
+        return "price_unavailable"
+    if price_unavailable_count:
+        return "partial_price_unavailable"
+    if realized_count == 0:
+        return "no_directional_fill"
+    tolerance = 1e-9
+    if net_return > tolerance:
+        return "net_positive"
+    if net_return < -tolerance and gross_return >= -tolerance and execution_cost_return > tolerance:
+        return "cost_drag"
+    if net_return < -tolerance:
+        return "net_loss"
+    return "break_even"
+
+
 def _evaluate_execution_actions(
     actions: List[Dict[str, Any]],
     current_prices: Dict[str, Dict[str, Any]],
@@ -1398,10 +1421,25 @@ def _evaluate_execution_actions(
     gross_quality = _return_quality_stats(realized_gross_returns, weighted_return)
     net_quality = _return_quality_stats(realized_net_returns, net_return)
     effective_cost_bps = execution_cost_return / max(gross_weight, 1e-9) * 10000.0 if gross_weight > 0 else 0.0
+    cost_drag_ratio = (
+        execution_cost_return / max(abs(weighted_return), 1e-9)
+        if abs(weighted_return) > 1e-9
+        else (999.0 if execution_cost_return > 0 else 0.0)
+    )
+    failure_attribution = _execution_failure_attribution(
+        price_unavailable_count,
+        len(realized_net_returns),
+        weighted_return,
+        net_return,
+        execution_cost_return,
+    )
     return {
         "portfolio_return": round(weighted_return, 6),
         "net_portfolio_return": round(net_return, 6),
         "execution_cost_return": round(execution_cost_return, 8),
+        "cost_drag_ratio": round(float(cost_drag_ratio), 6),
+        "cost_drag_flag": failure_attribution == "cost_drag",
+        "net_edge_after_costs": round(net_return, 6),
         "gross_weight": round(gross_weight, 6),
         "futures_weight": round(futures_weight, 6),
         "risk_asset_count": len(realized_net_returns),
@@ -1415,11 +1453,7 @@ def _evaluate_execution_actions(
         "execution_cost_model": "round_trip_close_to_close_proxy_v1",
         "execution_quality": "close_to_close_net_of_cost_proxy",
         "price_unavailable_count": price_unavailable_count,
-        "failure_attribution": (
-            "price_unavailable"
-            if price_unavailable_count and not realized_net_returns
-            else ("partial_price_unavailable" if price_unavailable_count else ("not_evaluated" if realized_net_returns else "no_directional_fill"))
-        ),
+        "failure_attribution": failure_attribution,
         "details": details,
     }
 
@@ -2405,6 +2439,8 @@ def _aggregate_weekly_quality_metrics(rows: List[Dict[str, Any]]) -> Dict[str, A
             "slippage_bps": 0.0,
             "execution_cost_return": 0.0,
             "net_portfolio_return": 0.0,
+            "cost_drag_ratio": 0.0,
+            "cost_drag_count": 0,
             "execution_quality": "no_directional_fill",
             "price_unavailable_count": price_unavailable_count,
             "failure_attribution": failures,
@@ -2419,6 +2455,17 @@ def _aggregate_weekly_quality_metrics(rows: List[Dict[str, Any]]) -> Dict[str, A
     slippage_bps = sum(float(row.get("slippage_bps", 0.0)) * weight for row, weight in zip(active, gross_weights)) / total_gross_weight
     execution_cost_return = sum(float(row.get("execution_cost_return", 0.0) or 0.0) for row in active)
     net_portfolio_return = sum(float(row.get("net_portfolio_return", row.get("portfolio_return", 0.0)) or 0.0) for row in active)
+    cost_drag_count = sum(1 for row in active if bool(row.get("cost_drag_flag")))
+    finite_cost_drag_ratios = [
+        float(row.get("cost_drag_ratio", 0.0) or 0.0)
+        for row in active
+        if float(row.get("cost_drag_ratio", 0.0) or 0.0) < 999.0
+    ]
+    cost_drag_ratio = (
+        sum(finite_cost_drag_ratios) / len(finite_cost_drag_ratios)
+        if finite_cost_drag_ratios
+        else (999.0 if execution_cost_return > 0 else 0.0)
+    )
     failures = {str(row.get("failure_attribution")) for row in active if row.get("failure_attribution")}
     if price_unavailable_count:
         failures.add("price_unavailable")
@@ -2429,6 +2476,8 @@ def _aggregate_weekly_quality_metrics(rows: List[Dict[str, Any]]) -> Dict[str, A
         "slippage_bps": round(float(slippage_bps), 6),
         "execution_cost_return": round(float(execution_cost_return), 8),
         "net_portfolio_return": round(float(net_portfolio_return), 6),
+        "cost_drag_ratio": round(float(cost_drag_ratio), 6),
+        "cost_drag_count": cost_drag_count,
         "execution_quality": "close_to_close_net_of_cost_proxy_until_broker_fills_are_connected",
         "price_unavailable_count": price_unavailable_count,
         "failure_attribution": sorted(failures),
