@@ -214,7 +214,78 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         current_prices = {"CU0": {"close": 105.0}}
         lines = _build_recap(previous_report, current_prices)
         self.assertTrue(any("+5.00%" in line for line in lines))
+        self.assertTrue(any("净收益" in line for line in lines))
         self.assertTrue(any("SAFE_RESERVE" in line for line in lines))
+
+    def test_build_recap_surfaces_cost_drag_after_execution_costs(self) -> None:
+        previous_report = {
+            "report_date": "2026-05-10",
+            "execution_actions": [
+                {
+                    "market": "HK",
+                    "bucket_action": "CORE_SIGNAL",
+                    "action": "LONG",
+                    "symbol": "00700.HK",
+                    "target_weight": 1.0,
+                    "reference_close": 100.0,
+                    "return_model": "close_to_close",
+                    "execution_cost_assumption": {"commission_bps": 4.0, "slippage_bps": 3.0, "impact_bps": 2.0},
+                }
+            ],
+        }
+        lines = _build_recap(previous_report, {"00700.HK": {"close": 100.1}})
+
+        self.assertEqual(len(lines), 1)
+        self.assertIn("毛收益 +0.10%", lines[0])
+        self.assertIn("净收益 -0.08%", lines[0])
+        self.assertIn("归因=cost_drag", lines[0])
+
+    def test_build_recap_consolidates_legacy_shared_futures_defensive_legs(self) -> None:
+        previous_report = {
+            "report_date": "2026-05-10",
+            "execution_actions": [
+                {
+                    "market": "SHFE",
+                    "bucket_action": "TAIL_HEDGE",
+                    "action": "LONG",
+                    "symbol": "AU0",
+                    "target_weight": 0.23,
+                    "reference_close": 1000.0,
+                    "return_model": "close_to_close",
+                },
+                {
+                    "market": "GFEX",
+                    "bucket_action": "TAIL_HEDGE",
+                    "action": "LONG",
+                    "symbol": "AU0",
+                    "target_weight": 0.23,
+                    "reference_close": 1000.0,
+                    "return_model": "close_to_close",
+                },
+                {
+                    "market": "SHFE",
+                    "bucket_action": "SAFE_RESERVE",
+                    "action": "HOLD",
+                    "symbol": "CNY_CASH",
+                    "target_weight": 0.77,
+                    "reference_close": 1.0,
+                    "return_model": "cash_flat",
+                },
+                {
+                    "market": "GFEX",
+                    "bucket_action": "SAFE_RESERVE",
+                    "action": "HOLD",
+                    "symbol": "CNY_CASH",
+                    "target_weight": 0.77,
+                    "reference_close": 1.0,
+                    "return_model": "cash_flat",
+                },
+            ],
+        }
+        lines = _build_recap(previous_report, {"AU0": {"close": 1000.0}, "CNY_CASH": {"close": 1.0}})
+
+        self.assertEqual(sum("AU0" in line for line in lines), 1)
+        self.assertEqual(sum("CNY_CASH" in line for line in lines), 1)
 
     def test_observation_lines_surface_best_rejection(self) -> None:
         reports = {

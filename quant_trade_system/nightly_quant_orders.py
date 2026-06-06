@@ -1494,6 +1494,7 @@ def _build_recap(previous_report: Optional[Dict[str, Any]], current_prices: Dict
 
     previous_date = previous_report.get("report_date")
     previous_actions = previous_report.get("execution_actions") or previous_report.get("primary_actions", [])
+    previous_actions = _consolidate_shared_futures_defensive_actions(list(previous_actions))
     if not previous_actions:
         return [f"{previous_date} 没有主动方向单，仅有安全端/尾部保护。"]
 
@@ -1501,8 +1502,10 @@ def _build_recap(previous_report: Optional[Dict[str, Any]], current_prices: Dict
     for action in previous_actions:
         symbol = action.get("symbol")
         action_name = action.get("action")
-        if action_name == "SAFE_RESERVE":
-            lines.append(f"{previous_date} 的 {symbol} {action_name} 按现金缓冲口径复盘：+0.00% (1.0000 -> 1.0000)。")
+        bucket_action = action.get("bucket_action") or action_name
+        is_cash = action.get("return_model") == "cash_flat" or str(symbol).endswith("_CASH") or bucket_action == "SAFE_RESERVE"
+        if is_cash:
+            lines.append(f"{previous_date} 的 {symbol} {bucket_action} 按现金缓冲口径复盘：+0.00% (1.0000 -> 1.0000)。")
             continue
         pnl = _compute_execution_action_return(action, current_prices)
         if pnl is None:
@@ -1510,9 +1513,20 @@ def _build_recap(previous_report: Optional[Dict[str, Any]], current_prices: Dict
             continue
         previous_close = float(action.get("reference_close", 0.0))
         current_close = float(current_prices.get(symbol, {}).get("close", previous_close))
+        cost = _execution_cost_components(action, is_cash=False)
+        net_pnl = pnl - float(cost["total_bps"]) / 10000.0
+        attribution = _execution_failure_attribution(
+            0,
+            1,
+            pnl,
+            net_pnl,
+            float(cost["total_bps"]) / 10000.0,
+        )
+        attribution_text = f"；归因={attribution}" if attribution != "net_positive" else ""
         lines.append(
-            f"{previous_date} 的 {symbol} {action_name} 按收盘到收盘代理口径复盘：{pnl * 100:+.2f}% "
-            f"({previous_close:.4f} -> {current_close:.4f})。"
+            f"{previous_date} 的 {symbol} {action_name} 按收盘到收盘代理口径复盘："
+            f"毛收益 {pnl * 100:+.2f}%，扣成本约 {float(cost['total_bps']):.1f}bps 后净收益 {net_pnl * 100:+.2f}% "
+            f"({previous_close:.4f} -> {current_close:.4f}){attribution_text}。"
         )
     return lines or [f"{previous_date} 没有可复盘的方向性动作。"]
 
