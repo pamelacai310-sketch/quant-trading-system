@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -25,6 +26,7 @@ from quant_trade_system.nightly_quant_orders import (
     _build_recap,
     _evaluate_execution_actions,
     _fetch_futures_data,
+    generate_weekly_execution_review,
     _materialize_execution_actions,
     _next_weekday,
     _observation_lines,
@@ -391,6 +393,35 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertEqual(summary["risk_asset_count"], 1)
         self.assertIn("elasticity", summary)
 
+    def test_evaluate_execution_actions_counts_all_cn_futures_markets(self) -> None:
+        actions = [
+            {
+                "market": "DCE",
+                "bucket_action": "CORE_SIGNAL",
+                "action": "LONG",
+                "symbol": "I0",
+                "target_weight": 0.1,
+                "reference_close": 100.0,
+                "return_model": "close_to_close",
+            },
+            {
+                "market": "INE",
+                "bucket_action": "CORE_SIGNAL",
+                "action": "SHORT",
+                "symbol": "SC0",
+                "target_weight": 0.2,
+                "reference_close": 200.0,
+                "return_model": "close_to_close",
+            },
+        ]
+        current_prices = {"I0": {"close": 110.0}, "SC0": {"close": 180.0}}
+        summary = _evaluate_execution_actions(actions, current_prices)
+
+        self.assertAlmostEqual(summary["portfolio_return"], 0.032222, places=6)
+        self.assertAlmostEqual(summary["gross_weight"], 0.3)
+        self.assertAlmostEqual(summary["futures_weight"], 0.3)
+        self.assertEqual(summary["risk_asset_count"], 2)
+
     def test_evaluate_execution_actions_records_price_unavailable(self) -> None:
         actions = [
             {
@@ -408,6 +439,108 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertEqual(summary["price_unavailable_count"], 1)
         self.assertEqual(summary["failure_attribution"], "price_unavailable")
         self.assertEqual(summary["details"][0]["price_status"], "price_unavailable")
+
+    def test_weekly_execution_review_aggregates_all_cn_futures_exchanges(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            report_dir = repo_root / "state" / "nightly_reports"
+            report_dir.mkdir(parents=True)
+            report = {
+                "report_date": "2026-05-25",
+                "execution_actions": [
+                    {
+                        "market": "HK",
+                        "bucket_action": "SAFE_RESERVE",
+                        "action": "HOLD",
+                        "symbol": "HKD_CASH",
+                        "target_weight": 1.0,
+                        "reference_close": 1.0,
+                        "return_model": "cash_flat",
+                    },
+                    {
+                        "market": "DCE",
+                        "bucket_action": "CORE_SIGNAL",
+                        "action": "LONG",
+                        "symbol": "I0",
+                        "target_weight": 0.1,
+                        "reference_close": 100.0,
+                        "return_model": "close_to_close",
+                    },
+                    {
+                        "market": "INE",
+                        "bucket_action": "CORE_SIGNAL",
+                        "action": "SHORT",
+                        "symbol": "SC0",
+                        "target_weight": 0.2,
+                        "reference_close": 200.0,
+                        "return_model": "close_to_close",
+                    },
+                    {
+                        "market": "SHFE",
+                        "bucket_action": "TAIL_HEDGE",
+                        "action": "LONG",
+                        "symbol": "AU0",
+                        "target_weight": 0.05,
+                        "reference_close": 1000.0,
+                        "return_model": "close_to_close",
+                    },
+                    {
+                        "market": "GFEX",
+                        "bucket_action": "TAIL_HEDGE",
+                        "action": "LONG",
+                        "symbol": "AU0",
+                        "target_weight": 0.05,
+                        "reference_close": 1000.0,
+                        "return_model": "close_to_close",
+                    },
+                    {
+                        "market": "SHFE",
+                        "bucket_action": "SAFE_RESERVE",
+                        "action": "HOLD",
+                        "symbol": "CNY_CASH",
+                        "target_weight": 0.65,
+                        "reference_close": 1.0,
+                        "return_model": "cash_flat",
+                    },
+                    {
+                        "market": "GFEX",
+                        "bucket_action": "SAFE_RESERVE",
+                        "action": "HOLD",
+                        "symbol": "CNY_CASH",
+                        "target_weight": 0.65,
+                        "reference_close": 1.0,
+                        "return_model": "cash_flat",
+                    },
+                ],
+            }
+            (report_dir / "2026-05-25.json").write_text(json.dumps(report), encoding="utf-8")
+
+            with patch("quant_trade_system.nightly_quant_orders._repo_root", return_value=repo_root), patch(
+                "quant_trade_system.nightly_quant_orders._fetch_historical_price_maps",
+                return_value={
+                    "HKD_CASH": {"close": 1.0},
+                    "I0": {"close": 110.0},
+                    "SC0": {"close": 180.0},
+                    "AU0": {"close": 1000.0},
+                    "CNY_CASH": {"close": 1.0},
+                },
+            ) as fetch_prices:
+                review = generate_weekly_execution_review(
+                    date(2026, 5, 25),
+                    date(2026, 5, 29),
+                    evaluation_date=date(2026, 5, 29),
+                )
+
+        futures_symbols_by_exchange = fetch_prices.call_args.args[2]
+        self.assertEqual(futures_symbols_by_exchange["DCE"], {"I0"})
+        self.assertEqual(futures_symbols_by_exchange["INE"], {"SC0"})
+        self.assertIn("CN_FUTURES", review["aggregation_assumption"])
+        self.assertAlmostEqual(review["days"][0]["cn_futures"]["portfolio_return"], 0.032222, places=6)
+        self.assertAlmostEqual(review["days"][0]["cn_futures"]["futures_weight"], 0.35)
+        self.assertEqual(len(review["days"][0]["cn_futures"]["details"]), 4)
+        self.assertAlmostEqual(review["combined_return"], 0.016111, places=6)
+        self.assertAlmostEqual(review["cn_futures_return"], 0.032222, places=6)
+        self.assertEqual(review["shfe_return"], review["cn_futures_return"])
 
     def test_weekly_quality_metrics_preserve_price_unavailable(self) -> None:
         metrics = _aggregate_weekly_quality_metrics(

@@ -1303,7 +1303,7 @@ def _evaluate_execution_actions(
         weighted_return += weight * pnl
         if not is_cash:
             gross_weight += weight
-            if str(action.get("market")) == "SHFE":
+            if str(action.get("market", "")).upper() in CN_FUTURES_EXCHANGES:
                 futures_weight += weight
             realized_returns.append(pnl)
         details.append(
@@ -2120,8 +2120,13 @@ def _load_report_files(report_dir: Path, week_start: date, week_end: date) -> Li
     return reports
 
 
-def _fetch_historical_price_maps(target_date: str, hk_symbols: Iterable[str], shfe_symbols: Iterable[str]) -> Dict[str, Dict[str, Any]]:
+def _fetch_historical_price_maps(
+    target_date: str,
+    hk_symbols: Iterable[str],
+    futures_symbols_by_exchange: Optional[Dict[str, Iterable[str]]] = None,
+) -> Dict[str, Dict[str, Any]]:
     ak = _require_module("akshare")
+    futures_symbols_by_exchange = futures_symbols_by_exchange or {}
     price_map: Dict[str, Dict[str, Any]] = {
         HK_SAFE_RESERVE_SYMBOL: _cash_price_snapshot(target_date),
         SHFE_SAFE_RESERVE_SYMBOL: _cash_price_snapshot(target_date),
@@ -2139,18 +2144,30 @@ def _fetch_historical_price_maps(target_date: str, hk_symbols: Iterable[str], sh
                 price_map[symbol] = {"date": target_date, "close": None, "price_unavailable": True, "reason": "no_price_on_or_before_target"}
         except Exception as exc:  # noqa: BLE001
             price_map[symbol] = {"date": target_date, "close": None, "price_unavailable": True, "reason": str(exc)}
-    for symbol in shfe_symbols:
-        if symbol.endswith("_CASH"):
-            continue
-        try:
-            frame = _fetch_futures_data(ak, [symbol], end_date=target_date, exchange="SHFE").get(symbol, pd.DataFrame())
-            snapshot = _price_on_or_before(frame, target_date)
-            if snapshot:
-                price_map[symbol] = snapshot
-            else:
-                price_map[symbol] = {"date": target_date, "close": None, "price_unavailable": True, "reason": "no_price_on_or_before_target"}
-        except Exception as exc:  # noqa: BLE001
-            price_map[symbol] = {"date": target_date, "close": None, "price_unavailable": True, "reason": str(exc)}
+    for exchange, symbols in futures_symbols_by_exchange.items():
+        exchange_upper = str(exchange).upper()
+        for symbol in symbols:
+            if symbol.endswith("_CASH"):
+                continue
+            try:
+                frame = _fetch_futures_data(ak, [symbol], end_date=target_date, exchange=exchange_upper).get(symbol, pd.DataFrame())
+                snapshot = _price_on_or_before(frame, target_date)
+                if snapshot:
+                    price_map[symbol] = {**snapshot, "price_exchange": exchange_upper}
+                else:
+                    price_map[symbol] = {
+                        "date": target_date,
+                        "close": None,
+                        "price_unavailable": True,
+                        "reason": f"no_price_on_or_before_target:{exchange_upper}",
+                    }
+            except Exception as exc:  # noqa: BLE001
+                price_map[symbol] = {
+                    "date": target_date,
+                    "close": None,
+                    "price_unavailable": True,
+                    "reason": f"{exchange_upper}:{exc}",
+                }
     return price_map
 
 
@@ -2176,7 +2193,7 @@ def generate_weekly_execution_review(
         }
 
     hk_nav = 1.0
-    shfe_nav = 1.0
+    cn_futures_nav = 1.0
     combined_nav = 1.0
     nav_curve = [1.0]
     day_reviews: List[Dict[str, Any]] = []
@@ -2194,33 +2211,51 @@ def generate_weekly_execution_review(
         execution_actions = report.get("execution_actions")
         if not execution_actions:
             hk_price_map = {**report.get("hk_last", {}), **report.get("hk_execution_last", {}), HK_SAFE_RESERVE_SYMBOL: _cash_price_snapshot(str(report.get("report_date")))}
-            shfe_price_map = {**report.get("shfe_last", {}), SHFE_SAFE_RESERVE_SYMBOL: _cash_price_snapshot(str(report.get("report_date")))}
+            fallback_futures_actions: List[Dict[str, Any]] = []
+            for exchange in CN_FUTURES_EXCHANGES:
+                exchange_price_map = {
+                    **report.get(f"{exchange.lower()}_last", {}),
+                    SHFE_SAFE_RESERVE_SYMBOL: _cash_price_snapshot(str(report.get("report_date"))),
+                }
+                fallback_futures_actions.extend(
+                    _materialize_execution_actions(
+                        report.get(f"{exchange.lower()}_actions", []),
+                        exchange,
+                        exchange_price_map,
+                        str(report.get("report_date")),
+                    )
+                )
             execution_actions = [
                 *_materialize_execution_actions(report.get("hk_actions", []), "HK", hk_price_map, str(report.get("report_date"))),
-                *_materialize_execution_actions(report.get("shfe_actions", []), "SHFE", shfe_price_map, str(report.get("report_date"))),
+                *_consolidate_shared_futures_defensive_actions(fallback_futures_actions),
             ]
+        execution_actions = _consolidate_shared_futures_defensive_actions(list(execution_actions))
 
         hk_symbols = sorted({str(item.get("symbol")) for item in execution_actions if str(item.get("market")) == "HK"})
-        shfe_symbols = sorted({str(item.get("symbol")) for item in execution_actions if str(item.get("market")) == "SHFE"})
-        current_prices = _fetch_historical_price_maps(mark_date, hk_symbols, shfe_symbols)
+        futures_symbols_by_exchange: Dict[str, set[str]] = defaultdict(set)
+        for item in execution_actions:
+            market = str(item.get("market", "")).upper()
+            if market in CN_FUTURES_EXCHANGES:
+                futures_symbols_by_exchange[market].add(str(item.get("symbol")))
+        current_prices = _fetch_historical_price_maps(mark_date, hk_symbols, futures_symbols_by_exchange)
         hk_actions = [item for item in execution_actions if str(item.get("market")) == "HK"]
-        shfe_actions = [item for item in execution_actions if str(item.get("market")) == "SHFE"]
+        cn_futures_actions = [item for item in execution_actions if str(item.get("market", "")).upper() in CN_FUTURES_EXCHANGES]
         hk_eval = _evaluate_execution_actions(hk_actions, current_prices)
-        shfe_eval = _evaluate_execution_actions(shfe_actions, current_prices)
-        quality_rows.extend([hk_eval, shfe_eval])
+        cn_futures_eval = _evaluate_execution_actions(cn_futures_actions, current_prices)
+        quality_rows.extend([hk_eval, cn_futures_eval])
 
-        for bucket in [hk_actions, shfe_actions]:
+        for bucket in [hk_actions, cn_futures_actions]:
             for action in bucket:
                 weight = float(action.get("target_weight", 0.0))
                 is_cash = action.get("return_model") == "cash_flat" or str(action.get("symbol")).endswith("_CASH")
                 if not is_cash:
                     constraint_checks["max_single_weight_ok"] &= weight <= 0.20 + 1e-9
-        constraint_checks["max_futures_weight_ok"] &= shfe_eval["gross_weight"] <= 0.50 + 1e-9
-        constraint_checks["max_gross_weight_ok"] &= hk_eval["gross_weight"] <= 1.00 + 1e-9 and shfe_eval["gross_weight"] <= 1.00 + 1e-9
+        constraint_checks["max_futures_weight_ok"] &= cn_futures_eval["gross_weight"] <= 0.50 + 1e-9
+        constraint_checks["max_gross_weight_ok"] &= hk_eval["gross_weight"] <= 1.00 + 1e-9 and cn_futures_eval["gross_weight"] <= 1.00 + 1e-9
 
         hk_nav *= 1.0 + float(hk_eval["portfolio_return"])
-        shfe_nav *= 1.0 + float(shfe_eval["portfolio_return"])
-        combined_daily_return = 0.5 * float(hk_eval["portfolio_return"]) + 0.5 * float(shfe_eval["portfolio_return"])
+        cn_futures_nav *= 1.0 + float(cn_futures_eval["portfolio_return"])
+        combined_daily_return = 0.5 * float(hk_eval["portfolio_return"]) + 0.5 * float(cn_futures_eval["portfolio_return"])
         combined_nav *= 1.0 + combined_daily_return
         nav_curve.append(combined_nav)
 
@@ -2229,7 +2264,8 @@ def generate_weekly_execution_review(
                 "report_date": report.get("report_date"),
                 "mark_date": mark_date,
                 "hk": hk_eval,
-                "shfe": shfe_eval,
+                "cn_futures": cn_futures_eval,
+                "shfe": cn_futures_eval,
                 "combined_return": round(combined_daily_return, 6),
                 "combined_nav": round(combined_nav, 6),
             }
@@ -2249,13 +2285,15 @@ def generate_weekly_execution_review(
         "week_end": week_end.isoformat(),
         "evaluation_date": evaluation_date.isoformat(),
         "report_count": len(reports),
-        "aggregation_assumption": "HK 与 SHFE 两个子组合按 50/50 等权聚合；SAFE_RESERVE 现金腿按 0 收益计。",
+        "aggregation_assumption": "HK 与 CN_FUTURES 两个子组合按 50/50 等权聚合；SAFE_RESERVE 现金腿按 0 收益计。",
         "days": day_reviews,
         "hk_nav_end": round(hk_nav, 6),
-        "shfe_nav_end": round(shfe_nav, 6),
+        "cn_futures_nav_end": round(cn_futures_nav, 6),
+        "shfe_nav_end": round(cn_futures_nav, 6),
         "combined_nav_end": round(combined_nav, 6),
         "hk_return": round(hk_nav - 1.0, 6),
-        "shfe_return": round(shfe_nav - 1.0, 6),
+        "cn_futures_return": round(cn_futures_nav - 1.0, 6),
+        "shfe_return": round(cn_futures_nav - 1.0, 6),
         "combined_return": round(combined_nav - 1.0, 6),
         "max_drawdown": round(max_drawdown, 6),
         "constraint_checks": constraint_checks,
