@@ -707,6 +707,22 @@ class NightlyQuantOrdersTests(unittest.TestCase):
                         "return_model": "cash_flat",
                     },
                     {
+                        "market": "HK",
+                        "bucket_action": "COST_GATE_REJECTED",
+                        "action": "HOLD",
+                        "symbol": "HKD_CASH",
+                        "rejected_symbol": "00700.HK",
+                        "target_weight": 0.1,
+                        "reference_close": 1.0,
+                        "return_model": "cash_flat",
+                        "net_edge_gate": {
+                            "decision": "OBSERVE_ONLY",
+                            "expected_edge_bps": 5.0,
+                            "cost_bps": 18.0,
+                            "required_edge_bps": 21.6,
+                        },
+                    },
+                    {
                         "market": "DCE",
                         "bucket_action": "CORE_SIGNAL",
                         "action": "LONG",
@@ -802,8 +818,14 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         )
         self.assertEqual(review["robustness_validation"]["cpcv"]["status"], "insufficient_observations")
         self.assertEqual(review["robustness_validation"]["effective_breadth"]["status"], "insufficient_observations")
+        self.assertEqual(review["days"][0]["net_edge_gate"]["rejected_count"], 1)
+        self.assertAlmostEqual(review["net_edge_gate_metrics"]["prevented_execution_cost_return"], 0.00018, places=8)
+        self.assertEqual(review["net_edge_gate_metrics"]["top_rejected_actions"][0]["symbol"], "00700.HK")
         self.assertTrue(
             any(item["action"] == "extend_shadow_window_before_promotion" for item in review["optimization_recommendations"])
+        )
+        self.assertTrue(
+            any(item["action"] == "keep_net_edge_execution_gate_active" for item in review["optimization_recommendations"])
         )
         self.assertTrue(review["optimization_recommendations"])
 
@@ -964,6 +986,30 @@ class NightlyQuantOrdersTests(unittest.TestCase):
 
         self.assertEqual(recommendations[0]["action"], "block_strategy_promotion_until_cpcv_dsr_pass")
         self.assertEqual(recommendations[0]["severity"], "high")
+
+    def test_weekly_recommendations_surface_net_edge_cost_savings(self) -> None:
+        recommendations = _build_weekly_optimization_recommendations(
+            {"failure_attribution": [], "net_portfolio_return": 0.02},
+            {
+                "max_single_weight_ok": True,
+                "max_tail_hedge_weight_ok": True,
+                "max_futures_weight_ok": True,
+                "max_gross_weight_ok": True,
+            },
+            [{"report_date": "2026-05-29"}],
+            {"promotion_decision": "PROMOTION_ALLOWED"},
+            {
+                "rejected_count": 3,
+                "allowed_count": 1,
+                "prevented_execution_cost_return": 0.00042,
+                "top_rejected_actions": [{"symbol": "00700.HK"}],
+            },
+        )
+
+        actions = {item["action"]: item for item in recommendations}
+        self.assertIn("keep_net_edge_execution_gate_active", actions)
+        self.assertIn("improve_signal_quality_before_more_breadth", actions)
+        self.assertEqual(actions["improve_signal_quality_before_more_breadth"]["severity"], "medium")
 
     def test_render_report_text_marks_invalid_market_without_global_failure(self) -> None:
         report = {

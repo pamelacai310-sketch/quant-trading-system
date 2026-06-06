@@ -1415,22 +1415,33 @@ def _net_edge_gate_audit(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
     counts: Dict[str, int] = defaultdict(int)
     rejected: List[Dict[str, Any]] = []
     allowed: List[Dict[str, Any]] = []
+    prevented_execution_cost_return = 0.0
+    prevented_gross_weight = 0.0
+    edge_shortfalls: List[float] = []
     for action in actions:
         gate = action.get("net_edge_gate")
         if not isinstance(gate, dict):
             continue
         decision = str(gate.get("decision", "UNKNOWN"))
         counts[decision] += 1
+        target_weight = float(action.get("target_weight", 0.0) or 0.0)
+        expected_edge = float(gate.get("expected_edge_bps", 0.0) or 0.0)
+        cost_bps = float(gate.get("cost_bps", 0.0) or 0.0)
+        required_edge = float(gate.get("required_edge_bps", 0.0) or 0.0)
         record = {
             "market": action.get("market"),
             "symbol": action.get("rejected_symbol") or action.get("symbol"),
             "action": action.get("bucket_action") or action.get("action"),
-            "expected_edge_bps": gate.get("expected_edge_bps"),
-            "cost_bps": gate.get("cost_bps"),
-            "required_edge_bps": gate.get("required_edge_bps"),
+            "target_weight": round(target_weight, 6),
+            "expected_edge_bps": round(expected_edge, 6),
+            "cost_bps": round(cost_bps, 6),
+            "required_edge_bps": round(required_edge, 6),
             "reason": gate.get("reason"),
         }
         if decision == "OBSERVE_ONLY":
+            prevented_execution_cost_return += target_weight * cost_bps / 10000.0
+            prevented_gross_weight += target_weight
+            edge_shortfalls.append(max(0.0, required_edge - expected_edge))
             rejected.append(record)
         elif decision == "ALLOW":
             allowed.append(record)
@@ -1438,6 +1449,9 @@ def _net_edge_gate_audit(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
         "decision_counts": dict(counts),
         "rejected_count": len(rejected),
         "allowed_count": len(allowed),
+        "prevented_execution_cost_return": round(float(prevented_execution_cost_return), 8),
+        "prevented_gross_weight": round(float(prevented_gross_weight), 6),
+        "avg_rejected_edge_shortfall_bps": round(float(sum(edge_shortfalls) / len(edge_shortfalls)), 6) if edge_shortfalls else 0.0,
         "rejected_actions": rejected[:12],
         "allowed_actions": allowed[:12],
         "gate": "Active signals must clear expected net edge after execution cost before entering executable orders.",
@@ -2606,6 +2620,43 @@ def _build_weekly_robustness_validation(
     }
 
 
+def _aggregate_weekly_net_edge_gate(day_reviews: List[Dict[str, Any]]) -> Dict[str, Any]:
+    decision_counts: Dict[str, int] = defaultdict(int)
+    rejected_count = 0
+    allowed_count = 0
+    prevented_cost = 0.0
+    prevented_weight = 0.0
+    weighted_shortfall = 0.0
+    top_rejected: List[Dict[str, Any]] = []
+    for day in day_reviews:
+        audit = day.get("net_edge_gate", {}) if isinstance(day.get("net_edge_gate"), dict) else {}
+        for decision, count in (audit.get("decision_counts") or {}).items():
+            decision_counts[str(decision)] += int(count or 0)
+        rejected_count += int(audit.get("rejected_count", 0) or 0)
+        allowed_count += int(audit.get("allowed_count", 0) or 0)
+        cost = float(audit.get("prevented_execution_cost_return", 0.0) or 0.0)
+        weight = float(audit.get("prevented_gross_weight", 0.0) or 0.0)
+        prevented_cost += cost
+        prevented_weight += weight
+        weighted_shortfall += float(audit.get("avg_rejected_edge_shortfall_bps", 0.0) or 0.0) * max(int(audit.get("rejected_count", 0) or 0), 0)
+        for item in audit.get("rejected_actions", []) or []:
+            top_rejected.append({**item, "report_date": day.get("report_date")})
+    top_rejected.sort(
+        key=lambda item: float(item.get("required_edge_bps", 0.0) or 0.0) - float(item.get("expected_edge_bps", 0.0) or 0.0),
+        reverse=True,
+    )
+    return {
+        "decision_counts": dict(decision_counts),
+        "rejected_count": rejected_count,
+        "allowed_count": allowed_count,
+        "prevented_execution_cost_return": round(float(prevented_cost), 8),
+        "prevented_gross_weight": round(float(prevented_weight), 6),
+        "avg_rejected_edge_shortfall_bps": round(float(weighted_shortfall / rejected_count), 6) if rejected_count else 0.0,
+        "top_rejected_actions": top_rejected[:10],
+        "gate": "Aggregates nightly COST_GATE_REJECTED actions to quantify avoided cost drag.",
+    }
+
+
 def generate_weekly_execution_review(
     week_start: date,
     week_end: date,
@@ -2676,6 +2727,7 @@ def generate_weekly_execution_review(
         current_prices = _fetch_historical_price_maps(mark_date, hk_symbols, futures_symbols_by_exchange)
         hk_actions = [item for item in execution_actions if str(item.get("market")) == "HK"]
         cn_futures_actions = [item for item in execution_actions if str(item.get("market", "")).upper() in CN_FUTURES_EXCHANGES]
+        net_edge_gate = _net_edge_gate_audit(execution_actions)
         hk_eval = _evaluate_execution_actions(hk_actions, current_prices)
         cn_futures_eval = _evaluate_execution_actions(cn_futures_actions, current_prices)
         quality_rows.extend([hk_eval, cn_futures_eval])
@@ -2713,6 +2765,7 @@ def generate_weekly_execution_review(
                 "hk": hk_eval,
                 "cn_futures": cn_futures_eval,
                 "shfe": cn_futures_eval,
+                "net_edge_gate": net_edge_gate,
                 "combined_gross_return": round(combined_gross_return, 6),
                 "combined_return": round(combined_daily_return, 6),
                 "combined_nav": round(combined_nav, 6),
@@ -2729,12 +2782,14 @@ def generate_weekly_execution_review(
         max_drawdown = min(max_drawdown, drawdown)
 
     quality_metrics = _aggregate_weekly_quality_metrics(quality_rows)
+    net_edge_gate_metrics = _aggregate_weekly_net_edge_gate(day_reviews)
     robustness_validation = _build_weekly_robustness_validation(day_reviews, quality_metrics)
     optimization_recommendations = _build_weekly_optimization_recommendations(
         quality_metrics,
         constraint_checks,
         day_reviews,
         robustness_validation,
+        net_edge_gate_metrics,
     )
     return {
         "week_start": week_start.isoformat(),
@@ -2754,6 +2809,7 @@ def generate_weekly_execution_review(
         "max_drawdown": round(max_drawdown, 6),
         "constraint_checks": constraint_checks,
         "quality_metrics": quality_metrics,
+        "net_edge_gate_metrics": net_edge_gate_metrics,
         "robustness_validation": robustness_validation,
         "optimization_recommendations": optimization_recommendations,
     }
@@ -2823,6 +2879,7 @@ def _build_weekly_optimization_recommendations(
     constraint_checks: Dict[str, bool],
     day_reviews: List[Dict[str, Any]],
     robustness_validation: Optional[Dict[str, Any]] = None,
+    net_edge_gate_metrics: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     recommendations: List[Dict[str, Any]] = []
     failures = set(quality_metrics.get("failure_attribution", []) or [])
@@ -2831,7 +2888,11 @@ def _build_weekly_optimization_recommendations(
     net_return = float(quality_metrics.get("net_portfolio_return", 0.0) or 0.0)
     execution_cost = float(quality_metrics.get("execution_cost_return", 0.0) or 0.0)
     robustness_validation = robustness_validation or {}
+    net_edge_gate_metrics = net_edge_gate_metrics or {}
     promotion_decision = str(robustness_validation.get("promotion_decision", ""))
+    net_edge_rejected = int(net_edge_gate_metrics.get("rejected_count", 0) or 0)
+    net_edge_allowed = int(net_edge_gate_metrics.get("allowed_count", 0) or 0)
+    prevented_cost = float(net_edge_gate_metrics.get("prevented_execution_cost_return", 0.0) or 0.0)
 
     if promotion_decision == "OBSERVE_ONLY_INSUFFICIENT_SAMPLE":
         recommendations.append(
@@ -2871,6 +2932,37 @@ def _build_weekly_optimization_recommendations(
                 "suggested_parameters": {
                     "min_effective_breadth_ratio": WEEKLY_BREADTH_RATIO_FLOOR,
                     "method": "democratic_orthogonalization_or_position_netting",
+                },
+            }
+        )
+
+    if prevented_cost > 0:
+        recommendations.append(
+            {
+                "action": "keep_net_edge_execution_gate_active",
+                "severity": "low",
+                "reason": (
+                    f"净边际执行门本周拦截 {net_edge_rejected} 笔低边际动作，"
+                    f"按往返成本代理避免约 {prevented_cost:.6f} 的组合成本拖累。"
+                ),
+                "suggested_parameters": {
+                    "min_net_edge_buffer_bps": _min_net_edge_buffer_bps(),
+                    "review_metric": "prevented_execution_cost_return",
+                },
+            }
+        )
+    if net_edge_rejected > 0 and net_edge_rejected >= max(3, net_edge_allowed * 2):
+        recommendations.append(
+            {
+                "action": "improve_signal_quality_before_more_breadth",
+                "severity": "medium",
+                "reason": (
+                    f"净边际执行门拒绝数 {net_edge_rejected} 明显高于放行数 {net_edge_allowed}，"
+                    "说明模型候选信号的经济边际不足。"
+                ),
+                "suggested_parameters": {
+                    "raise_min_objective_score": True,
+                    "review_top_rejected_actions": net_edge_gate_metrics.get("top_rejected_actions", [])[:5],
                 },
             }
         )
