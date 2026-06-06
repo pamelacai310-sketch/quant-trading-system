@@ -21,6 +21,7 @@ from quant_trade_system.nightly_quant_orders import (
     _aggregate_weekly_quality_metrics,
     _build_evidence_snapshot,
     _build_instruction,
+    _build_cycle_payload,
     _build_market_status,
     _build_weekly_robustness_validation,
     _build_weekly_optimization_recommendations,
@@ -438,6 +439,79 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertAlmostEqual(execution[0]["one_lot_min_margin"], 63_510.0, places=2)
         self.assertEqual(execution[0]["margin_formula"], "latest_price * contract_multiplier * margin_rate")
         self.assertEqual(execution[0]["margin_source"], "contract_specs")
+
+    def test_materialize_execution_actions_blocks_low_net_edge_active_signal(self) -> None:
+        actions = [
+            {
+                "action": "LONG",
+                "symbol": "00700.HK",
+                "target_weight": 0.15,
+                "confidence": 0.50,
+                "objective_score": 0.10,
+                "reason": "weak edge",
+            }
+        ]
+        price_map = {"00700.HK": {"date": "2026-05-11", "close": 480.0}}
+
+        execution = _materialize_execution_actions(actions, "HK", price_map, "2026-05-11")
+
+        self.assertEqual(execution[0]["action"], "HOLD")
+        self.assertEqual(execution[0]["symbol"], "HKD_CASH")
+        self.assertEqual(execution[0]["bucket_action"], "COST_GATE_REJECTED")
+        self.assertEqual(execution[0]["rejected_symbol"], "00700.HK")
+        self.assertEqual(execution[0]["net_edge_gate"]["decision"], "OBSERVE_ONLY")
+        self.assertLess(
+            execution[0]["net_edge_gate"]["expected_edge_bps"],
+            execution[0]["net_edge_gate"]["required_edge_bps"],
+        )
+
+    def test_materialize_execution_actions_allows_high_net_edge_active_signal(self) -> None:
+        actions = [
+            {
+                "action": "LONG",
+                "symbol": "00700.HK",
+                "target_weight": 0.15,
+                "confidence": 0.90,
+                "objective_score": 0.80,
+                "reason": "strong edge",
+            }
+        ]
+        price_map = {"00700.HK": {"date": "2026-05-11", "close": 480.0}}
+
+        execution = _materialize_execution_actions(actions, "HK", price_map, "2026-05-11")
+
+        self.assertEqual(execution[0]["action"], "LONG")
+        self.assertEqual(execution[0]["symbol"], "00700.HK")
+        self.assertEqual(execution[0]["net_edge_gate"]["decision"], "ALLOW")
+        self.assertGreaterEqual(
+            execution[0]["net_edge_gate"]["expected_edge_bps"],
+            execution[0]["net_edge_gate"]["required_edge_bps"],
+        )
+
+    def test_cycle_payload_primary_lines_follow_net_edge_gate(self) -> None:
+        cycle = {
+            "status": "ok",
+            "trade_actions": [
+                {
+                    "action": "LONG",
+                    "symbol": "00700.HK",
+                    "target_weight": 0.15,
+                    "confidence": 0.50,
+                    "objective_score": 0.10,
+                    "reason": "weak edge",
+                },
+                {"action": "TAIL_HEDGE", "symbol": "TAIL_RISK_PROTECTION", "target_weight": 0.1, "reason": "hedge"},
+            ],
+            "symbols": {},
+        }
+        price_map = {"00700.HK": {"date": "2026-05-11", "close": 480.0}, "02840.HK": {"date": "2026-05-11", "close": 100.0}}
+
+        payload = _build_cycle_payload("HK", cycle, price_map, price_map, "2026-05-11")
+
+        self.assertEqual(payload["primary_actions"], [])
+        self.assertEqual(payload["primary_lines"], [])
+        self.assertEqual(payload["execution_actions"][0]["bucket_action"], "COST_GATE_REJECTED")
+        self.assertEqual(payload["execution_actions"][1]["bucket_action"], "TAIL_HEDGE")
 
     def test_consolidate_shared_cn_futures_defensive_legs(self) -> None:
         actions = [

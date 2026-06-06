@@ -72,6 +72,8 @@ DEFAULT_EXECUTION_COST_ASSUMPTIONS = {
 WEEKLY_EFFECTIVE_TRIALS_ENV = "QTS_WEEKLY_EFFECTIVE_TRIALS"
 WEEKLY_ROBUSTNESS_PERIODS_PER_YEAR = 252
 WEEKLY_BREADTH_RATIO_FLOOR = 0.35
+MIN_NET_EDGE_BUFFER_BPS_ENV = "QTS_MIN_NET_EDGE_BUFFER_BPS"
+MIN_NET_EDGE_BUFFER_BPS_DEFAULT = 2.0
 
 
 @dataclass
@@ -1139,6 +1141,42 @@ def _price_on_or_before(frame: pd.DataFrame, target_date: str) -> Optional[Dict[
     return {"date": str(row["date"]), "close": float(row["close"])}
 
 
+def _min_net_edge_buffer_bps() -> float:
+    return max(0.0, float(_env_float(MIN_NET_EDGE_BUFFER_BPS_ENV) or MIN_NET_EDGE_BUFFER_BPS_DEFAULT))
+
+
+def _active_signal_net_edge_gate(action: Dict[str, Any], market_upper: str) -> Dict[str, Any]:
+    """Final execution gate: active alpha must clear estimated round-trip costs."""
+
+    if str(action.get("action", "")).upper() not in {"LONG", "SHORT"}:
+        return {"decision": "NOT_APPLICABLE", "reason": "非主动方向单不使用普通 alpha 净边际门控。"}
+    if action.get("objective_score") is None:
+        return {
+            "decision": "NOT_EVALUATED",
+            "reason": "动作缺少 objective_score，保持兼容但不提高置信。",
+        }
+    objective_score = max(0.0, float(action.get("objective_score", 0.0) or 0.0))
+    confidence = max(0.0, float(action.get("confidence", 1.0) or 0.0))
+    expected_edge_bps = objective_score * confidence * 100.0
+    cost = _execution_cost_components({**action, "market": market_upper}, is_cash=False)
+    cost_bps = float(cost.get("total_bps", 0.0) or 0.0)
+    required_edge_bps = max(cost_bps + _min_net_edge_buffer_bps(), cost_bps * 1.20)
+    decision = "ALLOW" if expected_edge_bps >= required_edge_bps else "OBSERVE_ONLY"
+    return {
+        "decision": decision,
+        "expected_edge_bps": round(expected_edge_bps, 6),
+        "cost_bps": round(cost_bps, 6),
+        "required_edge_bps": round(required_edge_bps, 6),
+        "buffer_bps": round(_min_net_edge_buffer_bps(), 6),
+        "formula": "objective_score * confidence * 100 >= max(round_trip_cost_bps + buffer, round_trip_cost_bps * 1.20)",
+        "reason": (
+            "预计净边际覆盖交易成本，允许执行。"
+            if decision == "ALLOW"
+            else "预计净边际不足以覆盖交易成本和缓冲，本轮降级为现金观察。"
+        ),
+    }
+
+
 def _materialize_execution_actions(
     actions: List[Dict[str, Any]],
     market: str,
@@ -1218,6 +1256,24 @@ def _materialize_execution_actions(
         symbol = str(action.get("symbol"))
         snapshot = price_map.get(symbol)
         reference_close = float(snapshot.get("close", 0.0)) if snapshot else 0.0
+        net_edge_gate = _active_signal_net_edge_gate(action, market_upper)
+        if net_edge_gate.get("decision") == "OBSERVE_ONLY":
+            execution_actions.append(
+                {
+                    "market": market_upper,
+                    "bucket_action": "COST_GATE_REJECTED",
+                    "action": "HOLD",
+                    "symbol": safe_reserve_symbol,
+                    "target_weight": target_weight,
+                    "reference_close": 1.0,
+                    "reference_date": target_date,
+                    "return_model": "cash_flat",
+                    "reason": f"{action.get('reason', '主动信号')}；{net_edge_gate.get('reason')}",
+                    "rejected_symbol": symbol,
+                    "net_edge_gate": net_edge_gate,
+                }
+            )
+            continue
         futures_margin = _futures_margin_fields(market_upper, symbol, reference_close, action.get("margin_rate"))
         execution_actions.append(
             {
@@ -1227,6 +1283,7 @@ def _materialize_execution_actions(
                 "reference_close": reference_close,
                 "reference_date": str(snapshot.get("date")) if snapshot else target_date,
                 "return_model": "close_to_close",
+                "net_edge_gate": net_edge_gate,
                 **futures_margin,
             }
         )
@@ -1670,7 +1727,12 @@ def _observation_lines(symbol_reports: Dict[str, Dict[str, Any]], latest_prices:
 
 
 def _classify_primary_actions(actions: List[Dict[str, Any]], price_map: Dict[str, Dict[str, Any]]) -> tuple[List[str], List[Dict[str, Any]]]:
-    primary = [action for action in actions if action.get("action") in {"LONG", "SHORT"}]
+    defensive_buckets = {"TAIL_HEDGE", "SAFE_RESERVE", "COST_GATE_REJECTED"}
+    primary = [
+        action for action in actions
+        if action.get("action") in {"LONG", "SHORT"}
+        and str(action.get("bucket_action") or "").upper() not in defensive_buckets
+    ]
     if not primary:
         return [], []
     lines = [
@@ -1710,8 +1772,8 @@ def _build_cycle_payload(
 ) -> Dict[str, Any]:
     actions = cycle.get("trade_actions", [])
     reports = {symbol: _summarize_symbol_report(item) for symbol, item in cycle.get("symbols", {}).items()}
-    primary_lines, primary_actions = _classify_primary_actions(actions, price_map)
     execution_actions = _materialize_execution_actions(actions, market, execution_price_map, target_date, tail_hedge_gate)
+    primary_lines, primary_actions = _classify_primary_actions(execution_actions, price_map)
     return {
         "cycle_status": cycle.get("status"),
         "actions": actions,
