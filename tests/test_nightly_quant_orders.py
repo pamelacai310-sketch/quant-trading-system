@@ -32,6 +32,9 @@ from quant_trade_system.nightly_quant_orders import (
     _next_weekday,
     _observation_lines,
     _failure_category_from_market_status,
+    _fetch_us_data,
+    _optional_yf_frame,
+    _pct_change_over_window,
     _tail_hedge_effectiveness_gate,
     _validate_futures_close,
     _validate_hk_close,
@@ -51,6 +54,34 @@ def _frame(last_date: str, last_close: float) -> pd.DataFrame:
             "volume": [1_000, 2_000],
         }
     )
+
+
+def _yfinance_batch_frame(symbols: list[str]) -> pd.DataFrame:
+    index = pd.to_datetime(["2026-05-28", "2026-05-29"])
+    index.name = "Date"
+    columns = pd.MultiIndex.from_product([symbols, ["Open", "High", "Low", "Close", "Volume"]])
+    data = {}
+    for offset, symbol in enumerate(symbols):
+        base = 100.0 + offset * 10
+        data[(symbol, "Open")] = [base, base + 1.0]
+        data[(symbol, "High")] = [base + 2.0, base + 3.0]
+        data[(symbol, "Low")] = [base - 2.0, base - 1.0]
+        data[(symbol, "Close")] = [base + 0.5, base + 1.5]
+        data[(symbol, "Volume")] = [1000 + offset, 2000 + offset]
+    return pd.DataFrame(data, index=index, columns=columns)
+
+
+class FakeBatchYF:
+    def __init__(self, frame: pd.DataFrame | None = None, fail: bool = False) -> None:
+        self.frame = frame if frame is not None else _yfinance_batch_frame(["AAPL", "MSFT"])
+        self.fail = fail
+        self.calls: list[tuple[object, dict]] = []
+
+    def download(self, symbols: object, **kwargs: object) -> pd.DataFrame:
+        self.calls.append((symbols, dict(kwargs)))
+        if self.fail:
+            raise TimeoutError("simulated yfinance timeout")
+        return self.frame
 
 
 def _futures_main_frame(last_date: str = "2026-05-29") -> pd.DataFrame:
@@ -78,6 +109,42 @@ class FakeFuturesAK:
 
 
 class NightlyQuantOrdersTests(unittest.TestCase):
+    def test_fetch_us_data_uses_batch_download_with_timeout(self) -> None:
+        fake_yf = FakeBatchYF(_yfinance_batch_frame(["AAPL", "MSFT"]))
+
+        data = _fetch_us_data(fake_yf, ["AAPL", "MSFT"], end_date="2026-05-29")
+
+        self.assertEqual(len(fake_yf.calls), 1)
+        requested_symbols, kwargs = fake_yf.calls[0]
+        self.assertEqual(list(requested_symbols), ["AAPL", "MSFT"])
+        self.assertEqual(kwargs.get("group_by"), "ticker")
+        self.assertTrue(kwargs.get("threads"))
+        self.assertIn("timeout", kwargs)
+        self.assertIn("AAPL", data)
+        self.assertIn("MSFT", data)
+        self.assertEqual(str(data["AAPL"]["date"].iloc[-1]), "2026-05-29")
+        self.assertAlmostEqual(float(data["MSFT"]["close"].iloc[-1]), 111.5)
+
+    def test_fetch_us_data_degrades_quickly_when_yfinance_fails(self) -> None:
+        fake_yf = FakeBatchYF(fail=True)
+
+        with patch.dict("os.environ", {"QTS_US_SERIAL_FALLBACK_LIMIT": "2"}):
+            data = _fetch_us_data(fake_yf, ["AAPL", "MSFT", "NVDA"], end_date="2026-05-29")
+
+        self.assertEqual(data, {})
+        self.assertEqual(len(fake_yf.calls), 3)
+        self.assertEqual(list(fake_yf.calls[0][0]), ["AAPL", "MSFT", "NVDA"])
+        self.assertEqual(fake_yf.calls[1][0], "AAPL")
+        self.assertEqual(fake_yf.calls[2][0], "MSFT")
+
+    def test_optional_yf_frame_and_pct_change_tolerate_provider_failure(self) -> None:
+        fake_yf = FakeBatchYF(fail=True)
+
+        frame = _optional_yf_frame(fake_yf, "QQQ", period="6mo")
+
+        self.assertTrue(frame.empty)
+        self.assertEqual(_pct_change_over_window(frame, 60), 0.0)
+
     def test_fetch_futures_data_prefers_main_sina_when_legacy_endpoint_is_empty(self) -> None:
         data = _fetch_futures_data(FakeFuturesAK(), ["CU0"], end_date="2026-05-29", exchange="SHFE")
 

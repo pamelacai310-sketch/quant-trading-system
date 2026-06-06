@@ -48,6 +48,10 @@ FUTURES_SETTLE_FALLBACK_DAILY = "daily_main_contract"
 CFFEX_SETTLE_FALLBACK_CONTRACT_SPECS = "daily_main_contract+contract_specs"
 US_CLOSE_AVAILABLE_CHINA_HOUR = 5
 US_CLOSE_AVAILABLE_CHINA_MINUTE = 30
+YFINANCE_TIMEOUT_ENV = "QTS_YFINANCE_TIMEOUT_SECONDS"
+YFINANCE_DEFAULT_TIMEOUT_SECONDS = 8.0
+US_SERIAL_FALLBACK_LIMIT_ENV = "QTS_US_SERIAL_FALLBACK_LIMIT"
+US_SERIAL_FALLBACK_LIMIT_DEFAULT = 6
 FAILURE_NONE = "NONE"
 FAILURE_SCHEDULER_NOT_RUN = "SCHEDULER_NOT_RUN"
 FAILURE_DATA_VALIDATION_PARTIAL = "DATA_VALIDATION_PARTIAL"
@@ -181,23 +185,95 @@ def _normalize_yfinance_frame(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _pct_change_over_window(frame: pd.DataFrame, window: int) -> float:
+    if frame is None or frame.empty or "close" not in frame.columns:
+        return 0.0
     close = frame["close"].astype(float)
     if len(close) <= window:
         return 0.0
     return float(close.iloc[-1] / close.iloc[-window - 1] - 1.0)
 
 
-def _optional_yf_frame(yf: Any, symbol: str, period: str = "3mo") -> pd.DataFrame:
+def _yfinance_timeout_seconds() -> float:
+    value = _env_float(YFINANCE_TIMEOUT_ENV)
+    if value is None:
+        return YFINANCE_DEFAULT_TIMEOUT_SECONDS
+    return max(1.0, value)
+
+
+def _us_serial_fallback_limit() -> int:
+    value = _env_float(US_SERIAL_FALLBACK_LIMIT_ENV)
+    if value is None:
+        return US_SERIAL_FALLBACK_LIMIT_DEFAULT
+    return max(0, int(value))
+
+
+def _safe_yfinance_download(yf: Any, symbols: Any, **kwargs: Any) -> pd.DataFrame:
+    """Download from yfinance with bounded wait and no exception propagation."""
+
+    download_kwargs = dict(kwargs)
+    download_kwargs.setdefault("auto_adjust", False)
+    download_kwargs.setdefault("progress", False)
+    download_kwargs.setdefault("timeout", _yfinance_timeout_seconds())
     try:
-        raw = yf.download(symbol, period=period, interval="1d", auto_adjust=False, progress=False)
+        frame = yf.download(symbols, **download_kwargs)
+    except TypeError:
+        # Older yfinance versions may not accept timeout; keep the safety wrapper.
+        download_kwargs.pop("timeout", None)
+        try:
+            frame = yf.download(symbols, **download_kwargs)
+        except Exception:
+            return pd.DataFrame()
     except Exception:
         return pd.DataFrame()
+    return frame if isinstance(frame, pd.DataFrame) else pd.DataFrame()
+
+
+def _extract_yfinance_symbol_frame(raw: pd.DataFrame, symbol: str) -> pd.DataFrame:
     if raw is None or raw.empty:
         return pd.DataFrame()
+    symbol_key = str(symbol).upper()
+    candidate = raw
+    if isinstance(raw.columns, pd.MultiIndex):
+        level_values = [
+            {str(value).upper(): value for value in raw.columns.get_level_values(level).unique()}
+            for level in range(raw.columns.nlevels)
+        ]
+        candidate = pd.DataFrame()
+        for level, value_map in enumerate(level_values):
+            if symbol_key not in value_map:
+                continue
+            try:
+                candidate = raw.xs(value_map[symbol_key], axis=1, level=level)
+                break
+            except Exception:
+                candidate = pd.DataFrame()
+        if candidate.empty:
+            return pd.DataFrame()
     try:
-        return _normalize_yfinance_frame(raw)
+        return _normalize_yfinance_frame(candidate)
     except Exception:
         return pd.DataFrame()
+
+
+def _trim_yfinance_history(frame: pd.DataFrame, end_date: Optional[str]) -> pd.DataFrame:
+    if frame is None or frame.empty or "date" not in frame.columns:
+        return pd.DataFrame()
+    if end_date:
+        frame = frame.loc[frame["date"] <= end_date]
+    if frame.empty:
+        return pd.DataFrame()
+    return frame.tail(126).reset_index(drop=True)
+
+
+def _optional_yf_frame(yf: Any, symbol: str, period: str = "3mo") -> pd.DataFrame:
+    raw = _safe_yfinance_download(
+        yf,
+        symbol,
+        period=period,
+        interval="1d",
+        threads=False,
+    )
+    return _extract_yfinance_symbol_frame(raw, symbol)
 
 
 def _latest_close(frame: pd.DataFrame) -> Optional[float]:
@@ -391,25 +467,42 @@ def _validate_hk_close(hk_data: Dict[str, pd.DataFrame], target_date: str) -> Ma
 
 def _fetch_us_data(yf: Any, symbols: Iterable[str], end_date: Optional[str] = None) -> Dict[str, pd.DataFrame]:
     data: Dict[str, pd.DataFrame] = {}
-    for symbol in symbols:
-        try:
-            frame = yf.download(
-                symbol,
-                period="6mo",
-                interval="1d",
-                auto_adjust=False,
-                progress=False,
-            )
-        except Exception:
-            continue
-        if frame is None or frame.empty:
-            continue
-        normalized = _normalize_yfinance_frame(frame)
-        if end_date:
-            normalized = normalized.loc[normalized["date"] <= end_date]
+    symbol_list = list(dict.fromkeys(str(symbol) for symbol in symbols if str(symbol).strip()))
+    if not symbol_list:
+        return data
+
+    raw_batch = _safe_yfinance_download(
+        yf,
+        symbol_list if len(symbol_list) > 1 else symbol_list[0],
+        period="6mo",
+        interval="1d",
+        group_by="ticker",
+        threads=len(symbol_list) > 1,
+    )
+
+    for symbol in symbol_list:
+        normalized = _trim_yfinance_history(_extract_yfinance_symbol_frame(raw_batch, symbol), end_date)
         if normalized.empty:
             continue
-        data[symbol] = normalized.tail(126).reset_index(drop=True)
+        data[symbol] = normalized
+
+    if data:
+        return data
+
+    # If a batch endpoint is unavailable, probe only a bounded prefix so US data
+    # degrades quickly instead of blocking HK/CN futures nightly production.
+    for symbol in symbol_list[: _us_serial_fallback_limit()]:
+        raw = _safe_yfinance_download(
+            yf,
+            symbol,
+            period="6mo",
+            interval="1d",
+            threads=False,
+        )
+        normalized = _trim_yfinance_history(_extract_yfinance_symbol_frame(raw, symbol), end_date)
+        if normalized.empty:
+            continue
+        data[symbol] = normalized
     return data
 
 
@@ -1862,9 +1955,9 @@ def generate_report(target_day: date) -> Dict[str, Any]:
         causal_factor_library=causal_factor_library,
     )
     trading_agent = EnhancedCausalTradingAgent(AccountHealthMonitor(1_000_000.0), use_causal_ai_agent=False)
-    qqq = _normalize_yfinance_frame(yf.download("QQQ", period="6mo", interval="1d", auto_adjust=False, progress=False))
-    gold = _normalize_yfinance_frame(yf.download("GC=F", period="6mo", interval="1d", auto_adjust=False, progress=False))
-    copper_peer = _normalize_yfinance_frame(yf.download("HG=F", period="6mo", interval="1d", auto_adjust=False, progress=False))
+    qqq = _optional_yf_frame(yf, "QQQ", period="6mo")
+    gold = _optional_yf_frame(yf, "GC=F", period="6mo")
+    copper_peer = _optional_yf_frame(yf, "HG=F", period="6mo")
     copper_proxy = next(
         (
             item["data"]["CU0"]
