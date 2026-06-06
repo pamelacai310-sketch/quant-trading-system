@@ -1388,9 +1388,17 @@ def _build_execution_instruction(action: Dict[str, Any]) -> str:
     action_name = str(action.get("action"))
     symbol = str(action.get("symbol"))
     if action_name == "HOLD":
+        gate = action.get("net_edge_gate") if isinstance(action.get("net_edge_gate"), dict) else {}
+        rejected = f"，拒绝标的 {action.get('rejected_symbol')}" if action.get("rejected_symbol") else ""
+        gate_text = (
+            f"，净边际 {float(gate.get('expected_edge_bps', 0.0) or 0.0):.1f}bps "
+            f"< 门槛 {float(gate.get('required_edge_bps', 0.0) or 0.0):.1f}bps"
+            if gate.get("decision") == "OBSERVE_ONLY"
+            else ""
+        )
         return (
             f"{action.get('bucket_action')} -> HOLD {symbol} 参考价 {float(action.get('reference_close', 1.0)):.4f}，"
-            f"目标权重 {float(action.get('target_weight', 0.0)) * 100:.1f}%。"
+            f"目标权重 {float(action.get('target_weight', 0.0)) * 100:.1f}%{rejected}{gate_text}。"
         )
     line = _build_instruction(action, float(action.get("reference_close", 0.0)))
     if action.get("one_lot_min_margin") is not None:
@@ -1401,6 +1409,39 @@ def _build_execution_instruction(action: Dict[str, Any]) -> str:
             f"{float(action.get('margin_rate', 0.0)):.2%}"
         )
     return f"{action.get('bucket_action')} -> {line}"
+
+
+def _net_edge_gate_audit(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    counts: Dict[str, int] = defaultdict(int)
+    rejected: List[Dict[str, Any]] = []
+    allowed: List[Dict[str, Any]] = []
+    for action in actions:
+        gate = action.get("net_edge_gate")
+        if not isinstance(gate, dict):
+            continue
+        decision = str(gate.get("decision", "UNKNOWN"))
+        counts[decision] += 1
+        record = {
+            "market": action.get("market"),
+            "symbol": action.get("rejected_symbol") or action.get("symbol"),
+            "action": action.get("bucket_action") or action.get("action"),
+            "expected_edge_bps": gate.get("expected_edge_bps"),
+            "cost_bps": gate.get("cost_bps"),
+            "required_edge_bps": gate.get("required_edge_bps"),
+            "reason": gate.get("reason"),
+        }
+        if decision == "OBSERVE_ONLY":
+            rejected.append(record)
+        elif decision == "ALLOW":
+            allowed.append(record)
+    return {
+        "decision_counts": dict(counts),
+        "rejected_count": len(rejected),
+        "allowed_count": len(allowed),
+        "rejected_actions": rejected[:12],
+        "allowed_actions": allowed[:12],
+        "gate": "Active signals must clear expected net edge after execution cost before entering executable orders.",
+    }
 
 
 def _execution_price_map(report: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -1868,6 +1909,7 @@ def _build_evidence_snapshot(
         "causal_abstention_gate": abstention_records,
         "instrument_registry": instrument_records,
         "causal_llm_audit": llm_audit_records,
+        "net_edge_execution_gate": _net_edge_gate_audit(report.get("execution_actions", [])),
         "model_versions": model_records,
         "feature_lineage": feature_records,
         "position_constraints": {
@@ -2344,6 +2386,23 @@ def render_report_text(report: Dict[str, Any]) -> str:
                 f"rate_sensitive={float(overlays.get('rate_sensitive_multiplier', 1.0) or 1.0):.2f} "
                 f"vol={float(overlays.get('volatility_multiplier', 1.0) or 1.0):.2f} "
                 f"alerts={len(alerts)}"
+            )
+        net_edge_snapshot = snapshot.get("net_edge_execution_gate", {})
+        if net_edge_snapshot:
+            rejected = net_edge_snapshot.get("rejected_actions", [])
+            example = rejected[0] if rejected else {}
+            example_text = (
+                f"；首个拒绝={example.get('symbol')} "
+                f"edge={float(example.get('expected_edge_bps', 0.0) or 0.0):.1f}bps/"
+                f"required={float(example.get('required_edge_bps', 0.0) or 0.0):.1f}bps"
+                if example
+                else ""
+            )
+            lines.append(
+                "- 净边际执行门："
+                f"counts={net_edge_snapshot.get('decision_counts', {})} "
+                f"rejected={net_edge_snapshot.get('rejected_count', 0)}"
+                f"{example_text}"
             )
         abstention_snapshot = snapshot.get("causal_abstention_gate", {})
         if abstention_snapshot:

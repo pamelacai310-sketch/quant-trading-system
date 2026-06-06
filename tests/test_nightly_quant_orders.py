@@ -512,6 +512,8 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertEqual(payload["primary_lines"], [])
         self.assertEqual(payload["execution_actions"][0]["bucket_action"], "COST_GATE_REJECTED")
         self.assertEqual(payload["execution_actions"][1]["bucket_action"], "TAIL_HEDGE")
+        self.assertIn("拒绝标的 00700.HK", payload["execution_lines"][0])
+        self.assertIn("净边际", payload["execution_lines"][0])
 
     def test_consolidate_shared_cn_futures_defensive_legs(self) -> None:
         actions = [
@@ -1049,6 +1051,23 @@ class NightlyQuantOrdersTests(unittest.TestCase):
             "us_validation": {"passed": True, "actual_date": "2026-05-08"},
             "hk_validation": {"passed": True, "actual_date": "2026-05-11"},
             "futures_validations": {"SHFE": {"passed": True, "actual_date": "2026-05-11"}},
+            "execution_actions": [
+                {
+                    "market": "HK",
+                    "bucket_action": "COST_GATE_REJECTED",
+                    "action": "HOLD",
+                    "symbol": "HKD_CASH",
+                    "rejected_symbol": "00700.HK",
+                    "target_weight": 0.15,
+                    "net_edge_gate": {
+                        "decision": "OBSERVE_ONLY",
+                        "expected_edge_bps": 5.0,
+                        "cost_bps": 18.0,
+                        "required_edge_bps": 21.6,
+                        "reason": "edge too weak",
+                    },
+                }
+            ],
             "market_data": {
                 "game_causal_analysis": {
                     "events": [{"event_id": "evt1"}],
@@ -1091,6 +1110,8 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertEqual(snapshot["scm_dag"]["HK"]["candidate_edge_count"], 2)
         self.assertEqual(snapshot["model_versions"]["HK"]["version"], "v1")
         self.assertEqual(snapshot["sensitive_asset_confirmations"][0]["actionability"], "trade_allowed")
+        self.assertEqual(snapshot["net_edge_execution_gate"]["rejected_count"], 1)
+        self.assertEqual(snapshot["net_edge_execution_gate"]["rejected_actions"][0]["symbol"], "00700.HK")
 
 
 if __name__ == "__main__":
