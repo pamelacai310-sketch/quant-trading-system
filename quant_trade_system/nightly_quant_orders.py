@@ -1125,6 +1125,80 @@ def _materialize_execution_actions(
     return execution_actions
 
 
+def _consolidate_shared_futures_defensive_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Collapse portfolio-level CN futures defensive legs emitted by each exchange cycle.
+
+    AU0 tail hedge and CNY cash reserve are shared China-futures portfolio buckets.
+    Keeping one row per exchange would overstate executable exposure and review costs.
+    """
+    consolidated: List[Dict[str, Any]] = []
+    groups: Dict[tuple[str, str, str], List[Dict[str, Any]]] = {}
+    order: List[tuple[str, str, str]] = []
+    shared_symbols = {CN_FUTURES_TAIL_HEDGE_SYMBOL, CN_FUTURES_SAFE_RESERVE_SYMBOL}
+    shared_buckets = {"TAIL_HEDGE", "SAFE_RESERVE"}
+
+    for action in actions:
+        market = str(action.get("market", "")).upper()
+        bucket = str(action.get("bucket_action") or action.get("action") or "").upper()
+        executable_action = str(action.get("action", "")).upper()
+        symbol = str(action.get("symbol", ""))
+        if market in CN_FUTURES_EXCHANGES and bucket in shared_buckets and symbol in shared_symbols:
+            key = (bucket, executable_action, symbol)
+            if key not in groups:
+                order.append(key)
+            groups.setdefault(key, []).append(action)
+            continue
+        consolidated.append(action)
+
+    exchange_rank = {exchange: idx for idx, exchange in enumerate(CN_FUTURES_EXCHANGES)}
+    for key in order:
+        group = groups[key]
+        if len(group) == 1:
+            consolidated.append(group[0])
+            continue
+
+        selected = max(
+            group,
+            key=lambda item: (
+                float(item.get("reference_close") or 0.0),
+                float(item.get("confidence") or 0.0),
+                -exchange_rank.get(str(item.get("market", "")).upper(), 999),
+            ),
+        )
+        source_markets = sorted(
+            {str(item.get("market", "")).upper() for item in group if item.get("market")},
+            key=lambda exchange: exchange_rank.get(exchange, 999),
+        )
+        target_weights = {
+            str(item.get("market", "")).upper(): float(item.get("target_weight", 0.0))
+            for item in group
+            if item.get("market")
+        }
+        reference_dates = {
+            str(item.get("market", "")).upper(): item.get("reference_date")
+            for item in group
+            if item.get("market")
+        }
+        merged = {
+            **selected,
+            "target_weight": max(float(item.get("target_weight", 0.0)) for item in group),
+            "source_markets": source_markets,
+            "source_target_weights": target_weights,
+            "source_reference_dates": reference_dates,
+            "consolidated_shared_futures_defensive_leg": True,
+            "consolidation_method": "max_target_weight",
+            "duplicate_count": len(group),
+            "execution_scope": "CN_FUTURES_SHARED",
+            "reason": (
+                f"{selected.get('reason', '')}；已合并 {len(group)} 个中国期货交易所共享防御腿，"
+                "按 max_target_weight 防止 AU0/CNY_CASH 重复下单。"
+            ),
+        }
+        consolidated.append(merged)
+
+    return consolidated
+
+
 def _futures_margin_fields(
     market: str,
     symbol: str,
@@ -1819,6 +1893,7 @@ def generate_report(target_day: date) -> Dict[str, Any]:
             ]
         )
 
+    futures_execution_actions = _consolidate_shared_futures_defensive_actions(futures_execution_actions)
     report["execution_actions"] = [
         *report["us_execution_actions"],
         *report["hk_execution_actions"],

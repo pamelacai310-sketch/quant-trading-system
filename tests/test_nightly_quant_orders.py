@@ -21,6 +21,7 @@ from quant_trade_system.nightly_quant_orders import (
     _build_evidence_snapshot,
     _build_instruction,
     _build_market_status,
+    _consolidate_shared_futures_defensive_actions,
     _build_recap,
     _evaluate_execution_actions,
     _fetch_futures_data,
@@ -295,6 +296,72 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertAlmostEqual(execution[0]["one_lot_min_margin"], 63_510.0, places=2)
         self.assertEqual(execution[0]["margin_formula"], "latest_price * contract_multiplier * margin_rate")
         self.assertEqual(execution[0]["margin_source"], "contract_specs")
+
+    def test_consolidate_shared_cn_futures_defensive_legs(self) -> None:
+        actions = [
+            {
+                "market": "SHFE",
+                "bucket_action": "TAIL_HEDGE",
+                "action": "LONG",
+                "symbol": "AU0",
+                "target_weight": 0.23,
+                "reference_close": 1082.4,
+                "reference_date": "2026-05-29",
+                "reason": "tail",
+            },
+            {
+                "market": "INE",
+                "bucket_action": "TAIL_HEDGE",
+                "action": "LONG",
+                "symbol": "AU0",
+                "target_weight": 0.23,
+                "reference_close": 1082.4,
+                "reference_date": "2026-05-29",
+                "reason": "tail",
+            },
+            {
+                "market": "DCE",
+                "bucket_action": "SAFE_RESERVE",
+                "action": "HOLD",
+                "symbol": "CNY_CASH",
+                "target_weight": 0.75,
+                "reference_close": 1.0,
+                "reference_date": "2026-05-29",
+                "reason": "cash",
+            },
+            {
+                "market": "GFEX",
+                "bucket_action": "SAFE_RESERVE",
+                "action": "HOLD",
+                "symbol": "CNY_CASH",
+                "target_weight": 0.77,
+                "reference_close": 1.0,
+                "reference_date": "2026-05-29",
+                "reason": "cash",
+            },
+            {
+                "market": "DCE",
+                "bucket_action": "LONG",
+                "action": "LONG",
+                "symbol": "I0",
+                "target_weight": 0.08,
+                "reference_close": 805.5,
+            },
+        ]
+
+        consolidated = _consolidate_shared_futures_defensive_actions(actions)
+
+        au0 = [item for item in consolidated if item.get("symbol") == "AU0"]
+        cash = [item for item in consolidated if item.get("symbol") == "CNY_CASH"]
+        active = [item for item in consolidated if item.get("symbol") == "I0"]
+        self.assertEqual(len(au0), 1)
+        self.assertEqual(len(cash), 1)
+        self.assertEqual(len(active), 1)
+        self.assertEqual(au0[0]["source_markets"], ["SHFE", "INE"])
+        self.assertTrue(au0[0]["consolidated_shared_futures_defensive_leg"])
+        self.assertEqual(cash[0]["target_weight"], 0.77)
+        self.assertEqual(cash[0]["consolidation_method"], "max_target_weight")
+        self.assertIn("防止 AU0/CNY_CASH 重复下单", au0[0]["reason"])
 
     def test_evaluate_execution_actions_quantifies_nav(self) -> None:
         actions = [
