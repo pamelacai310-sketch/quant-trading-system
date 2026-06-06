@@ -488,6 +488,75 @@ class NightlyQuantOrdersTests(unittest.TestCase):
             execution[0]["net_edge_gate"]["required_edge_bps"],
         )
 
+    def test_materialize_execution_actions_applies_mae_mfe_feedback(self) -> None:
+        actions = [
+            {
+                "action": "LONG",
+                "symbol": "00700.HK",
+                "target_weight": 0.15,
+                "confidence": 0.90,
+                "objective_score": 0.80,
+                "stop_loss_pct": 0.08,
+                "take_profit_pct": 0.03,
+                "mae_mfe_feedback": {
+                    "enabled": True,
+                    "sample_size": 5,
+                    "method": "mae_mfe_closed_trade_quantiles",
+                    "source_backtest_id": "bt1",
+                    "recommended_risk_limits": {
+                        "enabled": True,
+                        "sample_size": 5,
+                        "stop_loss_pct": 0.02,
+                        "take_profit_pct": 0.08,
+                        "trailing_activation_pct": 0.05,
+                        "trailing_stop_pct": 0.015,
+                    },
+                    "diagnostics": {"mfe_utilization_rate": 0.42},
+                },
+            }
+        ]
+        price_map = {"00700.HK": {"date": "2026-05-11", "close": 480.0}}
+
+        execution = _materialize_execution_actions(actions, "HK", price_map, "2026-05-11")
+
+        self.assertEqual(execution[0]["mae_mfe_risk_overlay"]["status"], "applied")
+        self.assertAlmostEqual(execution[0]["stop_loss_pct"], 0.02)
+        self.assertAlmostEqual(execution[0]["take_profit_pct"], 0.08)
+        self.assertAlmostEqual(execution[0]["trailing_activation_pct"], 0.05)
+        self.assertAlmostEqual(execution[0]["trailing_stop_pct"], 0.015)
+        line = _build_instruction(execution[0], 480.0)
+        self.assertIn("跟踪止盈", line)
+
+    def test_materialize_execution_actions_keeps_base_risk_when_mae_mfe_sample_short(self) -> None:
+        actions = [
+            {
+                "action": "LONG",
+                "symbol": "00700.HK",
+                "target_weight": 0.15,
+                "confidence": 0.90,
+                "objective_score": 0.80,
+                "stop_loss_pct": 0.08,
+                "take_profit_pct": 0.03,
+                "mae_mfe_feedback": {
+                    "enabled": True,
+                    "sample_size": 1,
+                    "recommended_risk_limits": {
+                        "enabled": True,
+                        "sample_size": 1,
+                        "stop_loss_pct": 0.02,
+                        "take_profit_pct": 0.08,
+                    },
+                },
+            }
+        ]
+        price_map = {"00700.HK": {"date": "2026-05-11", "close": 480.0}}
+
+        execution = _materialize_execution_actions(actions, "HK", price_map, "2026-05-11")
+
+        self.assertEqual(execution[0]["mae_mfe_risk_overlay"]["status"], "insufficient_samples")
+        self.assertAlmostEqual(execution[0]["stop_loss_pct"], 0.08)
+        self.assertAlmostEqual(execution[0]["take_profit_pct"], 0.03)
+
     def test_cycle_payload_primary_lines_follow_net_edge_gate(self) -> None:
         cycle = {
             "status": "ok",
@@ -1112,7 +1181,26 @@ class NightlyQuantOrdersTests(unittest.TestCase):
                         "required_edge_bps": 21.6,
                         "reason": "edge too weak",
                     },
-                }
+                },
+                {
+                    "market": "HK",
+                    "bucket_action": "CORE_SIGNAL",
+                    "action": "LONG",
+                    "symbol": "09988.HK",
+                    "target_weight": 0.10,
+                    "mae_mfe_risk_overlay": {
+                        "status": "applied",
+                        "applied": True,
+                        "sample_size": 6,
+                        "method": "mae_mfe_closed_trade_quantiles",
+                        "resolved_risk_limits": {
+                            "stop_loss_pct": 0.02,
+                            "take_profit_pct": 0.08,
+                            "trailing_activation_pct": 0.05,
+                            "trailing_stop_pct": 0.015,
+                        },
+                    },
+                },
             ],
             "market_data": {
                 "game_causal_analysis": {
@@ -1158,6 +1246,8 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertEqual(snapshot["sensitive_asset_confirmations"][0]["actionability"], "trade_allowed")
         self.assertEqual(snapshot["net_edge_execution_gate"]["rejected_count"], 1)
         self.assertEqual(snapshot["net_edge_execution_gate"]["rejected_actions"][0]["symbol"], "00700.HK")
+        self.assertEqual(snapshot["mae_mfe_risk_overlay"]["applied_count"], 1)
+        self.assertEqual(snapshot["mae_mfe_risk_overlay"]["applied_actions"][0]["stop_loss_pct"], 0.02)
 
 
 if __name__ == "__main__":

@@ -74,6 +74,7 @@ WEEKLY_ROBUSTNESS_PERIODS_PER_YEAR = 252
 WEEKLY_BREADTH_RATIO_FLOOR = 0.35
 MIN_NET_EDGE_BUFFER_BPS_ENV = "QTS_MIN_NET_EDGE_BUFFER_BPS"
 MIN_NET_EDGE_BUFFER_BPS_DEFAULT = 2.0
+MAE_MFE_MIN_SAMPLES_DEFAULT = 2
 
 
 @dataclass
@@ -1177,6 +1178,84 @@ def _active_signal_net_edge_gate(action: Dict[str, Any], market_upper: str) -> D
     }
 
 
+def _find_mae_mfe_feedback(action: Dict[str, Any]) -> Dict[str, Any]:
+    for candidate in [
+        action.get("mae_mfe_feedback"),
+        (action.get("risk_limits") or {}).get("mae_mfe_feedback") if isinstance(action.get("risk_limits"), dict) else None,
+        (action.get("risk_feedback") or {}).get("mae_mfe_feedback") if isinstance(action.get("risk_feedback"), dict) else None,
+    ]:
+        if isinstance(candidate, dict) and candidate:
+            return candidate
+    return {}
+
+
+def _bounded_pct(value: Any, fallback: Optional[float], lower: float, upper: float) -> Optional[float]:
+    if value is None:
+        return fallback
+    try:
+        parsed = abs(float(value))
+    except (TypeError, ValueError):
+        return fallback
+    if not np.isfinite(parsed):
+        return fallback
+    return float(np.clip(parsed, lower, upper))
+
+
+def _resolve_mae_mfe_risk_overlay(action: Dict[str, Any]) -> tuple[Dict[str, Optional[float]], Dict[str, Any]]:
+    base = {
+        "stop_loss_pct": _bounded_pct(action.get("stop_loss_pct"), None, 0.0, 1.0),
+        "take_profit_pct": _bounded_pct(action.get("take_profit_pct"), None, 0.0, 1.0),
+        "trailing_activation_pct": _bounded_pct(action.get("trailing_activation_pct"), None, 0.0, 1.0),
+        "trailing_stop_pct": _bounded_pct(action.get("trailing_stop_pct"), None, 0.0, 1.0),
+    }
+    feedback = _find_mae_mfe_feedback(action)
+    if not feedback:
+        return base, {"status": "missing", "applied": False, "reason": "动作未提供 MAE/MFE feedback。"}
+
+    recommended = feedback.get("recommended_risk_limits", feedback)
+    if not isinstance(recommended, dict):
+        return base, {"status": "invalid", "applied": False, "reason": "MAE/MFE feedback 缺少 recommended_risk_limits。"}
+    enabled = bool(feedback.get("enabled", recommended.get("enabled", False)))
+    sample_size = int(float(feedback.get("sample_size", recommended.get("sample_size", 0)) or 0))
+    risk_limits = action.get("risk_limits") if isinstance(action.get("risk_limits"), dict) else {}
+    min_samples = int(float(action.get("mae_mfe_min_samples", risk_limits.get("mae_mfe_min_samples", MAE_MFE_MIN_SAMPLES_DEFAULT)) or 0))
+    if not enabled:
+        return base, {
+            "status": "disabled",
+            "applied": False,
+            "sample_size": sample_size,
+            "min_samples": min_samples,
+            "reason": "MAE/MFE feedback 未启用。",
+        }
+    if sample_size < min_samples:
+        return base, {
+            "status": "insufficient_samples",
+            "applied": False,
+            "sample_size": sample_size,
+            "min_samples": min_samples,
+            "reason": "MAE/MFE feedback 样本不足，不覆盖夜报止损止盈。",
+        }
+
+    resolved = {
+        "stop_loss_pct": _bounded_pct(recommended.get("stop_loss_pct"), base["stop_loss_pct"], 0.015, 0.12),
+        "take_profit_pct": _bounded_pct(recommended.get("take_profit_pct"), base["take_profit_pct"], 0.025, 0.25),
+        "trailing_activation_pct": _bounded_pct(recommended.get("trailing_activation_pct"), base["trailing_activation_pct"], 0.025, 0.15),
+        "trailing_stop_pct": _bounded_pct(recommended.get("trailing_stop_pct"), base["trailing_stop_pct"], 0.012, 0.08),
+    }
+    return resolved, {
+        "status": "applied",
+        "applied": True,
+        "sample_size": sample_size,
+        "min_samples": min_samples,
+        "method": feedback.get("method", "mae_mfe_closed_trade_quantiles"),
+        "source_backtest_id": feedback.get("source_backtest_id"),
+        "base_risk_limits": {key: round(float(value), 6) if value is not None else None for key, value in base.items()},
+        "resolved_risk_limits": {key: round(float(value), 6) if value is not None else None for key, value in resolved.items()},
+        "diagnostics": feedback.get("diagnostics", {}),
+        "rule": "Profitable-trade MAE tightens hard stop; MFE utilization sets take-profit and trailing stop.",
+    }
+
+
 def _materialize_execution_actions(
     actions: List[Dict[str, Any]],
     market: str,
@@ -1274,16 +1353,19 @@ def _materialize_execution_actions(
                 }
             )
             continue
+        risk_params, risk_overlay = _resolve_mae_mfe_risk_overlay(action)
         futures_margin = _futures_margin_fields(market_upper, symbol, reference_close, action.get("margin_rate"))
         execution_actions.append(
             {
                 "market": market_upper,
                 "bucket_action": action_name,
                 **action,
+                **{key: value for key, value in risk_params.items() if value is not None},
                 "reference_close": reference_close,
                 "reference_date": str(snapshot.get("date")) if snapshot else target_date,
                 "return_model": "close_to_close",
                 "net_edge_gate": net_edge_gate,
+                "mae_mfe_risk_overlay": risk_overlay,
                 **futures_margin,
             }
         )
@@ -1455,6 +1537,37 @@ def _net_edge_gate_audit(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
         "rejected_actions": rejected[:12],
         "allowed_actions": allowed[:12],
         "gate": "Active signals must clear expected net edge after execution cost before entering executable orders.",
+    }
+
+
+def _mae_mfe_overlay_audit(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    counts: Dict[str, int] = defaultdict(int)
+    applied: List[Dict[str, Any]] = []
+    for action in actions:
+        overlay = action.get("mae_mfe_risk_overlay")
+        if not isinstance(overlay, dict):
+            continue
+        status = str(overlay.get("status", "unknown"))
+        counts[status] += 1
+        if bool(overlay.get("applied")):
+            resolved = overlay.get("resolved_risk_limits", {}) if isinstance(overlay.get("resolved_risk_limits"), dict) else {}
+            applied.append(
+                {
+                    "market": action.get("market"),
+                    "symbol": action.get("symbol"),
+                    "sample_size": overlay.get("sample_size"),
+                    "method": overlay.get("method"),
+                    "stop_loss_pct": resolved.get("stop_loss_pct"),
+                    "take_profit_pct": resolved.get("take_profit_pct"),
+                    "trailing_activation_pct": resolved.get("trailing_activation_pct"),
+                    "trailing_stop_pct": resolved.get("trailing_stop_pct"),
+                }
+            )
+    return {
+        "status_counts": dict(counts),
+        "applied_count": len(applied),
+        "applied_actions": applied[:12],
+        "gate": "MAE/MFE feedback may override stop/take/trailing parameters only when enabled and sample size is sufficient.",
     }
 
 
@@ -1744,19 +1857,26 @@ def _build_instruction(action: Dict[str, Any], last_close: float) -> str:
     action_name = str(action.get("action"))
     if action_name not in {"LONG", "SHORT"}:
         return f"{action_name} {action.get('symbol')} 权重 {float(action.get('target_weight', 0.0)) * 100:.1f}%"
-    stop_pct = float(action.get("stop_loss_pct", 0.0))
-    take_pct = float(action.get("take_profit_pct", 0.0))
+    stop_pct = float(_bounded_pct(action.get("stop_loss_pct"), 0.0, 0.0, 1.0) or 0.0)
+    take_pct = float(_bounded_pct(action.get("take_profit_pct"), 0.0, 0.0, 1.0) or 0.0)
+    trailing_activation = _bounded_pct(action.get("trailing_activation_pct"), None, 0.0, 1.0)
+    trailing_stop = _bounded_pct(action.get("trailing_stop_pct"), None, 0.0, 1.0)
     if action_name == "LONG":
         stop_price = last_close * (1.0 - stop_pct)
         take_price = last_close * (1.0 + take_pct)
     else:
         stop_price = last_close * (1.0 + stop_pct)
         take_price = last_close * (1.0 - take_pct)
+    trailing_text = (
+        f"，跟踪止盈 激活 {float(trailing_activation) * 100:.1f}% / 回撤 {float(trailing_stop) * 100:.1f}%"
+        if trailing_activation is not None and trailing_stop is not None
+        else ""
+    )
     return (
         f"{action_name} {action.get('symbol')} 参考入场 {last_close:.4f}，"
         f"止损 {stop_price:.4f}，止盈 {take_price:.4f}，"
         f"目标权重 {float(action.get('target_weight', 0.0)) * 100:.1f}%，"
-        f"置信度 {float(action.get('confidence', 0.0)):.2f}。"
+        f"置信度 {float(action.get('confidence', 0.0)):.2f}{trailing_text}。"
     )
 
 
@@ -1924,6 +2044,7 @@ def _build_evidence_snapshot(
         "instrument_registry": instrument_records,
         "causal_llm_audit": llm_audit_records,
         "net_edge_execution_gate": _net_edge_gate_audit(report.get("execution_actions", [])),
+        "mae_mfe_risk_overlay": _mae_mfe_overlay_audit(report.get("execution_actions", [])),
         "model_versions": model_records,
         "feature_lineage": feature_records,
         "position_constraints": {
@@ -2416,6 +2537,23 @@ def render_report_text(report: Dict[str, Any]) -> str:
                 "- 净边际执行门："
                 f"counts={net_edge_snapshot.get('decision_counts', {})} "
                 f"rejected={net_edge_snapshot.get('rejected_count', 0)}"
+                f"{example_text}"
+            )
+        mae_mfe_snapshot = snapshot.get("mae_mfe_risk_overlay", {})
+        if mae_mfe_snapshot:
+            applied = mae_mfe_snapshot.get("applied_actions", [])
+            example = applied[0] if applied else {}
+            example_text = (
+                f"；示例={example.get('symbol')} "
+                f"stop={float(example.get('stop_loss_pct', 0.0) or 0.0):.2%} "
+                f"take={float(example.get('take_profit_pct', 0.0) or 0.0):.2%}"
+                if example
+                else ""
+            )
+            lines.append(
+                "- MAE/MFE风险覆盖："
+                f"counts={mae_mfe_snapshot.get('status_counts', {})} "
+                f"applied={mae_mfe_snapshot.get('applied_count', 0)}"
                 f"{example_text}"
             )
         abstention_snapshot = snapshot.get("causal_abstention_gate", {})
