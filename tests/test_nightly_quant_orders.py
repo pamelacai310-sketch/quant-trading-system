@@ -22,6 +22,7 @@ from quant_trade_system.nightly_quant_orders import (
     _build_evidence_snapshot,
     _build_instruction,
     _build_market_status,
+    _build_weekly_robustness_validation,
     _build_weekly_optimization_recommendations,
     _consolidate_shared_futures_defensive_actions,
     _build_recap,
@@ -719,6 +720,15 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertAlmostEqual(review["combined_return"], 0.015899, places=6)
         self.assertAlmostEqual(review["cn_futures_return"], 0.031798, places=6)
         self.assertEqual(review["shfe_return"], review["cn_futures_return"])
+        self.assertEqual(
+            review["robustness_validation"]["promotion_decision"],
+            "OBSERVE_ONLY_INSUFFICIENT_SAMPLE",
+        )
+        self.assertEqual(review["robustness_validation"]["cpcv"]["status"], "insufficient_observations")
+        self.assertEqual(review["robustness_validation"]["effective_breadth"]["status"], "insufficient_observations")
+        self.assertTrue(
+            any(item["action"] == "extend_shadow_window_before_promotion" for item in review["optimization_recommendations"])
+        )
         self.assertTrue(review["optimization_recommendations"])
 
     def test_weekly_execution_review_flags_tail_hedge_cap_separately(self) -> None:
@@ -836,6 +846,48 @@ class NightlyQuantOrdersTests(unittest.TestCase):
             actions["raise_min_net_edge_bps"]["suggested_parameters"]["min_expected_net_edge_bps"],
             15.6,
         )
+
+    def test_weekly_robustness_validation_blocks_short_sample_promotion(self) -> None:
+        validation = _build_weekly_robustness_validation(
+            [
+                {
+                    "combined_return": 0.01,
+                    "hk": {"net_portfolio_return": 0.012},
+                    "cn_futures": {"net_portfolio_return": 0.008},
+                },
+                {
+                    "combined_return": -0.002,
+                    "hk": {"net_portfolio_return": -0.001},
+                    "cn_futures": {"net_portfolio_return": -0.003},
+                },
+            ],
+            {"net_portfolio_return": 0.008, "cost_drag_count": 0},
+        )
+
+        self.assertEqual(validation["observation_count"], 2)
+        self.assertEqual(validation["cpcv"]["status"], "insufficient_observations")
+        self.assertEqual(validation["deflated_sharpe_ratio"]["status"], "insufficient_observations")
+        self.assertEqual(validation["effective_breadth"]["status"], "insufficient_observations")
+        self.assertEqual(validation["promotion_decision"], "OBSERVE_ONLY_INSUFFICIENT_SAMPLE")
+
+    def test_weekly_recommendations_surface_robustness_gate_failures(self) -> None:
+        recommendations = _build_weekly_optimization_recommendations(
+            {"failure_attribution": [], "net_portfolio_return": 0.02},
+            {
+                "max_single_weight_ok": True,
+                "max_tail_hedge_weight_ok": True,
+                "max_futures_weight_ok": True,
+                "max_gross_weight_ok": True,
+            },
+            [{"report_date": "2026-05-29"}],
+            {
+                "promotion_decision": "NO_PROMOTION_ROBUSTNESS_GATE_FAILED",
+                "decision_reason": "CPCV 或 DSR 未通过。",
+            },
+        )
+
+        self.assertEqual(recommendations[0]["action"], "block_strategy_promotion_until_cpcv_dsr_pass")
+        self.assertEqual(recommendations[0]["severity"], "high")
 
     def test_render_report_text_marks_invalid_market_without_global_failure(self) -> None:
         report = {

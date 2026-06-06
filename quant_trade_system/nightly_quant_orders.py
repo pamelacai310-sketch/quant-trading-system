@@ -23,6 +23,7 @@ from .core.causal import (
     MacroEventStateEngine,
     SelfIteratingCausalEngine,
 )
+from .core.robustness import deflated_sharpe_ratio, effective_breadth, evaluate_cpcv_returns
 from .factors.factor_library import FactorLibrary
 from .futures_specs import build_one_lot_margin_table
 from .universe_provider import MarketUniverseProvider
@@ -68,6 +69,9 @@ DEFAULT_EXECUTION_COST_ASSUMPTIONS = {
     "CN_FUTURES": {"commission_bps": 0.8, "slippage_bps": 1.5, "impact_bps": 1.7},
     "DEFAULT": {"commission_bps": 2.0, "slippage_bps": 3.0, "impact_bps": 2.0},
 }
+WEEKLY_EFFECTIVE_TRIALS_ENV = "QTS_WEEKLY_EFFECTIVE_TRIALS"
+WEEKLY_ROBUSTNESS_PERIODS_PER_YEAR = 252
+WEEKLY_BREADTH_RATIO_FLOOR = 0.35
 
 
 @dataclass
@@ -2389,6 +2393,98 @@ def _fetch_historical_price_maps(
     return price_map
 
 
+def _build_weekly_robustness_validation(
+    day_reviews: List[Dict[str, Any]],
+    quality_metrics: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Validate weekly realized returns against overfitting and fake breadth."""
+
+    quality_metrics = quality_metrics or {}
+    combined_returns = pd.Series(
+        [float(day.get("combined_return", 0.0) or 0.0) for day in day_reviews],
+        dtype=float,
+        name="combined_net_return",
+    )
+    subportfolio_returns = pd.DataFrame(
+        {
+            "hk": [
+                float((day.get("hk") or {}).get("net_portfolio_return", (day.get("hk") or {}).get("portfolio_return", 0.0)) or 0.0)
+                for day in day_reviews
+            ],
+            "cn_futures": [
+                float(
+                    (day.get("cn_futures") or {}).get(
+                        "net_portfolio_return",
+                        (day.get("cn_futures") or {}).get("portfolio_return", 0.0),
+                    )
+                    or 0.0
+                )
+                for day in day_reviews
+            ],
+        }
+    )
+    effective_trials = int(
+        _env_float(WEEKLY_EFFECTIVE_TRIALS_ENV)
+        or max(1, len(day_reviews) * max(2, int(quality_metrics.get("cost_drag_count", 0) or 0) + 2))
+    )
+    cpcv = evaluate_cpcv_returns(
+        combined_returns,
+        n_groups=6,
+        test_group_count=2,
+        purge_window=2,
+        embargo_pct=0.01,
+        max_paths=30,
+        periods_per_year=WEEKLY_ROBUSTNESS_PERIODS_PER_YEAR,
+    )
+    dsr = deflated_sharpe_ratio(
+        combined_returns,
+        effective_trials=effective_trials,
+        periods_per_year=WEEKLY_ROBUSTNESS_PERIODS_PER_YEAR,
+    )
+    if len(subportfolio_returns) < 3:
+        breadth = {
+            "nominal_breadth": int(subportfolio_returns.shape[1]),
+            "average_abs_pairwise_correlation": None,
+            "effective_breadth": None,
+            "breadth_ratio": 0.0,
+            "status": "insufficient_observations",
+            "gate": "Effective breadth requires at least 3 realized review observations.",
+        }
+    else:
+        breadth = effective_breadth(subportfolio_returns)
+    breadth_ratio = float(breadth.get("breadth_ratio", 0.0) or 0.0)
+    net_return = float(quality_metrics.get("net_portfolio_return", 0.0) or 0.0)
+    cpcv_ready = cpcv.get("status") == "ready"
+    dsr_ready = dsr.get("status") == "ready"
+    if not cpcv_ready or not dsr_ready:
+        decision = "OBSERVE_ONLY_INSUFFICIENT_SAMPLE"
+        reason = "周度夜报收益序列不足以通过 CPCV/DSR 证明样本外稳健性，继续 shadow/review 累积样本。"
+    elif not bool(cpcv.get("passed")) or not bool(dsr.get("passed_dsr_95")):
+        decision = "NO_PROMOTION_ROBUSTNESS_GATE_FAILED"
+        reason = "CPCV 或 DSR 未通过，复杂策略/参数不得 promotion。"
+    elif breadth_ratio < WEEKLY_BREADTH_RATIO_FLOOR:
+        decision = "REDUCE_CORRELATED_BETS"
+        reason = "有效广度不足，名义 HK/CN_FUTURES 分散可能被相关性虚增。"
+    elif net_return <= 0:
+        decision = "NO_PROMOTION_EXECUTION_QUALITY"
+        reason = "净收益未转正，即使统计门控通过也不应放大仓位。"
+    else:
+        decision = "PROMOTION_ALLOWED"
+        reason = "CPCV、DSR、有效广度和净收益门控均未触发降级。"
+    return {
+        "return_series": "combined_net_return_close_to_close_proxy",
+        "observation_count": int(len(combined_returns)),
+        "effective_trials": effective_trials,
+        "periods_per_year": WEEKLY_ROBUSTNESS_PERIODS_PER_YEAR,
+        "cpcv": cpcv,
+        "deflated_sharpe_ratio": dsr,
+        "effective_breadth": breadth,
+        "promotion_decision": decision,
+        "decision_reason": reason,
+        "gate": "Weekly promotion requires enough observations, CPCV pass, DSR>=0.95, positive net return and non-fake breadth.",
+    }
+
+
 def generate_weekly_execution_review(
     week_start: date,
     week_end: date,
@@ -2512,10 +2608,12 @@ def generate_weekly_execution_review(
         max_drawdown = min(max_drawdown, drawdown)
 
     quality_metrics = _aggregate_weekly_quality_metrics(quality_rows)
+    robustness_validation = _build_weekly_robustness_validation(day_reviews, quality_metrics)
     optimization_recommendations = _build_weekly_optimization_recommendations(
         quality_metrics,
         constraint_checks,
         day_reviews,
+        robustness_validation,
     )
     return {
         "week_start": week_start.isoformat(),
@@ -2535,6 +2633,7 @@ def generate_weekly_execution_review(
         "max_drawdown": round(max_drawdown, 6),
         "constraint_checks": constraint_checks,
         "quality_metrics": quality_metrics,
+        "robustness_validation": robustness_validation,
         "optimization_recommendations": optimization_recommendations,
     }
 
@@ -2602,6 +2701,7 @@ def _build_weekly_optimization_recommendations(
     quality_metrics: Dict[str, Any],
     constraint_checks: Dict[str, bool],
     day_reviews: List[Dict[str, Any]],
+    robustness_validation: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     recommendations: List[Dict[str, Any]] = []
     failures = set(quality_metrics.get("failure_attribution", []) or [])
@@ -2609,6 +2709,50 @@ def _build_weekly_optimization_recommendations(
     slippage_bps = float(quality_metrics.get("slippage_bps", 0.0) or 0.0)
     net_return = float(quality_metrics.get("net_portfolio_return", 0.0) or 0.0)
     execution_cost = float(quality_metrics.get("execution_cost_return", 0.0) or 0.0)
+    robustness_validation = robustness_validation or {}
+    promotion_decision = str(robustness_validation.get("promotion_decision", ""))
+
+    if promotion_decision == "OBSERVE_ONLY_INSUFFICIENT_SAMPLE":
+        recommendations.append(
+            {
+                "action": "extend_shadow_window_before_promotion",
+                "severity": "medium",
+                "reason": robustness_validation.get(
+                    "decision_reason",
+                    "CPCV/DSR 样本不足，不能证明样本外稳健性。",
+                ),
+                "suggested_parameters": {
+                    "minimum_review_observations": 30,
+                    "required_gates": ["CPCV", "DSR", "effective_breadth", "net_return_after_costs"],
+                    "production_effect": "observe_only_no_weight_increase",
+                },
+            }
+        )
+    elif promotion_decision == "NO_PROMOTION_ROBUSTNESS_GATE_FAILED":
+        recommendations.append(
+            {
+                "action": "block_strategy_promotion_until_cpcv_dsr_pass",
+                "severity": "high",
+                "reason": robustness_validation.get("decision_reason", "CPCV/DSR 未通过。"),
+                "suggested_parameters": {
+                    "required_dsr_probability": 0.95,
+                    "required_cpcv_positive_path_rate": 0.60,
+                    "required_cpcv_p10_sharpe": ">0",
+                },
+            }
+        )
+    elif promotion_decision == "REDUCE_CORRELATED_BETS":
+        recommendations.append(
+            {
+                "action": "reduce_correlated_bets",
+                "severity": "medium",
+                "reason": robustness_validation.get("decision_reason", "有效广度不足。"),
+                "suggested_parameters": {
+                    "min_effective_breadth_ratio": WEEKLY_BREADTH_RATIO_FLOOR,
+                    "method": "democratic_orthogonalization_or_position_netting",
+                },
+            }
+        )
 
     if cost_drag_count > 0 or "cost_drag" in failures:
         min_net_edge_bps = round(max(slippage_bps * 1.20, slippage_bps + 2.0, 5.0), 2)
