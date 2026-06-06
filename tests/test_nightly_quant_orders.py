@@ -480,7 +480,7 @@ class NightlyQuantOrdersTests(unittest.TestCase):
                         "bucket_action": "TAIL_HEDGE",
                         "action": "LONG",
                         "symbol": "AU0",
-                        "target_weight": 0.05,
+                        "target_weight": 0.23,
                         "reference_close": 1000.0,
                         "return_model": "close_to_close",
                     },
@@ -489,7 +489,7 @@ class NightlyQuantOrdersTests(unittest.TestCase):
                         "bucket_action": "TAIL_HEDGE",
                         "action": "LONG",
                         "symbol": "AU0",
-                        "target_weight": 0.05,
+                        "target_weight": 0.23,
                         "reference_close": 1000.0,
                         "return_model": "close_to_close",
                     },
@@ -536,11 +536,57 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertEqual(futures_symbols_by_exchange["INE"], {"SC0"})
         self.assertIn("CN_FUTURES", review["aggregation_assumption"])
         self.assertAlmostEqual(review["days"][0]["cn_futures"]["portfolio_return"], 0.032222, places=6)
-        self.assertAlmostEqual(review["days"][0]["cn_futures"]["futures_weight"], 0.35)
+        self.assertAlmostEqual(review["days"][0]["cn_futures"]["futures_weight"], 0.53)
         self.assertEqual(len(review["days"][0]["cn_futures"]["details"]), 4)
+        self.assertTrue(review["constraint_checks"]["max_single_weight_ok"])
+        self.assertTrue(review["constraint_checks"]["max_tail_hedge_weight_ok"])
+        self.assertFalse(review["constraint_checks"]["max_futures_weight_ok"])
         self.assertAlmostEqual(review["combined_return"], 0.016111, places=6)
         self.assertAlmostEqual(review["cn_futures_return"], 0.032222, places=6)
         self.assertEqual(review["shfe_return"], review["cn_futures_return"])
+
+    def test_weekly_execution_review_flags_tail_hedge_cap_separately(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            report_dir = repo_root / "state" / "nightly_reports"
+            report_dir.mkdir(parents=True)
+            report = {
+                "report_date": "2026-05-25",
+                "execution_actions": [
+                    {
+                        "market": "HK",
+                        "bucket_action": "TAIL_HEDGE",
+                        "action": "LONG",
+                        "symbol": "02840.HK",
+                        "target_weight": 0.26,
+                        "reference_close": 100.0,
+                        "return_model": "close_to_close",
+                    },
+                    {
+                        "market": "HK",
+                        "bucket_action": "SAFE_RESERVE",
+                        "action": "HOLD",
+                        "symbol": "HKD_CASH",
+                        "target_weight": 0.74,
+                        "reference_close": 1.0,
+                        "return_model": "cash_flat",
+                    },
+                ],
+            }
+            (report_dir / "2026-05-25.json").write_text(json.dumps(report), encoding="utf-8")
+
+            with patch("quant_trade_system.nightly_quant_orders._repo_root", return_value=repo_root), patch(
+                "quant_trade_system.nightly_quant_orders._fetch_historical_price_maps",
+                return_value={"02840.HK": {"close": 100.0}, "HKD_CASH": {"close": 1.0}},
+            ):
+                review = generate_weekly_execution_review(
+                    date(2026, 5, 25),
+                    date(2026, 5, 29),
+                    evaluation_date=date(2026, 5, 29),
+                )
+
+        self.assertTrue(review["constraint_checks"]["max_single_weight_ok"])
+        self.assertFalse(review["constraint_checks"]["max_tail_hedge_weight_ok"])
 
     def test_weekly_quality_metrics_preserve_price_unavailable(self) -> None:
         metrics = _aggregate_weekly_quality_metrics(

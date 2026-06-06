@@ -53,6 +53,10 @@ FAILURE_SCHEDULER_NOT_RUN = "SCHEDULER_NOT_RUN"
 FAILURE_DATA_VALIDATION_PARTIAL = "DATA_VALIDATION_PARTIAL"
 FAILURE_ALL_MARKETS_INVALID = "ALL_MARKETS_INVALID"
 FAILURE_RUNTIME_EXCEPTION = "RUNTIME_EXCEPTION"
+MAX_ACTIVE_SINGLE_WEIGHT = 0.20
+MAX_TAIL_HEDGE_WEIGHT = 0.25
+MAX_FUTURES_GROSS_WEIGHT = 0.50
+MAX_MARKET_GROSS_WEIGHT = 1.00
 
 
 @dataclass
@@ -2200,6 +2204,7 @@ def generate_weekly_execution_review(
     quality_rows: List[Dict[str, float]] = []
     constraint_checks = {
         "max_single_weight_ok": True,
+        "max_tail_hedge_weight_ok": True,
         "max_futures_weight_ok": True,
         "max_gross_weight_ok": True,
     }
@@ -2247,11 +2252,19 @@ def generate_weekly_execution_review(
         for bucket in [hk_actions, cn_futures_actions]:
             for action in bucket:
                 weight = float(action.get("target_weight", 0.0))
+                bucket_action = str(action.get("bucket_action") or action.get("action") or "")
                 is_cash = action.get("return_model") == "cash_flat" or str(action.get("symbol")).endswith("_CASH")
-                if not is_cash:
-                    constraint_checks["max_single_weight_ok"] &= weight <= 0.20 + 1e-9
-        constraint_checks["max_futures_weight_ok"] &= cn_futures_eval["gross_weight"] <= 0.50 + 1e-9
-        constraint_checks["max_gross_weight_ok"] &= hk_eval["gross_weight"] <= 1.00 + 1e-9 and cn_futures_eval["gross_weight"] <= 1.00 + 1e-9
+                if is_cash:
+                    continue
+                if bucket_action == "TAIL_HEDGE":
+                    constraint_checks["max_tail_hedge_weight_ok"] &= weight <= MAX_TAIL_HEDGE_WEIGHT + 1e-9
+                else:
+                    constraint_checks["max_single_weight_ok"] &= weight <= MAX_ACTIVE_SINGLE_WEIGHT + 1e-9
+        constraint_checks["max_futures_weight_ok"] &= cn_futures_eval["gross_weight"] <= MAX_FUTURES_GROSS_WEIGHT + 1e-9
+        constraint_checks["max_gross_weight_ok"] &= (
+            hk_eval["gross_weight"] <= MAX_MARKET_GROSS_WEIGHT + 1e-9
+            and cn_futures_eval["gross_weight"] <= MAX_MARKET_GROSS_WEIGHT + 1e-9
+        )
 
         hk_nav *= 1.0 + float(hk_eval["portfolio_return"])
         cn_futures_nav *= 1.0 + float(cn_futures_eval["portfolio_return"])
