@@ -389,6 +389,9 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         current_prices = {"02840.HK": {"close": 110.0}, "HKD_CASH": {"close": 1.0}}
         summary = _evaluate_execution_actions(actions, current_prices)
         self.assertAlmostEqual(summary["portfolio_return"], 0.01)
+        self.assertAlmostEqual(summary["net_portfolio_return"], 0.00982)
+        self.assertAlmostEqual(summary["execution_cost_return"], 0.00018)
+        self.assertAlmostEqual(summary["slippage_bps"], 18.0)
         self.assertAlmostEqual(summary["gross_weight"], 0.1)
         self.assertEqual(summary["risk_asset_count"], 1)
         self.assertIn("elasticity", summary)
@@ -418,6 +421,9 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         summary = _evaluate_execution_actions(actions, current_prices)
 
         self.assertAlmostEqual(summary["portfolio_return"], 0.032222, places=6)
+        self.assertAlmostEqual(summary["net_portfolio_return"], 0.031982, places=6)
+        self.assertAlmostEqual(summary["execution_cost_return"], 0.00024, places=8)
+        self.assertAlmostEqual(summary["slippage_bps"], 8.0)
         self.assertAlmostEqual(summary["gross_weight"], 0.3)
         self.assertAlmostEqual(summary["futures_weight"], 0.3)
         self.assertEqual(summary["risk_asset_count"], 2)
@@ -536,13 +542,16 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertEqual(futures_symbols_by_exchange["INE"], {"SC0"})
         self.assertIn("CN_FUTURES", review["aggregation_assumption"])
         self.assertAlmostEqual(review["days"][0]["cn_futures"]["portfolio_return"], 0.032222, places=6)
+        self.assertAlmostEqual(review["days"][0]["cn_futures"]["net_portfolio_return"], 0.031798, places=6)
+        self.assertAlmostEqual(review["days"][0]["cn_futures"]["execution_cost_return"], 0.000424, places=8)
+        self.assertAlmostEqual(review["days"][0]["combined_gross_return"], 0.016111, places=6)
         self.assertAlmostEqual(review["days"][0]["cn_futures"]["futures_weight"], 0.53)
         self.assertEqual(len(review["days"][0]["cn_futures"]["details"]), 4)
         self.assertTrue(review["constraint_checks"]["max_single_weight_ok"])
         self.assertTrue(review["constraint_checks"]["max_tail_hedge_weight_ok"])
         self.assertFalse(review["constraint_checks"]["max_futures_weight_ok"])
-        self.assertAlmostEqual(review["combined_return"], 0.016111, places=6)
-        self.assertAlmostEqual(review["cn_futures_return"], 0.032222, places=6)
+        self.assertAlmostEqual(review["combined_return"], 0.015899, places=6)
+        self.assertAlmostEqual(review["cn_futures_return"], 0.031798, places=6)
         self.assertEqual(review["shfe_return"], review["cn_futures_return"])
 
     def test_weekly_execution_review_flags_tail_hedge_cap_separately(self) -> None:

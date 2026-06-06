@@ -57,6 +57,13 @@ MAX_ACTIVE_SINGLE_WEIGHT = 0.20
 MAX_TAIL_HEDGE_WEIGHT = 0.25
 MAX_FUTURES_GROSS_WEIGHT = 0.50
 MAX_MARKET_GROSS_WEIGHT = 1.00
+ROUND_TRIP_COST_MULTIPLIER = 2.0
+DEFAULT_EXECUTION_COST_ASSUMPTIONS = {
+    "US": {"commission_bps": 0.5, "slippage_bps": 1.5, "impact_bps": 1.0},
+    "HK": {"commission_bps": 4.0, "slippage_bps": 3.0, "impact_bps": 2.0},
+    "CN_FUTURES": {"commission_bps": 0.8, "slippage_bps": 1.5, "impact_bps": 1.7},
+    "DEFAULT": {"commission_bps": 2.0, "slippage_bps": 3.0, "impact_bps": 2.0},
+}
 
 
 @dataclass
@@ -1274,12 +1281,48 @@ def _compute_execution_action_return(action: Dict[str, Any], current_prices: Dic
     return 0.0
 
 
+def _execution_cost_components(action: Dict[str, Any], is_cash: bool) -> Dict[str, float]:
+    if is_cash:
+        return {
+            "commission_bps": 0.0,
+            "slippage_bps": 0.0,
+            "impact_bps": 0.0,
+            "total_bps": 0.0,
+            "round_trip_multiplier": 0.0,
+        }
+    market = str(action.get("market", "")).upper()
+    cost_key = "CN_FUTURES" if market in CN_FUTURES_EXCHANGES else market
+    defaults = dict(DEFAULT_EXECUTION_COST_ASSUMPTIONS.get(cost_key, DEFAULT_EXECUTION_COST_ASSUMPTIONS["DEFAULT"]))
+    overrides = action.get("execution_cost_assumption")
+    if isinstance(overrides, dict):
+        for key in ["commission_bps", "slippage_bps", "impact_bps"]:
+            if overrides.get(key) is not None:
+                defaults[key] = float(overrides[key])
+    for key in ["commission_bps", "slippage_bps", "impact_bps"]:
+        if action.get(key) is not None:
+            defaults[key] = float(action[key])
+
+    multiplier = float(action.get("round_trip_cost_multiplier", ROUND_TRIP_COST_MULTIPLIER) or 0.0)
+    commission_bps = max(0.0, float(defaults.get("commission_bps", 0.0))) * multiplier
+    slippage_bps = max(0.0, float(defaults.get("slippage_bps", 0.0))) * multiplier
+    impact_bps = max(0.0, float(defaults.get("impact_bps", 0.0))) * multiplier
+    total_bps = commission_bps + slippage_bps + impact_bps
+    return {
+        "commission_bps": round(commission_bps, 6),
+        "slippage_bps": round(slippage_bps, 6),
+        "impact_bps": round(impact_bps, 6),
+        "total_bps": round(total_bps, 6),
+        "round_trip_multiplier": round(multiplier, 6),
+    }
+
+
 def _evaluate_execution_actions(
     actions: List[Dict[str, Any]],
     current_prices: Dict[str, Dict[str, Any]],
 ) -> Dict[str, Any]:
     details: List[Dict[str, Any]] = []
     weighted_return = 0.0
+    execution_cost_return = 0.0
     gross_weight = 0.0
     futures_weight = 0.0
     realized_returns: List[float] = []
@@ -1306,10 +1349,16 @@ def _evaluate_execution_actions(
             continue
         weighted_return += weight * pnl
         if not is_cash:
+            cost = _execution_cost_components(action, is_cash)
+            action_cost_return = weight * float(cost["total_bps"]) / 10000.0
+            execution_cost_return += action_cost_return
             gross_weight += weight
             if str(action.get("market", "")).upper() in CN_FUTURES_EXCHANGES:
                 futures_weight += weight
             realized_returns.append(pnl)
+        else:
+            cost = _execution_cost_components(action, is_cash)
+            action_cost_return = 0.0
         details.append(
             {
                 "symbol": symbol,
@@ -1319,6 +1368,10 @@ def _evaluate_execution_actions(
                 "reference_close": float(action.get("reference_close", 0.0)),
                 "current_close": float(current_prices.get(symbol, {}).get("close", action.get("reference_close", 0.0))),
                 "return_pct": round(pnl, 6),
+                "net_return_pct": round(pnl - float(cost["total_bps"]) / 10000.0, 6) if not is_cash else round(pnl, 6),
+                "execution_cost_bps": float(cost["total_bps"]),
+                "execution_cost_return": round(action_cost_return, 8),
+                "execution_cost_components": cost,
                 "price_status": "ok",
             }
         )
@@ -1331,16 +1384,21 @@ def _evaluate_execution_actions(
     )
     avg_abs_return = float(sum(abs(item) for item in realized_returns) / len(realized_returns)) if realized_returns else 0.0
     elasticity = avg_abs_return / max(abs(weighted_return), 1e-9) if realized_returns and abs(weighted_return) > 1e-9 else 0.0
+    net_return = weighted_return - execution_cost_return
+    effective_cost_bps = execution_cost_return / max(gross_weight, 1e-9) * 10000.0 if gross_weight > 0 else 0.0
     return {
         "portfolio_return": round(weighted_return, 6),
+        "net_portfolio_return": round(net_return, 6),
+        "execution_cost_return": round(execution_cost_return, 8),
         "gross_weight": round(gross_weight, 6),
         "futures_weight": round(futures_weight, 6),
         "risk_asset_count": len(realized_returns),
         "win_rate": round(len(wins) / len(realized_returns), 6) if realized_returns else 0.0,
         "payoff_ratio": round(payoff_ratio, 6) if payoff_ratio != float("inf") else 999.0,
         "elasticity": round(float(elasticity), 6),
-        "slippage_bps": 0.0,
-        "execution_quality": "close_to_close_proxy",
+        "slippage_bps": round(float(effective_cost_bps), 6),
+        "execution_cost_model": "round_trip_close_to_close_proxy_v1",
+        "execution_quality": "close_to_close_net_of_cost_proxy",
         "price_unavailable_count": price_unavailable_count,
         "failure_attribution": (
             "price_unavailable"
@@ -2266,9 +2324,12 @@ def generate_weekly_execution_review(
             and cn_futures_eval["gross_weight"] <= MAX_MARKET_GROSS_WEIGHT + 1e-9
         )
 
-        hk_nav *= 1.0 + float(hk_eval["portfolio_return"])
-        cn_futures_nav *= 1.0 + float(cn_futures_eval["portfolio_return"])
-        combined_daily_return = 0.5 * float(hk_eval["portfolio_return"]) + 0.5 * float(cn_futures_eval["portfolio_return"])
+        hk_period_return = float(hk_eval.get("net_portfolio_return", hk_eval["portfolio_return"]))
+        cn_futures_period_return = float(cn_futures_eval.get("net_portfolio_return", cn_futures_eval["portfolio_return"]))
+        combined_gross_return = 0.5 * float(hk_eval["portfolio_return"]) + 0.5 * float(cn_futures_eval["portfolio_return"])
+        combined_daily_return = 0.5 * hk_period_return + 0.5 * cn_futures_period_return
+        hk_nav *= 1.0 + hk_period_return
+        cn_futures_nav *= 1.0 + cn_futures_period_return
         combined_nav *= 1.0 + combined_daily_return
         nav_curve.append(combined_nav)
 
@@ -2279,6 +2340,7 @@ def generate_weekly_execution_review(
                 "hk": hk_eval,
                 "cn_futures": cn_futures_eval,
                 "shfe": cn_futures_eval,
+                "combined_gross_return": round(combined_gross_return, 6),
                 "combined_return": round(combined_daily_return, 6),
                 "combined_nav": round(combined_nav, 6),
             }
@@ -2326,6 +2388,8 @@ def _aggregate_weekly_quality_metrics(rows: List[Dict[str, Any]]) -> Dict[str, A
             "payoff_ratio": 0.0,
             "elasticity": 0.0,
             "slippage_bps": 0.0,
+            "execution_cost_return": 0.0,
+            "net_portfolio_return": 0.0,
             "execution_quality": "no_directional_fill",
             "price_unavailable_count": price_unavailable_count,
             "failure_attribution": failures,
@@ -2335,6 +2399,11 @@ def _aggregate_weekly_quality_metrics(rows: List[Dict[str, Any]]) -> Dict[str, A
     win_rate = sum(float(row.get("win_rate", 0.0)) * weight for row, weight in zip(active, weights)) / total_weight
     payoff = sum(float(row.get("payoff_ratio", 0.0)) * weight for row, weight in zip(active, weights)) / total_weight
     elasticity = sum(float(row.get("elasticity", 0.0)) * weight for row, weight in zip(active, weights)) / total_weight
+    gross_weights = [float(row.get("gross_weight", 0.0) or 0.0) for row in active]
+    total_gross_weight = sum(gross_weights) or 1.0
+    slippage_bps = sum(float(row.get("slippage_bps", 0.0)) * weight for row, weight in zip(active, gross_weights)) / total_gross_weight
+    execution_cost_return = sum(float(row.get("execution_cost_return", 0.0) or 0.0) for row in active)
+    net_portfolio_return = sum(float(row.get("net_portfolio_return", row.get("portfolio_return", 0.0)) or 0.0) for row in active)
     failures = {str(row.get("failure_attribution")) for row in active if row.get("failure_attribution")}
     if price_unavailable_count:
         failures.add("price_unavailable")
@@ -2342,8 +2411,10 @@ def _aggregate_weekly_quality_metrics(rows: List[Dict[str, Any]]) -> Dict[str, A
         "win_rate": round(float(win_rate), 6),
         "payoff_ratio": round(float(payoff), 6),
         "elasticity": round(float(elasticity), 6),
-        "slippage_bps": 0.0,
-        "execution_quality": "close_to_close_proxy_until_broker_fills_are_connected",
+        "slippage_bps": round(float(slippage_bps), 6),
+        "execution_cost_return": round(float(execution_cost_return), 8),
+        "net_portfolio_return": round(float(net_portfolio_return), 6),
+        "execution_quality": "close_to_close_net_of_cost_proxy_until_broker_fills_are_connected",
         "price_unavailable_count": price_unavailable_count,
         "failure_attribution": sorted(failures),
     }
