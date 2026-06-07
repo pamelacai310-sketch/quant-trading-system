@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -242,15 +243,18 @@ def walk_forward_evaluate(
     spec: DCFuturesStrategySpec,
     cost_model: Optional[FuturesCostModel] = None,
     folds: int = 3,
+    random_trials: int = 128,
 ) -> Dict[str, Any]:
     cost_model = cost_model or FuturesCostModel()
     working = normalize_minute_frame(frame)
     fold_rows: List[Dict[str, Any]] = []
+    test_trade_sets: List[List[Dict[str, Any]]] = []
     for fold_index, train_start, train_end, test_end in _walk_forward_bounds(len(working), folds=folds):
         train_frame = working.iloc[train_start:train_end].copy()
         test_frame = working.iloc[train_end:test_end].copy()
         train = simulate_dc_strategy(train_frame, spec, cost_model=cost_model)
         test = simulate_dc_strategy(test_frame, spec, cost_model=cost_model)
+        test_trade_sets.append(list(test.get("trades", [])))
         fold_rows.append(
             {
                 "fold": fold_index,
@@ -268,13 +272,28 @@ def walk_forward_evaluate(
                 "test_trades": test["trade_count"],
             }
         )
-    return classify_walk_forward_result(spec, cost_model, fold_rows)
+    cost_sensitivity = cost_sensitivity_audit(test_trade_sets, cost_model)
+    random_control = random_direction_control(
+        test_trade_sets,
+        cost_model,
+        trials=random_trials,
+        seed=_stable_seed(asdict(spec)),
+    )
+    return classify_walk_forward_result(
+        spec,
+        cost_model,
+        fold_rows,
+        cost_sensitivity=cost_sensitivity,
+        random_control=random_control,
+    )
 
 
 def classify_walk_forward_result(
     spec: DCFuturesStrategySpec,
     cost_model: FuturesCostModel,
     folds: Sequence[Mapping[str, Any]],
+    cost_sensitivity: Optional[Mapping[str, Any]] = None,
+    random_control: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     test_returns = [_as_float(row.get("test_return")) for row in folds]
     train_returns = [_as_float(row.get("train_return")) for row in folds]
@@ -282,6 +301,7 @@ def classify_walk_forward_result(
     test_events = [int(_as_float(row.get("test_events"))) for row in folds]
     test_trades = [int(_as_float(row.get("test_trades"))) for row in folds]
     positive_folds = sum(1 for value in test_returns if value > 0)
+    target_capture_folds = sum(1 for value in captures if 0.05 <= value <= 0.20)
     passing_fold_events = [
         int(_as_float(row.get("test_events")))
         for row in folds
@@ -290,6 +310,7 @@ def classify_walk_forward_result(
     avg_train_return = float(np.mean(train_returns)) if train_returns else 0.0
     avg_test_return = float(np.mean(test_returns)) if test_returns else 0.0
     avg_test_capture = float(np.mean(captures)) if captures else 0.0
+    median_test_capture = float(np.median(captures)) if captures else 0.0
     min_passing_fold_events = min(passing_fold_events) if passing_fold_events else 0
     total_test_trades = int(sum(test_trades))
 
@@ -300,19 +321,39 @@ def classify_walk_forward_result(
         flags.append("NON_POSITIVE_EXPECTANCY")
     if not 0.05 <= avg_test_capture <= 0.20:
         flags.append("CAPTURE_OUT_OF_TARGET")
+    if target_capture_folds < 2:
+        flags.append("FOLD_CAPTURE_INSTABILITY")
+    if not 0.05 <= median_test_capture <= 0.20:
+        flags.append("MEDIAN_CAPTURE_OUT_OF_TARGET")
     if min(test_events or [0]) < 20:
         flags.append("LOW_EVENT_COUNT")
     if total_test_trades < 30:
         flags.append("LOW_TRADE_COUNT")
     if avg_train_return <= 0 < avg_test_return:
         flags.append("TRAIN_TEST_DIVERGENCE")
-    if positive_folds >= 2 and (avg_test_return <= 0 or not 0.05 <= avg_test_capture <= 0.20):
+    stress_1_5x = cost_sensitivity.get("cost_1_5x", {}) if isinstance(cost_sensitivity, Mapping) else {}
+    if (
+        isinstance(cost_sensitivity, Mapping)
+        and isinstance(stress_1_5x, Mapping)
+        and _as_float(stress_1_5x.get("avg_return")) <= 0
+    ):
+        flags.append("COST_STRESS_FAIL")
+    if isinstance(random_control, Mapping) and not bool(random_control.get("beats_p95", False)):
+        flags.append("RANDOM_CONTROL_NOT_BEATEN")
+    if positive_folds >= 2 and (
+        avg_test_return <= 0
+        or not 0.05 <= avg_test_capture <= 0.20
+        or target_capture_folds < 2
+        or not 0.05 <= median_test_capture <= 0.20
+    ):
         flags.append("UNSTABLE_FOLD_EDGE")
 
     strict_pass = (
         positive_folds >= 2
         and avg_test_return > 0
         and 0.05 <= avg_test_capture <= 0.20
+        and target_capture_folds >= 2
+        and 0.05 <= median_test_capture <= 0.20
         and min_passing_fold_events >= 20
         and total_test_trades >= 30
         and not flags
@@ -333,13 +374,80 @@ def classify_walk_forward_result(
             "avg_train_return": avg_train_return,
             "avg_test_return": avg_test_return,
             "avg_test_capture_ratio": avg_test_capture,
+            "median_test_capture_ratio": median_test_capture,
             "positive_test_folds": positive_folds,
+            "target_capture_folds": target_capture_folds,
             "min_test_events": min(test_events or [0]),
             "min_passing_fold_events": min_passing_fold_events,
             "total_test_trades": total_test_trades,
+            "cost_1_5x_avg_return": _as_float(stress_1_5x.get("avg_return")) if isinstance(stress_1_5x, Mapping) else 0.0,
+            "random_control_p_value": _as_float(random_control.get("p_value")) if isinstance(random_control, Mapping) else 1.0,
         },
+        "cost_sensitivity": dict(cost_sensitivity or {}),
+        "random_direction_control": dict(random_control or {}),
         "cost_model": asdict(cost_model) | {"round_trip_cost_bps": cost_model.round_trip_cost_bps},
-        "gate": "PASS requires positive OOS expectancy, 5%-20% capture, sufficient events/trades, and no bias flags.",
+        "gate": "PASS requires positive OOS expectancy, stable 5%-20% capture, cost-stress survival, random-control edge, sufficient events/trades, and no bias flags.",
+    }
+
+
+def cost_sensitivity_audit(
+    trade_sets: Sequence[Sequence[Mapping[str, Any]]],
+    cost_model: FuturesCostModel,
+    multipliers: Sequence[float] = (1.0, 1.5, 2.0),
+) -> Dict[str, Any]:
+    audit: Dict[str, Any] = {}
+    for multiplier in multipliers:
+        round_trip_cost_bps = cost_model.round_trip_cost_bps * float(multiplier)
+        fold_returns = [
+            _compound_trades_with_cost(trades, round_trip_cost_bps, randomize_direction=False)
+            for trades in trade_sets
+        ]
+        key = f"cost_{str(multiplier).replace('.', '_')}x"
+        audit[key] = {
+            "round_trip_cost_bps": float(round_trip_cost_bps),
+            "avg_return": float(np.mean(fold_returns)) if fold_returns else 0.0,
+            "min_return": float(np.min(fold_returns)) if fold_returns else 0.0,
+            "positive_folds": int(sum(1 for value in fold_returns if value > 0)),
+            "fold_returns": [float(value) for value in fold_returns],
+        }
+    return audit
+
+
+def random_direction_control(
+    trade_sets: Sequence[Sequence[Mapping[str, Any]]],
+    cost_model: FuturesCostModel,
+    trials: int = 128,
+    seed: int = 0,
+) -> Dict[str, Any]:
+    actual_fold_returns = [
+        _compound_trades_with_cost(trades, cost_model.round_trip_cost_bps, randomize_direction=False)
+        for trades in trade_sets
+    ]
+    actual_avg_return = float(np.mean(actual_fold_returns)) if actual_fold_returns else 0.0
+    effective_trials = max(int(trials), 1)
+    rng = np.random.default_rng(seed)
+    null_returns: List[float] = []
+    for _ in range(effective_trials):
+        fold_returns = [
+            _compound_trades_with_cost(
+                trades,
+                cost_model.round_trip_cost_bps,
+                randomize_direction=True,
+                rng=rng,
+            )
+            for trades in trade_sets
+        ]
+        null_returns.append(float(np.mean(fold_returns)) if fold_returns else 0.0)
+    null_array = np.asarray(null_returns, dtype=float)
+    p95 = float(np.percentile(null_array, 95)) if len(null_array) else 0.0
+    return {
+        "actual_avg_return": actual_avg_return,
+        "null_mean_return": float(np.mean(null_array)) if len(null_array) else 0.0,
+        "null_p95_return": p95,
+        "p_value": float((np.sum(null_array >= actual_avg_return) + 1) / (len(null_array) + 1)) if len(null_array) else 1.0,
+        "beats_p95": bool(actual_avg_return > p95),
+        "trials": effective_trials,
+        "method": "same_entry_exit_random_long_short_direction",
     }
 
 
@@ -354,6 +462,7 @@ def scan_futures_dc_strategies(
     cost_model: Optional[FuturesCostModel] = None,
     folds: int = 3,
     max_candidates: Optional[int] = None,
+    random_trials: int = 128,
 ) -> List[Dict[str, Any]]:
     cost_model = cost_model or FuturesCostModel()
     results: List[Dict[str, Any]] = []
@@ -376,7 +485,15 @@ def scan_futures_dc_strategies(
                                     time_filter=str(time_filter),
                                     event_spacing_bars=int(spacing),
                                 )
-                                results.append(walk_forward_evaluate(normalized, spec, cost_model=cost_model, folds=folds))
+                                results.append(
+                                    walk_forward_evaluate(
+                                        normalized,
+                                        spec,
+                                        cost_model=cost_model,
+                                        folds=folds,
+                                        random_trials=random_trials,
+                                    )
+                                )
                                 if max_candidates is not None and len(results) >= max_candidates:
                                     return rank_research_results(results)
     return rank_research_results(results)
@@ -433,13 +550,13 @@ def build_research_report(results: Sequence[Mapping[str, Any]], generated_at: Op
         f"- Candidates scanned: {len(ranked)}",
         f"- PASS: {pass_count}",
         f"- WATCH: {watch_count}",
-        "- Gate: OOS net positive, capture_ratio in 5%-20%, event/trade sufficiency, no bias flags.",
+        "- Gate: OOS net positive, average and median capture_ratio in 5%-20%, at least two target-capture folds, positive 1.5x-cost stress, random-direction control beaten, event/trade sufficiency, no bias flags.",
         "- Trading rule: DC confirmation is tradable only from the next bar open.",
         "",
         "## Top Candidates",
         "",
-        "| status | symbol | family | theta_bps | filters | avg_test_return | avg_capture | trades | reasons |",
-        "|---|---:|---|---:|---|---:|---:|---:|---|",
+        "| status | symbol | family | theta_bps | filters | avg_test_return | avg_capture | stress_1_5x | rand_p | trades | reasons |",
+        "|---|---:|---|---:|---|---:|---:|---:|---:|---:|---|",
     ]
     for row in ranked[:25]:
         spec = row.get("spec", {}) if isinstance(row.get("spec"), Mapping) else {}
@@ -454,7 +571,7 @@ def build_research_report(results: Sequence[Mapping[str, Any]], generated_at: Op
         )
         reasons = ",".join(str(reason) for reason in row.get("failure_reasons", []))
         lines.append(
-            "| {status} | {symbol} | {family} | {theta:.1f} | {filters} | {ret:.4%} | {capture:.2%} | {trades} | {reasons} |".format(
+            "| {status} | {symbol} | {family} | {theta:.1f} | {filters} | {ret:.4%} | {capture:.2%} | {stress:.4%} | {rand_p:.3f} | {trades} | {reasons} |".format(
                 status=row.get("status", ""),
                 symbol=spec.get("symbol", ""),
                 family=spec.get("family", ""),
@@ -462,6 +579,8 @@ def build_research_report(results: Sequence[Mapping[str, Any]], generated_at: Op
                 filters=filters,
                 ret=_as_float(summary.get("avg_test_return")),
                 capture=_as_float(summary.get("avg_test_capture_ratio")),
+                stress=_as_float(summary.get("cost_1_5x_avg_return")),
+                rand_p=_as_float(summary.get("random_control_p_value"), 1.0),
                 trades=int(_as_float(summary.get("total_test_trades"))),
                 reasons=reasons or "-",
             )
@@ -471,7 +590,7 @@ def build_research_report(results: Sequence[Mapping[str, Any]], generated_at: Op
             "",
             "## Interpretation",
             "",
-            "PASS means the fragment survived the strict research gate. WATCH means the path fragment is interesting but still fails at least one gate, usually event count, train/test stability, or target capture band. FAIL means it is not evidence of a repeatable edge.",
+            "PASS means the fragment survived the strict research gate. WATCH means the path fragment is interesting but still fails at least one gate, usually event count, train/test stability, target capture band, cost stress, or random-direction control. FAIL means it is not evidence of a repeatable edge.",
             "",
         ]
     )
@@ -586,6 +705,29 @@ def _close_trade(
     return float(equity * (1.0 + net_return))
 
 
+def _compound_trades_with_cost(
+    trades: Sequence[Mapping[str, Any]],
+    round_trip_cost_bps: float,
+    randomize_direction: bool,
+    rng: Optional[np.random.Generator] = None,
+) -> float:
+    equity = 1.0
+    cost = max(_as_float(round_trip_cost_bps), 0.0) / 10_000.0
+    for trade in trades:
+        entry_price = max(_as_float(trade.get("entry_price")), 1e-12)
+        exit_price = _as_float(trade.get("exit_price"))
+        raw_return = exit_price / entry_price - 1.0
+        if randomize_direction:
+            if rng is None:
+                raise ValueError("rng is required when randomize_direction=True")
+            position = 1.0 if int(rng.integers(0, 2)) == 1 else -1.0
+        else:
+            position = 1.0 if str(trade.get("side")) == "long" else -1.0
+        net_return = raw_return * position - cost
+        equity *= max(1.0 + net_return, 1e-9)
+    return float(equity - 1.0)
+
+
 def _position_for_event(event: DCEvent, family: str) -> int:
     if family == "dc_continuation":
         return 1 if event.kind == "DC_UP" else -1
@@ -691,6 +833,12 @@ def _rolling_percentile(values: np.ndarray, window: int) -> np.ndarray:
             continue
         out[index] = float(np.mean(sample <= value))
     return out
+
+
+def _stable_seed(payload: Mapping[str, Any]) -> int:
+    text = json.dumps(_json_safe(dict(payload)), ensure_ascii=True, sort_keys=True)
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return int(digest[:16], 16) % (2**32)
 
 
 def _json_safe(value: Any) -> Any:

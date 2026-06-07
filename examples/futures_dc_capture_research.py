@@ -24,6 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-contracts", type=int, default=None, help="Limit fetched main contracts.")
     parser.add_argument("--quick", action="store_true", help="Use a smaller parameter grid for a fast smoke run.")
     parser.add_argument("--min-bars", type=int, default=180, help="Skip contracts with fewer bars.")
+    parser.add_argument("--random-trials", type=int, default=128, help="Random-direction control trials per candidate.")
     parser.add_argument("--state-dir", default="state", help="Directory for JSON candidate output.")
     parser.add_argument("--report-path", default="FUTURES_DC_CAPTURE_REPORT.md", help="Markdown report path.")
     return parser.parse_args()
@@ -48,9 +49,10 @@ def main() -> int:
             time_filters=("all", "day", "night"),
             event_spacing_bars_values=(0, 4),
             cost_model=FuturesCostModel(),
+            random_trials=args.random_trials,
         )
     else:
-        results = scan_futures_dc_strategies(frames, cost_model=FuturesCostModel())
+        results = scan_futures_dc_strategies(frames, cost_model=FuturesCostModel(), random_trials=args.random_trials)
 
     paths = write_research_outputs(results, state_dir=args.state_dir, report_path=args.report_path)
     pass_count = sum(1 for row in results if row.get("status") == "PASS")

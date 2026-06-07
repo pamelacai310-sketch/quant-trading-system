@@ -25,7 +25,7 @@ from .core.causal import (
 )
 from .core.robustness import deflated_sharpe_ratio, effective_breadth, evaluate_cpcv_returns
 from .factors.factor_library import FactorLibrary
-from .futures_specs import build_one_lot_margin_table
+from .futures_specs import build_one_lot_margin_table, normalize_futures_symbol
 from .path_capture import capture_target_status, dc_path_summary
 from .universe_provider import MarketUniverseProvider
 
@@ -41,6 +41,7 @@ HK_TAIL_HEDGE_SYMBOL = "02840.HK"
 HK_SAFE_RESERVE_SYMBOL = "HKD_CASH"
 CN_FUTURES_TAIL_HEDGE_SYMBOL = "AU0"
 CN_FUTURES_SAFE_RESERVE_SYMBOL = "CNY_CASH"
+FUTURES_DC_CANDIDATES_FILENAME = "futures_dc_capture_candidates.json"
 SHFE_TAIL_HEDGE_SYMBOL = CN_FUTURES_TAIL_HEDGE_SYMBOL
 SHFE_SAFE_RESERVE_SYMBOL = CN_FUTURES_SAFE_RESERVE_SYMBOL
 US_EXECUTION_SUPPORT_UNIVERSE = [US_TAIL_HEDGE_SYMBOL]
@@ -126,6 +127,101 @@ def _cn_futures_exchange_universe() -> Dict[str, List[str]]:
         exchange: sorted(symbols)
         for exchange, symbols in grouped.items()
         if exchange in CN_FUTURES_EXCHANGES
+    }
+
+
+def _merge_symbol_tags(target: Dict[str, List[str]], source: Dict[str, Iterable[str]]) -> Dict[str, List[str]]:
+    merged = {symbol: list(tags) for symbol, tags in target.items()}
+    for symbol, tags in source.items():
+        existing = {str(item) for item in merged.get(symbol, [])}
+        existing.update(str(item) for item in tags)
+        merged[symbol] = sorted(existing)
+    return merged
+
+
+def _load_futures_dc_overlay(repo_root: Path, futures_universe_by_exchange: Dict[str, List[str]]) -> Dict[str, Any]:
+    candidate_path = repo_root / "state" / FUTURES_DC_CANDIDATES_FILENAME
+    allowed_symbols = {symbol.upper() for symbols in futures_universe_by_exchange.values() for symbol in symbols}
+    if not candidate_path.exists():
+        return {
+            "status": "missing",
+            "source": str(candidate_path),
+            "pass_count": 0,
+            "watch_count": 0,
+            "symbol_multipliers": {},
+            "symbol_tags": {},
+            "top_candidates": [],
+            "gate": "No futures DC path-capture candidate file found; overlay disabled.",
+        }
+    try:
+        raw = json.loads(candidate_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "status": "invalid",
+            "source": str(candidate_path),
+            "reason": str(exc),
+            "pass_count": 0,
+            "watch_count": 0,
+            "symbol_multipliers": {},
+            "symbol_tags": {},
+            "top_candidates": [],
+            "gate": "Invalid futures DC candidate file; overlay disabled.",
+        }
+    rows = raw if isinstance(raw, list) else []
+    best_pass: Dict[str, Dict[str, Any]] = {}
+    watch_candidates: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        spec = row.get("spec", {}) if isinstance(row.get("spec"), dict) else {}
+        summary = row.get("summary", {}) if isinstance(row.get("summary"), dict) else {}
+        contract_symbol = str(spec.get("symbol", ""))
+        product = normalize_futures_symbol(contract_symbol)
+        if not product:
+            continue
+        continuous_symbol = f"{product}0"
+        if allowed_symbols and continuous_symbol.upper() not in allowed_symbols:
+            continue
+        status = str(row.get("status", "")).upper()
+        avg_return = float(summary.get("avg_test_return", 0.0) or 0.0)
+        capture = float(summary.get("avg_test_capture_ratio", 0.0) or 0.0)
+        record = {
+            "symbol": continuous_symbol,
+            "contract_symbol": contract_symbol,
+            "status": status,
+            "family": spec.get("family"),
+            "theta_bps": spec.get("theta_bps"),
+            "avg_test_return": round(avg_return, 8),
+            "avg_test_capture_ratio": round(capture, 6),
+            "total_test_trades": int(float(summary.get("total_test_trades", 0) or 0)),
+            "failure_reasons": list(row.get("failure_reasons", []) or []),
+        }
+        if status == "PASS" and avg_return > 0 and 0.05 <= capture <= 0.20:
+            current = best_pass.get(continuous_symbol)
+            if current is None or avg_return > float(current.get("avg_test_return", 0.0) or 0.0):
+                best_pass[continuous_symbol] = record
+        elif status == "WATCH":
+            watch_candidates.append(record)
+
+    symbol_multipliers = {
+        symbol: round(float(1.0 + np.clip(float(record["avg_test_return"]) * 5.0, 0.03, 0.15)), 6)
+        for symbol, record in best_pass.items()
+    }
+    symbol_tags = {
+        symbol: ["dc_path_capture_pass", f"dc_family_{record.get('family', 'unknown')}"]
+        for symbol, record in best_pass.items()
+    }
+    top_candidates = sorted(best_pass.values(), key=lambda item: float(item.get("avg_test_return", 0.0)), reverse=True)
+    return {
+        "status": "ready",
+        "source": str(candidate_path),
+        "pass_count": len(best_pass),
+        "watch_count": len(watch_candidates),
+        "symbol_multipliers": symbol_multipliers,
+        "symbol_tags": symbol_tags,
+        "top_candidates": top_candidates[:12],
+        "watch_candidates": sorted(watch_candidates, key=lambda item: float(item.get("avg_test_return", 0.0)), reverse=True)[:12],
+        "gate": "Only PASS candidates with positive OOS return and 5%-20% capture ratio can boost futures momentum factors.",
     }
 
 
@@ -1083,6 +1179,7 @@ def _build_market_context(
         "dominant_game_logics": game_analysis.get("dominant_game_logics", []),
         "game_relation_reports": game_analysis.get("game_relation_reports", []),
         "macro_event_state": macro_event_state,
+        "futures_dc_overlay": market_context.get("futures_dc_overlay", {}),
     }
     return market_context, market_data
 
@@ -2149,6 +2246,7 @@ def _build_evidence_snapshot(
         "event_intensity": game_analysis.get("event_intensity", {}),
         "event_driven_causal_chains": game_analysis.get("event_causal_chains", [])[:10],
         "macro_event_state": market_data.get("macro_event_state", {}),
+        "futures_dc_overlay": market_data.get("futures_dc_overlay", {}),
         "sensitive_asset_confirmations": [
             {
                 "relation_id": item.get("relation_id"),
@@ -2335,6 +2433,12 @@ def generate_report(target_day: date) -> Dict[str, Any]:
         copper_peer,
     )
     macro_event_inputs = _build_macro_event_inputs(yf, futures_market_data)
+    futures_dc_overlay = _load_futures_dc_overlay(repo_root, futures_universe_by_exchange)
+    macro_event_inputs["futures_dc_overlay"] = futures_dc_overlay
+    macro_event_inputs["symbol_tags"] = _merge_symbol_tags(
+        macro_event_inputs.get("symbol_tags", {}) if isinstance(macro_event_inputs.get("symbol_tags"), dict) else {},
+        futures_dc_overlay.get("symbol_tags", {}) if isinstance(futures_dc_overlay.get("symbol_tags"), dict) else {},
+    )
     market_context, market_data = _build_market_context(
         cross_asset_engine,
         qqq,
@@ -2646,6 +2750,23 @@ def render_report_text(report: Dict[str, Any]) -> str:
                 f"rate_sensitive={float(overlays.get('rate_sensitive_multiplier', 1.0) or 1.0):.2f} "
                 f"vol={float(overlays.get('volatility_multiplier', 1.0) or 1.0):.2f} "
                 f"alerts={len(alerts)}"
+            )
+        futures_dc_snapshot = snapshot.get("futures_dc_overlay", {})
+        if futures_dc_snapshot:
+            top = futures_dc_snapshot.get("top_candidates", [])
+            example = top[0] if top else {}
+            example_text = (
+                f"；top={example.get('symbol')} {float(example.get('avg_test_return', 0.0) or 0.0):.2%}/"
+                f"capture={float(example.get('avg_test_capture_ratio', 0.0) or 0.0):.2%}"
+                if example
+                else ""
+            )
+            lines.append(
+                "- 期货DC路径捕获："
+                f"status={futures_dc_snapshot.get('status')} "
+                f"PASS={futures_dc_snapshot.get('pass_count', 0)} "
+                f"WATCH={futures_dc_snapshot.get('watch_count', 0)}"
+                f"{example_text}"
             )
         net_edge_snapshot = snapshot.get("net_edge_execution_gate", {})
         if net_edge_snapshot:

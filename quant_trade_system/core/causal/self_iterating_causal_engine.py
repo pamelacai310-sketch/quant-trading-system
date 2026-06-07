@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 from ...factors.factor_library import FactorLibrary
+from ...futures_specs import normalize_futures_symbol
 from ..robustness import democratic_orthogonalize, effective_breadth, shapley_deployment_policy
 from .causal_factor_library import AssetClass, CausalFactorLibrary
 from .causal_graph_layer import CausalDAGEdge, CausalGraphLayer
@@ -1469,6 +1470,18 @@ class SelfIteratingCausalEngine:
             multiplier *= float(overlays.get("volatility_multiplier", 1.0) or 1.0)
         if is_fx_sensitive:
             multiplier *= float(overlays.get("fx_cny_resilience_multiplier", 1.0) or 1.0)
+        dc_overlay = market_context.get("futures_dc_overlay", {})
+        if isinstance(dc_overlay, dict) and is_momentum:
+            symbol_multipliers = dc_overlay.get("symbol_multipliers", {})
+            if isinstance(symbol_multipliers, dict):
+                product_symbol = f"{normalize_futures_symbol(symbol_upper)}0"
+                dc_multiplier = (
+                    symbol_multipliers.get(symbol)
+                    or symbol_multipliers.get(symbol_upper)
+                    or symbol_multipliers.get(product_symbol)
+                    or 1.0
+                )
+                multiplier *= float(dc_multiplier or 1.0)
         return round(float(np.clip(multiplier, 0.35, 1.75)), 6)
 
     def _evaluate_objective(
