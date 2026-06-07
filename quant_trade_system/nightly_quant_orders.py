@@ -26,6 +26,7 @@ from .core.causal import (
 from .core.robustness import deflated_sharpe_ratio, effective_breadth, evaluate_cpcv_returns
 from .factors.factor_library import FactorLibrary
 from .futures_specs import build_one_lot_margin_table
+from .path_capture import capture_target_status, dc_path_summary
 from .universe_provider import MarketUniverseProvider
 
 
@@ -72,6 +73,9 @@ DEFAULT_EXECUTION_COST_ASSUMPTIONS = {
 WEEKLY_EFFECTIVE_TRIALS_ENV = "QTS_WEEKLY_EFFECTIVE_TRIALS"
 WEEKLY_ROBUSTNESS_PERIODS_PER_YEAR = 252
 WEEKLY_BREADTH_RATIO_FLOOR = 0.35
+WEEKLY_PATH_CAPTURE_THETA_BPS_ENV = "QTS_WEEKLY_PATH_CAPTURE_THETA_BPS"
+WEEKLY_PATH_CAPTURE_THETA_BPS_DEFAULT = 25.0
+WEEKLY_PATH_CAPTURE_MIN_OBSERVATIONS = 4
 MIN_NET_EDGE_BUFFER_BPS_ENV = "QTS_MIN_NET_EDGE_BUFFER_BPS"
 MIN_NET_EDGE_BUFFER_BPS_DEFAULT = 2.0
 MAE_MFE_MIN_SAMPLES_DEFAULT = 2
@@ -2897,6 +2901,46 @@ def _build_weekly_robustness_validation(
     }
 
 
+def _build_weekly_path_capture_metrics(nav_curve: List[float], combined_return: float) -> Dict[str, Any]:
+    theta_bps = float(_env_float(WEEKLY_PATH_CAPTURE_THETA_BPS_ENV) or WEEKLY_PATH_CAPTURE_THETA_BPS_DEFAULT)
+    clean_curve = [float(value) for value in nav_curve if np.isfinite(float(value)) and float(value) > 0]
+    if len(clean_curve) < WEEKLY_PATH_CAPTURE_MIN_OBSERVATIONS:
+        return {
+            "status": "insufficient_observations",
+            "observation_count": len(clean_curve),
+            "theta_bps": theta_bps,
+            "capture_ratio": 0.0,
+            "capture_status": "INSUFFICIENT",
+            "gate": (
+                "Directional-change path capture needs at least "
+                f"{WEEKLY_PATH_CAPTURE_MIN_OBSERVATIONS} weekly NAV observations."
+            ),
+        }
+    summary = dc_path_summary(
+        pd.Series(clean_curve, name="combined_nav"),
+        theta_bps=theta_bps,
+        round_trip_cost_bps=0.0,
+        risk_buffer_bps=0.0,
+        include_open_segment=True,
+        strategy_return=float(combined_return),
+    )
+    ratio = float(summary.get("capture_ratio", 0.0) or 0.0)
+    return {
+        "status": "ready",
+        "observation_count": len(clean_curve),
+        "theta_bps": theta_bps,
+        "event_count": int(summary.get("event_count", 0) or 0),
+        "segment_count": int(summary.get("segment_count", 0) or 0),
+        "gross_dc_path_return": round(float(summary.get("gross_dc_path_return", 0.0) or 0.0), 8),
+        "dc_path_return": round(float(summary.get("dc_path_return", 0.0) or 0.0), 8),
+        "strategy_return": round(float(combined_return), 8),
+        "capture_ratio": round(ratio, 6),
+        "capture_status": capture_target_status(ratio),
+        "target_band": "5%-20%",
+        "gate": "Compares weekly combined NAV return against directional-change ex-post path upper bound.",
+    }
+
+
 def _aggregate_weekly_net_edge_gate(day_reviews: List[Dict[str, Any]]) -> Dict[str, Any]:
     decision_counts: Dict[str, int] = defaultdict(int)
     rejected_count = 0
@@ -3148,6 +3192,7 @@ def generate_weekly_execution_review(
     position_sizing_metrics = _aggregate_weekly_position_sizing_gate(day_reviews)
     mae_mfe_overlay_metrics = _aggregate_weekly_mae_mfe_overlay(day_reviews)
     robustness_validation = _build_weekly_robustness_validation(day_reviews, quality_metrics)
+    path_capture_metrics = _build_weekly_path_capture_metrics(nav_curve, combined_nav - 1.0)
     optimization_recommendations = _build_weekly_optimization_recommendations(
         quality_metrics,
         constraint_checks,
@@ -3156,6 +3201,7 @@ def generate_weekly_execution_review(
         net_edge_gate_metrics,
         mae_mfe_overlay_metrics,
         position_sizing_metrics,
+        path_capture_metrics,
     )
     return {
         "week_start": week_start.isoformat(),
@@ -3178,6 +3224,7 @@ def generate_weekly_execution_review(
         "net_edge_gate_metrics": net_edge_gate_metrics,
         "position_sizing_metrics": position_sizing_metrics,
         "mae_mfe_overlay_metrics": mae_mfe_overlay_metrics,
+        "path_capture_metrics": path_capture_metrics,
         "robustness_validation": robustness_validation,
         "optimization_recommendations": optimization_recommendations,
     }
@@ -3250,6 +3297,7 @@ def _build_weekly_optimization_recommendations(
     net_edge_gate_metrics: Optional[Dict[str, Any]] = None,
     mae_mfe_overlay_metrics: Optional[Dict[str, Any]] = None,
     position_sizing_metrics: Optional[Dict[str, Any]] = None,
+    path_capture_metrics: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     recommendations: List[Dict[str, Any]] = []
     failures = set(quality_metrics.get("failure_attribution", []) or [])
@@ -3261,6 +3309,7 @@ def _build_weekly_optimization_recommendations(
     net_edge_gate_metrics = net_edge_gate_metrics or {}
     mae_mfe_overlay_metrics = mae_mfe_overlay_metrics or {}
     position_sizing_metrics = position_sizing_metrics or {}
+    path_capture_metrics = path_capture_metrics or {}
     promotion_decision = str(robustness_validation.get("promotion_decision", ""))
     net_edge_rejected = int(net_edge_gate_metrics.get("rejected_count", 0) or 0)
     net_edge_allowed = int(net_edge_gate_metrics.get("allowed_count", 0) or 0)
@@ -3275,6 +3324,9 @@ def _build_weekly_optimization_recommendations(
     sizing_reduction = float(position_sizing_metrics.get("total_weight_reduction", 0.0) or 0.0)
     avg_kelly_utilization = float(position_sizing_metrics.get("avg_target_to_kelly_ratio", 0.0) or 0.0)
     unused_kelly_budget = float(position_sizing_metrics.get("unused_kelly_budget", 0.0) or 0.0)
+    path_capture_status = str(path_capture_metrics.get("capture_status", ""))
+    path_capture_ready = str(path_capture_metrics.get("status", "")) == "ready"
+    path_capture_ratio = float(path_capture_metrics.get("capture_ratio", 0.0) or 0.0)
 
     if promotion_decision == "OBSERVE_ONLY_INSUFFICIENT_SAMPLE":
         recommendations.append(
@@ -3473,6 +3525,38 @@ def _build_weekly_optimization_recommendations(
                     "skip_rebalance_if_weight_change_below_pct": 0.03,
                     "tail_hedge_rebalance_cooldown_days": 3,
                     "cash_leg_transaction_cost": "zero_only_when_no_rebalance",
+                },
+            }
+        )
+
+    if path_capture_ready and path_capture_status == "BELOW_TARGET":
+        recommendations.append(
+            {
+                "action": "improve_path_capture_efficiency",
+                "severity": "medium" if net_return <= 0 else "low",
+                "reason": (
+                    f"周度组合仅捕捉 directional-change 净路径上界的 {path_capture_ratio:.2%}，"
+                    "说明入场/持仓/止盈仍有路径效率损耗。"
+                ),
+                "suggested_parameters": {
+                    "target_capture_band": path_capture_metrics.get("target_band", "5%-20%"),
+                    "theta_bps": path_capture_metrics.get("theta_bps"),
+                    "review": ["entry_lag", "trailing_stop", "event_spacing", "execution_cost_drag"],
+                },
+            }
+        )
+    elif path_capture_ready and path_capture_status == "ABOVE_TARGET":
+        recommendations.append(
+            {
+                "action": "stress_test_high_path_capture_for_overfit",
+                "severity": "medium",
+                "reason": (
+                    f"周度组合捕获率 {path_capture_ratio:.2%} 高于 20% 目标带，"
+                    "可能来自样本路径偶然性或过度择时，应通过 CPCV/DSR 和 shadow trading 复核。"
+                ),
+                "suggested_parameters": {
+                    "required_gates": ["CPCV", "DSR", "effective_breadth"],
+                    "do_not_increase_weight_until": "capture_ratio_stable_for_4_weeks",
                 },
             }
         )

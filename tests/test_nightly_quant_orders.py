@@ -23,6 +23,7 @@ from quant_trade_system.nightly_quant_orders import (
     _build_instruction,
     _build_cycle_payload,
     _build_market_status,
+    _build_weekly_path_capture_metrics,
     _build_weekly_robustness_validation,
     _build_weekly_optimization_recommendations,
     _consolidate_shared_futures_defensive_actions,
@@ -1149,6 +1150,45 @@ class NightlyQuantOrdersTests(unittest.TestCase):
             "kelly_fraction",
             actions["connect_fractional_kelly_and_capacity_metadata"]["suggested_parameters"]["required_fields"],
         )
+
+    def test_weekly_path_capture_metrics_identify_low_capture_efficiency(self) -> None:
+        metrics = _build_weekly_path_capture_metrics([1.0, 0.98, 1.04, 0.96, 1.06], combined_return=0.001)
+
+        self.assertEqual(metrics["status"], "ready")
+        self.assertGreater(metrics["dc_path_return"], 0.0)
+        self.assertEqual(metrics["capture_status"], "BELOW_TARGET")
+
+    def test_weekly_recommendations_surface_low_path_capture(self) -> None:
+        recommendations = _build_weekly_optimization_recommendations(
+            {
+                "failure_attribution": [],
+                "cost_drag_count": 0,
+                "slippage_bps": 0.0,
+                "net_portfolio_return": 0.01,
+            },
+            {
+                "max_single_weight_ok": True,
+                "max_tail_hedge_weight_ok": True,
+                "max_futures_weight_ok": True,
+                "max_gross_weight_ok": True,
+            },
+            [{"report_date": "2026-05-29"}],
+            robustness_validation={"promotion_decision": "PROMOTION_ALLOWED"},
+            net_edge_gate_metrics={},
+            mae_mfe_overlay_metrics={},
+            position_sizing_metrics={},
+            path_capture_metrics={
+                "status": "ready",
+                "capture_status": "BELOW_TARGET",
+                "capture_ratio": 0.01,
+                "target_band": "5%-20%",
+                "theta_bps": 25.0,
+            },
+        )
+
+        actions = {item["action"]: item for item in recommendations}
+        self.assertIn("improve_path_capture_efficiency", actions)
+        self.assertEqual(actions["improve_path_capture_efficiency"]["suggested_parameters"]["theta_bps"], 25.0)
 
     def test_weekly_robustness_validation_blocks_short_sample_promotion(self) -> None:
         validation = _build_weekly_robustness_validation(
