@@ -8,6 +8,7 @@ from quant_trade_system.futures_dc_research import (
     DCFuturesStrategySpec,
     FuturesCostModel,
     classify_walk_forward_result,
+    fetch_main_contract_minute_frames,
     normalize_minute_frame,
     simulate_dc_strategy,
 )
@@ -29,6 +30,30 @@ def _minute_frame(closes: list[float]) -> pd.DataFrame:
 
 
 class FuturesDCResearchTests(unittest.TestCase):
+    def test_default_cost_model_uses_round_trip_cost(self) -> None:
+        self.assertAlmostEqual(FuturesCostModel().round_trip_cost_bps, 6.3)
+
+    def test_fetch_main_contracts_preserves_product_order(self) -> None:
+        class FakeAk:
+            def match_main_contract(self, symbol: str):
+                return {
+                    "cffex": "IF2606,IC2606",
+                    "shfe": "CU2607,AG2608",
+                    "dce": "M2609,I2609",
+                }.get(symbol, "")
+
+            def futures_zh_minute_sina(self, symbol: str, period: str):
+                return _minute_frame([100, 101, 102, 103])
+
+        frames = fetch_main_contract_minute_frames(
+            products=["IF", "CU", "AG"],
+            period="5",
+            max_contracts=2,
+            ak=FakeAk(),
+        )
+
+        self.assertEqual(list(frames), ["IF2606", "CU2607"])
+
     def test_simulation_enters_after_dc_confirmation_next_bar(self) -> None:
         frame = _minute_frame([100, 99, 98, 102, 105, 104, 100, 96, 95, 98, 101, 103, 100, 97, 96, 99, 103])
         spec = DCFuturesStrategySpec(symbol="IF2606", family="dc_continuation", theta_bps=300, max_hold_bars=20)
