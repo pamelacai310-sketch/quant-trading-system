@@ -488,6 +488,29 @@ class NightlyQuantOrdersTests(unittest.TestCase):
             execution[0]["net_edge_gate"]["required_edge_bps"],
         )
 
+    def test_materialize_execution_actions_caps_active_signal_by_kelly_and_capacity(self) -> None:
+        actions = [
+            {
+                "action": "LONG",
+                "symbol": "00700.HK",
+                "target_weight": 0.30,
+                "confidence": 0.90,
+                "objective_score": 0.80,
+                "kelly_fraction": 0.12,
+                "capacity_weight_limit": 0.15,
+                "reason": "strong but size capped",
+            }
+        ]
+        price_map = {"00700.HK": {"date": "2026-05-11", "close": 480.0}}
+
+        execution = _materialize_execution_actions(actions, "HK", price_map, "2026-05-11")
+
+        self.assertEqual(execution[0]["action"], "LONG")
+        self.assertAlmostEqual(execution[0]["target_weight"], 0.12)
+        self.assertEqual(execution[0]["position_sizing_gate"]["decision"], "REDUCE")
+        self.assertEqual(execution[0]["position_sizing_gate"]["binding_constraint"], "kelly_fraction")
+        self.assertAlmostEqual(execution[0]["position_sizing_gate"]["weight_reduction"], 0.18)
+
     def test_materialize_execution_actions_applies_mae_mfe_feedback(self) -> None:
         actions = [
             {
@@ -799,6 +822,18 @@ class NightlyQuantOrdersTests(unittest.TestCase):
                         "target_weight": 0.1,
                         "reference_close": 100.0,
                         "return_model": "close_to_close",
+                        "position_sizing_gate": {
+                            "decision": "REDUCE",
+                            "original_target_weight": 0.18,
+                            "capped_target_weight": 0.10,
+                            "weight_reduction": 0.08,
+                            "binding_constraint": "kelly_fraction",
+                            "caps": {
+                                "max_active_single_weight": 0.20,
+                                "kelly_fraction": 0.10,
+                                "capacity_weight_limit": 0.20,
+                            },
+                        },
                         "mae_mfe_risk_overlay": {
                             "status": "applied",
                             "applied": True,
@@ -821,6 +856,18 @@ class NightlyQuantOrdersTests(unittest.TestCase):
                         "target_weight": 0.2,
                         "reference_close": 200.0,
                         "return_model": "close_to_close",
+                        "position_sizing_gate": {
+                            "decision": "ALLOW",
+                            "original_target_weight": 0.20,
+                            "capped_target_weight": 0.20,
+                            "weight_reduction": 0.0,
+                            "binding_constraint": None,
+                            "caps": {
+                                "max_active_single_weight": 0.20,
+                                "kelly_fraction": 0.25,
+                                "capacity_weight_limit": 0.30,
+                            },
+                        },
                         "mae_mfe_risk_overlay": {
                             "status": "insufficient_samples",
                             "applied": False,
@@ -909,6 +956,10 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertEqual(review["days"][0]["net_edge_gate"]["rejected_count"], 1)
         self.assertAlmostEqual(review["net_edge_gate_metrics"]["prevented_execution_cost_return"], 0.00018, places=8)
         self.assertEqual(review["net_edge_gate_metrics"]["top_rejected_actions"][0]["symbol"], "00700.HK")
+        self.assertEqual(review["days"][0]["position_sizing_gate"]["reduced_count"], 1)
+        self.assertEqual(review["position_sizing_metrics"]["reduced_count"], 1)
+        self.assertAlmostEqual(review["position_sizing_metrics"]["total_weight_reduction"], 0.08)
+        self.assertEqual(review["position_sizing_metrics"]["binding_constraint_counts"]["kelly_fraction"], 1)
         self.assertEqual(review["days"][0]["mae_mfe_risk_overlay"]["applied_count"], 1)
         self.assertEqual(review["mae_mfe_overlay_metrics"]["applied_count"], 1)
         self.assertEqual(review["mae_mfe_overlay_metrics"]["insufficient_samples_count"], 1)
@@ -919,6 +970,9 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         )
         self.assertTrue(
             any(item["action"] == "keep_net_edge_execution_gate_active" for item in review["optimization_recommendations"])
+        )
+        self.assertTrue(
+            any(item["action"] == "keep_fractional_kelly_capacity_sizing_gate" for item in review["optimization_recommendations"])
         )
         self.assertTrue(
             any(item["action"] == "keep_mae_mfe_adaptive_risk_overlay" for item in review["optimization_recommendations"])
@@ -1066,6 +1120,34 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertEqual(
             actions["connect_backtest_mae_mfe_feedback_to_nightly_actions"]["suggested_parameters"]["source"],
             "backtest.stats.mae_mfe_feedback",
+        )
+
+    def test_weekly_recommendations_surface_missing_position_sizing_metadata(self) -> None:
+        recommendations = _build_weekly_optimization_recommendations(
+            {
+                "failure_attribution": [],
+                "cost_drag_count": 0,
+                "slippage_bps": 0.0,
+                "net_portfolio_return": 0.01,
+            },
+            {
+                "max_single_weight_ok": True,
+                "max_tail_hedge_weight_ok": True,
+                "max_futures_weight_ok": True,
+                "max_gross_weight_ok": True,
+            },
+            [{"report_date": "2026-05-29"}],
+            {"promotion_decision": "PROMOTION_ALLOWED"},
+            {},
+            {},
+            {"evaluated_count": 0, "missing_count": 2, "reduced_count": 0},
+        )
+
+        actions = {item["action"]: item for item in recommendations}
+        self.assertIn("connect_fractional_kelly_and_capacity_metadata", actions)
+        self.assertIn(
+            "kelly_fraction",
+            actions["connect_fractional_kelly_and_capacity_metadata"]["suggested_parameters"]["required_fields"],
         )
 
     def test_weekly_robustness_validation_blocks_short_sample_promotion(self) -> None:

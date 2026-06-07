@@ -1178,6 +1178,36 @@ def _active_signal_net_edge_gate(action: Dict[str, Any], market_upper: str) -> D
     }
 
 
+def _active_signal_position_sizing_gate(action: Dict[str, Any]) -> Dict[str, Any]:
+    original_weight = max(0.0, float(action.get("target_weight", 0.0) or 0.0))
+    caps = {"max_active_single_weight": MAX_ACTIVE_SINGLE_WEIGHT}
+    kelly_fraction = action.get("kelly_fraction")
+    if kelly_fraction is not None:
+        caps["kelly_fraction"] = max(0.0, float(kelly_fraction or 0.0))
+    capacity_weight_limit = action.get("capacity_weight_limit")
+    if capacity_weight_limit is not None:
+        caps["capacity_weight_limit"] = max(0.0, float(capacity_weight_limit or 0.0))
+    binding_constraint = min(caps, key=lambda key: caps[key])
+    capped_weight = min(original_weight, caps[binding_constraint])
+    applied_caps = [key for key, value in caps.items() if value + 1e-12 < original_weight]
+    decision = "REDUCE" if capped_weight + 1e-12 < original_weight else "ALLOW"
+    return {
+        "decision": decision,
+        "original_target_weight": round(float(original_weight), 6),
+        "capped_target_weight": round(float(capped_weight), 6),
+        "weight_reduction": round(float(max(0.0, original_weight - capped_weight)), 6),
+        "binding_constraint": binding_constraint if decision == "REDUCE" else None,
+        "applied_caps": applied_caps,
+        "caps": {key: round(float(value), 6) for key, value in caps.items()},
+        "formula": "min(target_weight, max_active_single_weight, optional kelly_fraction, optional capacity_weight_limit)",
+        "reason": (
+            "目标仓位超过 fractional Kelly/容量/单标的硬上限，执行前降权。"
+            if decision == "REDUCE"
+            else "目标仓位未超过 fractional Kelly/容量/单标的硬上限。"
+        ),
+    }
+
+
 def _find_mae_mfe_feedback(action: Dict[str, Any]) -> Dict[str, Any]:
     for candidate in [
         action.get("mae_mfe_feedback"),
@@ -1353,6 +1383,8 @@ def _materialize_execution_actions(
                 }
             )
             continue
+        sizing_gate = _active_signal_position_sizing_gate(action)
+        target_weight = float(sizing_gate.get("capped_target_weight", target_weight) or 0.0)
         risk_params, risk_overlay = _resolve_mae_mfe_risk_overlay(action)
         futures_margin = _futures_margin_fields(market_upper, symbol, reference_close, action.get("margin_rate"))
         execution_actions.append(
@@ -1360,11 +1392,13 @@ def _materialize_execution_actions(
                 "market": market_upper,
                 "bucket_action": action_name,
                 **action,
+                "target_weight": target_weight,
                 **{key: value for key, value in risk_params.items() if value is not None},
                 "reference_close": reference_close,
                 "reference_date": str(snapshot.get("date")) if snapshot else target_date,
                 "return_model": "close_to_close",
                 "net_edge_gate": net_edge_gate,
+                "position_sizing_gate": sizing_gate,
                 "mae_mfe_risk_overlay": risk_overlay,
                 **futures_margin,
             }
@@ -1537,6 +1571,69 @@ def _net_edge_gate_audit(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
         "rejected_actions": rejected[:12],
         "allowed_actions": allowed[:12],
         "gate": "Active signals must clear expected net edge after execution cost before entering executable orders.",
+    }
+
+
+def _position_sizing_gate_audit(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    counts: Dict[str, int] = defaultdict(int)
+    reduced: List[Dict[str, Any]] = []
+    missing_count = 0
+    evaluated_count = 0
+    total_reduction = 0.0
+    target_to_kelly_ratios: List[float] = []
+    unused_kelly_budget = 0.0
+    binding_counts: Dict[str, int] = defaultdict(int)
+    for action in actions:
+        action_name = str(action.get("action", "")).upper()
+        bucket = str(action.get("bucket_action") or action_name).upper()
+        if action_name not in {"LONG", "SHORT"} or bucket in {"TAIL_HEDGE", "SAFE_RESERVE", "COST_GATE_REJECTED"}:
+            continue
+        gate = action.get("position_sizing_gate")
+        if not isinstance(gate, dict):
+            missing_count += 1
+            continue
+        evaluated_count += 1
+        decision = str(gate.get("decision", "UNKNOWN"))
+        counts[decision] += 1
+        reduction = float(gate.get("weight_reduction", 0.0) or 0.0)
+        total_reduction += reduction
+        binding = gate.get("binding_constraint")
+        if binding:
+            binding_counts[str(binding)] += 1
+        caps = gate.get("caps", {}) if isinstance(gate.get("caps"), dict) else {}
+        kelly = caps.get("kelly_fraction")
+        target = float(gate.get("capped_target_weight", action.get("target_weight", 0.0)) or 0.0)
+        if kelly is not None and float(kelly) > 0:
+            kelly_value = float(kelly)
+            target_to_kelly_ratios.append(float(np.clip(target / kelly_value, 0.0, 10.0)))
+            unused_kelly_budget += max(0.0, kelly_value - target)
+        if decision == "REDUCE":
+            reduced.append(
+                {
+                    "market": action.get("market"),
+                    "symbol": action.get("symbol"),
+                    "action": bucket,
+                    "original_target_weight": gate.get("original_target_weight"),
+                    "capped_target_weight": gate.get("capped_target_weight"),
+                    "weight_reduction": round(float(reduction), 6),
+                    "binding_constraint": binding,
+                    "caps": caps,
+                }
+            )
+    reduced.sort(key=lambda item: float(item.get("weight_reduction", 0.0) or 0.0), reverse=True)
+    return {
+        "decision_counts": dict(counts),
+        "evaluated_count": evaluated_count,
+        "missing_count": missing_count,
+        "reduced_count": len(reduced),
+        "total_weight_reduction": round(float(total_reduction), 6),
+        "avg_target_to_kelly_ratio": round(float(sum(target_to_kelly_ratios) / len(target_to_kelly_ratios)), 6)
+        if target_to_kelly_ratios
+        else 0.0,
+        "unused_kelly_budget": round(float(unused_kelly_budget), 6),
+        "binding_constraint_counts": dict(binding_counts),
+        "top_reduced_actions": reduced[:12],
+        "gate": "Active signals are capped by fractional Kelly, capacity and single-name hard limits before execution.",
     }
 
 
@@ -2067,6 +2164,7 @@ def _build_evidence_snapshot(
         "instrument_registry": instrument_records,
         "causal_llm_audit": llm_audit_records,
         "net_edge_execution_gate": _net_edge_gate_audit(report.get("execution_actions", [])),
+        "position_sizing_gate": _position_sizing_gate_audit(report.get("execution_actions", [])),
         "mae_mfe_risk_overlay": _mae_mfe_overlay_audit(report.get("execution_actions", [])),
         "model_versions": model_records,
         "feature_lineage": feature_records,
@@ -2562,6 +2660,24 @@ def render_report_text(report: Dict[str, Any]) -> str:
                 f"rejected={net_edge_snapshot.get('rejected_count', 0)}"
                 f"{example_text}"
             )
+        sizing_snapshot = snapshot.get("position_sizing_gate", {})
+        if sizing_snapshot:
+            reduced = sizing_snapshot.get("top_reduced_actions", [])
+            example = reduced[0] if reduced else {}
+            example_text = (
+                f"；最大降权={example.get('symbol')} "
+                f"{float(example.get('original_target_weight', 0.0) or 0.0):.2%}->"
+                f"{float(example.get('capped_target_weight', 0.0) or 0.0):.2%}"
+                if example
+                else ""
+            )
+            lines.append(
+                "- 仓位上限门："
+                f"counts={sizing_snapshot.get('decision_counts', {})} "
+                f"reduced={sizing_snapshot.get('reduced_count', 0)} "
+                f"missing={sizing_snapshot.get('missing_count', 0)}"
+                f"{example_text}"
+            )
         mae_mfe_snapshot = snapshot.get("mae_mfe_risk_overlay", {})
         if mae_mfe_snapshot:
             applied = mae_mfe_snapshot.get("applied_actions", [])
@@ -2856,6 +2972,49 @@ def _aggregate_weekly_mae_mfe_overlay(day_reviews: List[Dict[str, Any]]) -> Dict
     }
 
 
+def _aggregate_weekly_position_sizing_gate(day_reviews: List[Dict[str, Any]]) -> Dict[str, Any]:
+    decision_counts: Dict[str, int] = defaultdict(int)
+    binding_counts: Dict[str, int] = defaultdict(int)
+    evaluated_count = 0
+    missing_count = 0
+    reduced_count = 0
+    total_reduction = 0.0
+    unused_kelly_budget = 0.0
+    weighted_kelly_ratio = 0.0
+    kelly_ratio_count = 0
+    top_reduced: List[Dict[str, Any]] = []
+    for day in day_reviews:
+        audit = day.get("position_sizing_gate", {}) if isinstance(day.get("position_sizing_gate"), dict) else {}
+        for decision, count in (audit.get("decision_counts") or {}).items():
+            decision_counts[str(decision)] += int(count or 0)
+        for constraint, count in (audit.get("binding_constraint_counts") or {}).items():
+            binding_counts[str(constraint)] += int(count or 0)
+        evaluated_count += int(audit.get("evaluated_count", 0) or 0)
+        missing_count += int(audit.get("missing_count", 0) or 0)
+        reduced_count += int(audit.get("reduced_count", 0) or 0)
+        total_reduction += float(audit.get("total_weight_reduction", 0.0) or 0.0)
+        unused_kelly_budget += float(audit.get("unused_kelly_budget", 0.0) or 0.0)
+        ratio = float(audit.get("avg_target_to_kelly_ratio", 0.0) or 0.0)
+        if ratio > 0:
+            weighted_kelly_ratio += ratio * max(int(audit.get("evaluated_count", 0) or 0), 1)
+            kelly_ratio_count += max(int(audit.get("evaluated_count", 0) or 0), 1)
+        for item in audit.get("top_reduced_actions", []) or []:
+            top_reduced.append({**item, "report_date": day.get("report_date")})
+    top_reduced.sort(key=lambda item: float(item.get("weight_reduction", 0.0) or 0.0), reverse=True)
+    return {
+        "decision_counts": dict(decision_counts),
+        "binding_constraint_counts": dict(binding_counts),
+        "evaluated_count": evaluated_count,
+        "missing_count": missing_count,
+        "reduced_count": reduced_count,
+        "total_weight_reduction": round(float(total_reduction), 6),
+        "avg_target_to_kelly_ratio": round(float(weighted_kelly_ratio / kelly_ratio_count), 6) if kelly_ratio_count else 0.0,
+        "unused_kelly_budget": round(float(unused_kelly_budget), 6),
+        "top_reduced_actions": top_reduced[:10],
+        "gate": "Aggregates active position caps from fractional Kelly, capacity and single-name hard limits.",
+    }
+
+
 def generate_weekly_execution_review(
     week_start: date,
     week_end: date,
@@ -2927,6 +3086,7 @@ def generate_weekly_execution_review(
         hk_actions = [item for item in execution_actions if str(item.get("market")) == "HK"]
         cn_futures_actions = [item for item in execution_actions if str(item.get("market", "")).upper() in CN_FUTURES_EXCHANGES]
         net_edge_gate = _net_edge_gate_audit(execution_actions)
+        position_sizing_gate = _position_sizing_gate_audit(execution_actions)
         mae_mfe_risk_overlay = _mae_mfe_overlay_audit(execution_actions)
         hk_eval = _evaluate_execution_actions(hk_actions, current_prices)
         cn_futures_eval = _evaluate_execution_actions(cn_futures_actions, current_prices)
@@ -2966,6 +3126,7 @@ def generate_weekly_execution_review(
                 "cn_futures": cn_futures_eval,
                 "shfe": cn_futures_eval,
                 "net_edge_gate": net_edge_gate,
+                "position_sizing_gate": position_sizing_gate,
                 "mae_mfe_risk_overlay": mae_mfe_risk_overlay,
                 "combined_gross_return": round(combined_gross_return, 6),
                 "combined_return": round(combined_daily_return, 6),
@@ -2984,6 +3145,7 @@ def generate_weekly_execution_review(
 
     quality_metrics = _aggregate_weekly_quality_metrics(quality_rows)
     net_edge_gate_metrics = _aggregate_weekly_net_edge_gate(day_reviews)
+    position_sizing_metrics = _aggregate_weekly_position_sizing_gate(day_reviews)
     mae_mfe_overlay_metrics = _aggregate_weekly_mae_mfe_overlay(day_reviews)
     robustness_validation = _build_weekly_robustness_validation(day_reviews, quality_metrics)
     optimization_recommendations = _build_weekly_optimization_recommendations(
@@ -2993,6 +3155,7 @@ def generate_weekly_execution_review(
         robustness_validation,
         net_edge_gate_metrics,
         mae_mfe_overlay_metrics,
+        position_sizing_metrics,
     )
     return {
         "week_start": week_start.isoformat(),
@@ -3013,6 +3176,7 @@ def generate_weekly_execution_review(
         "constraint_checks": constraint_checks,
         "quality_metrics": quality_metrics,
         "net_edge_gate_metrics": net_edge_gate_metrics,
+        "position_sizing_metrics": position_sizing_metrics,
         "mae_mfe_overlay_metrics": mae_mfe_overlay_metrics,
         "robustness_validation": robustness_validation,
         "optimization_recommendations": optimization_recommendations,
@@ -3085,6 +3249,7 @@ def _build_weekly_optimization_recommendations(
     robustness_validation: Optional[Dict[str, Any]] = None,
     net_edge_gate_metrics: Optional[Dict[str, Any]] = None,
     mae_mfe_overlay_metrics: Optional[Dict[str, Any]] = None,
+    position_sizing_metrics: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     recommendations: List[Dict[str, Any]] = []
     failures = set(quality_metrics.get("failure_attribution", []) or [])
@@ -3095,6 +3260,7 @@ def _build_weekly_optimization_recommendations(
     robustness_validation = robustness_validation or {}
     net_edge_gate_metrics = net_edge_gate_metrics or {}
     mae_mfe_overlay_metrics = mae_mfe_overlay_metrics or {}
+    position_sizing_metrics = position_sizing_metrics or {}
     promotion_decision = str(robustness_validation.get("promotion_decision", ""))
     net_edge_rejected = int(net_edge_gate_metrics.get("rejected_count", 0) or 0)
     net_edge_allowed = int(net_edge_gate_metrics.get("allowed_count", 0) or 0)
@@ -3103,6 +3269,12 @@ def _build_weekly_optimization_recommendations(
     mae_mfe_applied = int(mae_mfe_overlay_metrics.get("applied_count", 0) or 0)
     mae_mfe_insufficient = int(mae_mfe_overlay_metrics.get("insufficient_samples_count", 0) or 0)
     mae_mfe_missing = int(mae_mfe_overlay_metrics.get("missing_count", 0) or 0)
+    sizing_evaluated = int(position_sizing_metrics.get("evaluated_count", 0) or 0)
+    sizing_missing = int(position_sizing_metrics.get("missing_count", 0) or 0)
+    sizing_reduced = int(position_sizing_metrics.get("reduced_count", 0) or 0)
+    sizing_reduction = float(position_sizing_metrics.get("total_weight_reduction", 0.0) or 0.0)
+    avg_kelly_utilization = float(position_sizing_metrics.get("avg_target_to_kelly_ratio", 0.0) or 0.0)
+    unused_kelly_budget = float(position_sizing_metrics.get("unused_kelly_budget", 0.0) or 0.0)
 
     if promotion_decision == "OBSERVE_ONLY_INSUFFICIENT_SAMPLE":
         recommendations.append(
@@ -3173,6 +3345,57 @@ def _build_weekly_optimization_recommendations(
                 "suggested_parameters": {
                     "raise_min_objective_score": True,
                     "review_top_rejected_actions": net_edge_gate_metrics.get("top_rejected_actions", [])[:5],
+                },
+            }
+        )
+
+    if sizing_reduced > 0:
+        recommendations.append(
+            {
+                "action": "keep_fractional_kelly_capacity_sizing_gate",
+                "severity": "low",
+                "reason": (
+                    f"仓位上限门本周将 {sizing_reduced} 笔主动动作合计降权 {sizing_reduction:.4f}，"
+                    "避免超过 fractional Kelly、容量或单标的硬上限。"
+                ),
+                "suggested_parameters": {
+                    "review_metric": "position_sizing_metrics",
+                    "binding_constraint_counts": position_sizing_metrics.get("binding_constraint_counts", {}),
+                    "top_reduced_actions": position_sizing_metrics.get("top_reduced_actions", [])[:5],
+                },
+            }
+        )
+    if sizing_missing > 0 and sizing_missing >= max(1, sizing_evaluated):
+        recommendations.append(
+            {
+                "action": "connect_fractional_kelly_and_capacity_metadata",
+                "severity": "medium",
+                "reason": "本周主动执行动作缺少 position_sizing_gate 元数据，无法审计 Kelly/容量上限是否生效。",
+                "suggested_parameters": {
+                    "required_fields": ["kelly_fraction", "capacity_weight_limit", "position_sizing_gate"],
+                    "source": "SelfIteratingCausalEngine.optimize_portfolio",
+                    "production_effect": "block_weight_increase_when_sizing_metadata_missing",
+                },
+            }
+        )
+    elif (
+        promotion_decision == "PROMOTION_ALLOWED"
+        and net_return > 0
+        and sizing_evaluated > 0
+        and 0 < avg_kelly_utilization < 0.50
+        and unused_kelly_budget > 0.05
+    ):
+        recommendations.append(
+            {
+                "action": "review_unused_kelly_budget_after_robustness_pass",
+                "severity": "low",
+                "reason": (
+                    f"CPCV/DSR/有效广度通过且净收益为正，但平均 Kelly 利用率仅 {avg_kelly_utilization:.2f}，"
+                    f"未使用 Kelly 风险预算约 {unused_kelly_budget:.4f}。"
+                ),
+                "suggested_parameters": {
+                    "increase_only_if": ["net_edge_gate_allows", "mae_mfe_feedback_applied", "tail_risk_not_rising"],
+                    "max_incremental_weight": min(0.03, round(unused_kelly_budget / max(sizing_evaluated, 1), 6)),
                 },
             }
         )
