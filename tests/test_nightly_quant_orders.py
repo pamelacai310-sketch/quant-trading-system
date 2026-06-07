@@ -799,6 +799,19 @@ class NightlyQuantOrdersTests(unittest.TestCase):
                         "target_weight": 0.1,
                         "reference_close": 100.0,
                         "return_model": "close_to_close",
+                        "mae_mfe_risk_overlay": {
+                            "status": "applied",
+                            "applied": True,
+                            "sample_size": 8,
+                            "method": "mae_mfe_closed_trade_quantiles",
+                            "base_risk_limits": {"stop_loss_pct": 0.08, "take_profit_pct": 0.06},
+                            "resolved_risk_limits": {
+                                "stop_loss_pct": 0.03,
+                                "take_profit_pct": 0.10,
+                                "trailing_activation_pct": 0.05,
+                                "trailing_stop_pct": 0.02,
+                            },
+                        },
                     },
                     {
                         "market": "INE",
@@ -808,6 +821,12 @@ class NightlyQuantOrdersTests(unittest.TestCase):
                         "target_weight": 0.2,
                         "reference_close": 200.0,
                         "return_model": "close_to_close",
+                        "mae_mfe_risk_overlay": {
+                            "status": "insufficient_samples",
+                            "applied": False,
+                            "sample_size": 1,
+                            "min_samples": 2,
+                        },
                     },
                     {
                         "market": "SHFE",
@@ -890,11 +909,19 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertEqual(review["days"][0]["net_edge_gate"]["rejected_count"], 1)
         self.assertAlmostEqual(review["net_edge_gate_metrics"]["prevented_execution_cost_return"], 0.00018, places=8)
         self.assertEqual(review["net_edge_gate_metrics"]["top_rejected_actions"][0]["symbol"], "00700.HK")
+        self.assertEqual(review["days"][0]["mae_mfe_risk_overlay"]["applied_count"], 1)
+        self.assertEqual(review["mae_mfe_overlay_metrics"]["applied_count"], 1)
+        self.assertEqual(review["mae_mfe_overlay_metrics"]["insufficient_samples_count"], 1)
+        self.assertAlmostEqual(review["mae_mfe_overlay_metrics"]["avg_stop_loss_delta_pct"], -0.05)
+        self.assertAlmostEqual(review["mae_mfe_overlay_metrics"]["avg_take_profit_delta_pct"], 0.04)
         self.assertTrue(
             any(item["action"] == "extend_shadow_window_before_promotion" for item in review["optimization_recommendations"])
         )
         self.assertTrue(
             any(item["action"] == "keep_net_edge_execution_gate_active" for item in review["optimization_recommendations"])
+        )
+        self.assertTrue(
+            any(item["action"] == "keep_mae_mfe_adaptive_risk_overlay" for item in review["optimization_recommendations"])
         )
         self.assertTrue(review["optimization_recommendations"])
 
@@ -1012,6 +1039,33 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertGreaterEqual(
             actions["raise_min_net_edge_bps"]["suggested_parameters"]["min_expected_net_edge_bps"],
             15.6,
+        )
+
+    def test_weekly_recommendations_surface_missing_mae_mfe_feedback(self) -> None:
+        recommendations = _build_weekly_optimization_recommendations(
+            {
+                "failure_attribution": [],
+                "cost_drag_count": 0,
+                "slippage_bps": 0.0,
+                "net_portfolio_return": 0.01,
+            },
+            {
+                "max_single_weight_ok": True,
+                "max_tail_hedge_weight_ok": True,
+                "max_futures_weight_ok": True,
+                "max_gross_weight_ok": True,
+            },
+            [{"report_date": "2026-05-29"}],
+            {"promotion_decision": "PROMOTION_ALLOWED"},
+            {},
+            {"evaluated_count": 2, "applied_count": 0, "missing_count": 2},
+        )
+
+        actions = {item["action"]: item for item in recommendations}
+        self.assertIn("connect_backtest_mae_mfe_feedback_to_nightly_actions", actions)
+        self.assertEqual(
+            actions["connect_backtest_mae_mfe_feedback_to_nightly_actions"]["suggested_parameters"]["source"],
+            "backtest.stats.mae_mfe_feedback",
         )
 
     def test_weekly_robustness_validation_blocks_short_sample_promotion(self) -> None:

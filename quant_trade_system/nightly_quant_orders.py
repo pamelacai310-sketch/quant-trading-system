@@ -1546,19 +1546,42 @@ def _mae_mfe_overlay_audit(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
     for action in actions:
         overlay = action.get("mae_mfe_risk_overlay")
         if not isinstance(overlay, dict):
+            action_name = str(action.get("action", "")).upper()
+            bucket = str(action.get("bucket_action") or action_name).upper()
+            if action_name in {"LONG", "SHORT"} and bucket not in {"TAIL_HEDGE", "SAFE_RESERVE", "COST_GATE_REJECTED"}:
+                counts["missing"] += 1
             continue
         status = str(overlay.get("status", "unknown"))
         counts[status] += 1
         if bool(overlay.get("applied")):
             resolved = overlay.get("resolved_risk_limits", {}) if isinstance(overlay.get("resolved_risk_limits"), dict) else {}
+            base = overlay.get("base_risk_limits", {}) if isinstance(overlay.get("base_risk_limits"), dict) else {}
+            stop_base = base.get("stop_loss_pct")
+            stop_resolved = resolved.get("stop_loss_pct")
+            take_base = base.get("take_profit_pct")
+            take_resolved = resolved.get("take_profit_pct")
+            stop_delta = (
+                float(stop_resolved) - float(stop_base)
+                if stop_resolved is not None and stop_base is not None
+                else None
+            )
+            take_delta = (
+                float(take_resolved) - float(take_base)
+                if take_resolved is not None and take_base is not None
+                else None
+            )
             applied.append(
                 {
                     "market": action.get("market"),
                     "symbol": action.get("symbol"),
                     "sample_size": overlay.get("sample_size"),
                     "method": overlay.get("method"),
+                    "base_stop_loss_pct": stop_base,
                     "stop_loss_pct": resolved.get("stop_loss_pct"),
+                    "stop_loss_delta_pct": round(float(stop_delta), 6) if stop_delta is not None else None,
+                    "base_take_profit_pct": take_base,
                     "take_profit_pct": resolved.get("take_profit_pct"),
+                    "take_profit_delta_pct": round(float(take_delta), 6) if take_delta is not None else None,
                     "trailing_activation_pct": resolved.get("trailing_activation_pct"),
                     "trailing_stop_pct": resolved.get("trailing_stop_pct"),
                 }
@@ -2795,6 +2818,44 @@ def _aggregate_weekly_net_edge_gate(day_reviews: List[Dict[str, Any]]) -> Dict[s
     }
 
 
+def _aggregate_weekly_mae_mfe_overlay(day_reviews: List[Dict[str, Any]]) -> Dict[str, Any]:
+    status_counts: Dict[str, int] = defaultdict(int)
+    applied_actions: List[Dict[str, Any]] = []
+    stop_deltas: List[float] = []
+    take_deltas: List[float] = []
+    for day in day_reviews:
+        audit = day.get("mae_mfe_risk_overlay", {}) if isinstance(day.get("mae_mfe_risk_overlay"), dict) else {}
+        for status, count in (audit.get("status_counts") or {}).items():
+            status_counts[str(status)] += int(count or 0)
+        for item in audit.get("applied_actions", []) or []:
+            record = {**item, "report_date": day.get("report_date")}
+            applied_actions.append(record)
+            stop_delta = item.get("stop_loss_delta_pct")
+            take_delta = item.get("take_profit_delta_pct")
+            if stop_delta is not None:
+                stop_deltas.append(float(stop_delta))
+            if take_delta is not None:
+                take_deltas.append(float(take_delta))
+    evaluated_count = sum(status_counts.values())
+    applied_count = int(status_counts.get("applied", 0))
+    insufficient_count = int(status_counts.get("insufficient_samples", 0))
+    missing_count = int(status_counts.get("missing", 0))
+    disabled_count = int(status_counts.get("disabled", 0))
+    return {
+        "status_counts": dict(status_counts),
+        "evaluated_count": evaluated_count,
+        "applied_count": applied_count,
+        "application_rate": round(float(applied_count / evaluated_count), 6) if evaluated_count else 0.0,
+        "insufficient_samples_count": insufficient_count,
+        "missing_count": missing_count,
+        "disabled_count": disabled_count,
+        "avg_stop_loss_delta_pct": round(float(sum(stop_deltas) / len(stop_deltas)), 6) if stop_deltas else 0.0,
+        "avg_take_profit_delta_pct": round(float(sum(take_deltas) / len(take_deltas)), 6) if take_deltas else 0.0,
+        "top_applied_actions": applied_actions[:10],
+        "gate": "Aggregates nightly MAE/MFE overlays to audit adaptive stop/take/trailing feedback coverage.",
+    }
+
+
 def generate_weekly_execution_review(
     week_start: date,
     week_end: date,
@@ -2866,6 +2927,7 @@ def generate_weekly_execution_review(
         hk_actions = [item for item in execution_actions if str(item.get("market")) == "HK"]
         cn_futures_actions = [item for item in execution_actions if str(item.get("market", "")).upper() in CN_FUTURES_EXCHANGES]
         net_edge_gate = _net_edge_gate_audit(execution_actions)
+        mae_mfe_risk_overlay = _mae_mfe_overlay_audit(execution_actions)
         hk_eval = _evaluate_execution_actions(hk_actions, current_prices)
         cn_futures_eval = _evaluate_execution_actions(cn_futures_actions, current_prices)
         quality_rows.extend([hk_eval, cn_futures_eval])
@@ -2904,6 +2966,7 @@ def generate_weekly_execution_review(
                 "cn_futures": cn_futures_eval,
                 "shfe": cn_futures_eval,
                 "net_edge_gate": net_edge_gate,
+                "mae_mfe_risk_overlay": mae_mfe_risk_overlay,
                 "combined_gross_return": round(combined_gross_return, 6),
                 "combined_return": round(combined_daily_return, 6),
                 "combined_nav": round(combined_nav, 6),
@@ -2921,6 +2984,7 @@ def generate_weekly_execution_review(
 
     quality_metrics = _aggregate_weekly_quality_metrics(quality_rows)
     net_edge_gate_metrics = _aggregate_weekly_net_edge_gate(day_reviews)
+    mae_mfe_overlay_metrics = _aggregate_weekly_mae_mfe_overlay(day_reviews)
     robustness_validation = _build_weekly_robustness_validation(day_reviews, quality_metrics)
     optimization_recommendations = _build_weekly_optimization_recommendations(
         quality_metrics,
@@ -2928,6 +2992,7 @@ def generate_weekly_execution_review(
         day_reviews,
         robustness_validation,
         net_edge_gate_metrics,
+        mae_mfe_overlay_metrics,
     )
     return {
         "week_start": week_start.isoformat(),
@@ -2948,6 +3013,7 @@ def generate_weekly_execution_review(
         "constraint_checks": constraint_checks,
         "quality_metrics": quality_metrics,
         "net_edge_gate_metrics": net_edge_gate_metrics,
+        "mae_mfe_overlay_metrics": mae_mfe_overlay_metrics,
         "robustness_validation": robustness_validation,
         "optimization_recommendations": optimization_recommendations,
     }
@@ -3018,6 +3084,7 @@ def _build_weekly_optimization_recommendations(
     day_reviews: List[Dict[str, Any]],
     robustness_validation: Optional[Dict[str, Any]] = None,
     net_edge_gate_metrics: Optional[Dict[str, Any]] = None,
+    mae_mfe_overlay_metrics: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     recommendations: List[Dict[str, Any]] = []
     failures = set(quality_metrics.get("failure_attribution", []) or [])
@@ -3027,10 +3094,15 @@ def _build_weekly_optimization_recommendations(
     execution_cost = float(quality_metrics.get("execution_cost_return", 0.0) or 0.0)
     robustness_validation = robustness_validation or {}
     net_edge_gate_metrics = net_edge_gate_metrics or {}
+    mae_mfe_overlay_metrics = mae_mfe_overlay_metrics or {}
     promotion_decision = str(robustness_validation.get("promotion_decision", ""))
     net_edge_rejected = int(net_edge_gate_metrics.get("rejected_count", 0) or 0)
     net_edge_allowed = int(net_edge_gate_metrics.get("allowed_count", 0) or 0)
     prevented_cost = float(net_edge_gate_metrics.get("prevented_execution_cost_return", 0.0) or 0.0)
+    mae_mfe_evaluated = int(mae_mfe_overlay_metrics.get("evaluated_count", 0) or 0)
+    mae_mfe_applied = int(mae_mfe_overlay_metrics.get("applied_count", 0) or 0)
+    mae_mfe_insufficient = int(mae_mfe_overlay_metrics.get("insufficient_samples_count", 0) or 0)
+    mae_mfe_missing = int(mae_mfe_overlay_metrics.get("missing_count", 0) or 0)
 
     if promotion_decision == "OBSERVE_ONLY_INSUFFICIENT_SAMPLE":
         recommendations.append(
@@ -3101,6 +3173,53 @@ def _build_weekly_optimization_recommendations(
                 "suggested_parameters": {
                     "raise_min_objective_score": True,
                     "review_top_rejected_actions": net_edge_gate_metrics.get("top_rejected_actions", [])[:5],
+                },
+            }
+        )
+
+    if mae_mfe_applied > 0:
+        recommendations.append(
+            {
+                "action": "keep_mae_mfe_adaptive_risk_overlay",
+                "severity": "low",
+                "reason": (
+                    f"MAE/MFE 风险覆盖本周应用 {mae_mfe_applied}/{mae_mfe_evaluated} 笔主动风险动作；"
+                    f"平均止损调整 {float(mae_mfe_overlay_metrics.get('avg_stop_loss_delta_pct', 0.0) or 0.0):+.4f}，"
+                    f"平均止盈调整 {float(mae_mfe_overlay_metrics.get('avg_take_profit_delta_pct', 0.0) or 0.0):+.4f}。"
+                ),
+                "suggested_parameters": {
+                    "review_metric": "mae_mfe_overlay_metrics",
+                    "top_applied_actions": mae_mfe_overlay_metrics.get("top_applied_actions", [])[:5],
+                    "production_effect": "adaptive_stop_take_trailing_remains_enabled",
+                },
+            }
+        )
+    if mae_mfe_evaluated > 0 and mae_mfe_applied == 0 and mae_mfe_missing >= mae_mfe_evaluated:
+        recommendations.append(
+            {
+                "action": "connect_backtest_mae_mfe_feedback_to_nightly_actions",
+                "severity": "medium",
+                "reason": "本周主动风险动作均未携带 MAE/MFE feedback，夜报仍无法自动反哺止损/止盈参数。",
+                "suggested_parameters": {
+                    "required_field": "mae_mfe_feedback.recommended_risk_limits",
+                    "source": "backtest.stats.mae_mfe_feedback",
+                    "minimum_sample_size": MAE_MFE_MIN_SAMPLES_DEFAULT,
+                },
+            }
+        )
+    elif mae_mfe_insufficient > 0 and mae_mfe_insufficient >= max(1, mae_mfe_applied):
+        recommendations.append(
+            {
+                "action": "extend_mae_mfe_feedback_sample_window",
+                "severity": "medium",
+                "reason": (
+                    f"{mae_mfe_insufficient} 笔动作因 MAE/MFE 样本不足未覆盖风险参数，"
+                    "应先扩大 shadow/backtest 样本再放大主动仓位。"
+                ),
+                "suggested_parameters": {
+                    "minimum_closed_trades": max(MAE_MFE_MIN_SAMPLES_DEFAULT, 5),
+                    "segment_by": ["symbol", "asset_class", "hmm_barbell_state"],
+                    "fallback": "keep_base_risk_limits_until_sample_passes",
                 },
             }
         )
