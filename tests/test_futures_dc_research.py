@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 
 import pandas as pd
@@ -7,12 +8,18 @@ import pandas as pd
 from quant_trade_system.futures_dc_research import (
     DCFuturesStrategySpec,
     FuturesCostModel,
+    aggregate_research_results,
     classify_walk_forward_result,
     cost_sensitivity_audit,
     fetch_main_contract_minute_frames,
+    fetch_cached_main_contract_minute_frames,
+    load_cached_minute_frames,
+    load_minute_cache,
+    minute_cache_path,
     normalize_minute_frame,
     random_direction_control,
     simulate_dc_strategy,
+    update_minute_cache,
 )
 
 
@@ -55,6 +62,65 @@ class FuturesDCResearchTests(unittest.TestCase):
         )
 
         self.assertEqual(list(frames), ["IF2606", "CU2607"])
+
+    def test_minute_cache_merges_and_deduplicates_timestamps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            first = _minute_frame([100, 101, 102])
+            second = _minute_frame([101, 102, 103, 104]).iloc[1:].copy()
+
+            merged = update_minute_cache("IF2606", first, period="1", cache_dir=tmpdir)
+            merged = update_minute_cache("IF2606", second, period="1", cache_dir=tmpdir)
+            cached = load_minute_cache("IF2606", period="1", cache_dir=tmpdir)
+
+            self.assertTrue(minute_cache_path("IF2606", period="1", cache_dir=tmpdir).exists())
+            self.assertEqual(len(merged), 4)
+            self.assertEqual(len(cached), 4)
+            self.assertEqual(cached["close"].tolist(), [100.0, 102.0, 103.0, 104.0])
+
+    def test_cached_fetch_updates_local_cache(self) -> None:
+        class FakeAk:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def match_main_contract(self, symbol: str):
+                return {"cffex": "IF2606,IC2606"}.get(symbol, "")
+
+            def futures_zh_minute_sina(self, symbol: str, period: str):
+                self.calls += 1
+                return _minute_frame([100 + self.calls, 101 + self.calls, 102 + self.calls])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ak = FakeAk()
+            first = fetch_cached_main_contract_minute_frames(
+                products=["IF"],
+                period="5",
+                cache_dir=tmpdir,
+                ak=ak,
+            )
+            second = fetch_cached_main_contract_minute_frames(
+                products=["IF"],
+                period="5",
+                cache_dir=tmpdir,
+                ak=ak,
+            )
+
+            self.assertEqual(list(first), ["IF2606"])
+            self.assertEqual(list(second), ["IF2606"])
+            self.assertEqual(len(second["IF2606"]), 3)
+            self.assertEqual(ak.calls, 2)
+
+    def test_load_cached_minute_frames_reads_period_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            update_minute_cache("IF2606", _minute_frame([100, 101, 102]), period="1", cache_dir=tmpdir)
+            update_minute_cache("IC2606", _minute_frame([200, 201, 202]), period="1", cache_dir=tmpdir)
+            update_minute_cache("IF2606", _minute_frame([300, 301, 302]), period="5", cache_dir=tmpdir)
+
+            frames = load_cached_minute_frames(cache_dir=tmpdir, period="1")
+            filtered = load_cached_minute_frames(cache_dir=tmpdir, period="1", symbols=["IF2606"])
+
+            self.assertEqual(list(frames), ["IC2606", "IF2606"])
+            self.assertEqual(list(filtered), ["IF2606"])
+            self.assertEqual(filtered["IF2606"]["close"].tolist(), [100.0, 101.0, 102.0])
 
     def test_simulation_enters_after_dc_confirmation_next_bar(self) -> None:
         frame = _minute_frame([100, 99, 98, 102, 105, 104, 100, 96, 95, 98, 101, 103, 100, 97, 96, 99, 103])
@@ -180,6 +246,54 @@ class FuturesDCResearchTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "PASS")
         self.assertEqual(result["failure_reasons"], [])
+
+    def test_aggregate_research_results_requires_multiple_contracts(self) -> None:
+        spec = DCFuturesStrategySpec(symbol="IF2606", family="dc_reversal", theta_bps=32)
+        row = classify_walk_forward_result(
+            spec,
+            FuturesCostModel(),
+            [
+                {"train_return": 0.02, "test_return": 0.02, "test_capture_ratio": 0.10, "test_events": 25, "test_trades": 12},
+                {"train_return": 0.02, "test_return": 0.01, "test_capture_ratio": 0.08, "test_events": 24, "test_trades": 12},
+                {"train_return": 0.02, "test_return": -0.001, "test_capture_ratio": 0.06, "test_events": 23, "test_trades": 12},
+            ],
+            cost_sensitivity={"cost_1_5x": {"avg_return": 0.01}},
+            random_control={"beats_p95": True, "p_value": 0.02},
+        )
+
+        self.assertEqual(aggregate_research_results([row]), [])
+
+    def test_aggregate_research_results_flags_contract_rollup_divergence(self) -> None:
+        cost = FuturesCostModel()
+        good = classify_walk_forward_result(
+            DCFuturesStrategySpec(symbol="IF2606", family="dc_reversal", theta_bps=32),
+            cost,
+            [
+                {"train_return": 0.02, "test_return": 0.02, "test_capture_ratio": 0.10, "test_events": 25, "test_trades": 12},
+                {"train_return": 0.02, "test_return": 0.01, "test_capture_ratio": 0.08, "test_events": 24, "test_trades": 12},
+                {"train_return": 0.02, "test_return": -0.001, "test_capture_ratio": 0.06, "test_events": 23, "test_trades": 12},
+            ],
+            cost_sensitivity={"cost_1_5x": {"avg_return": 0.01}},
+            random_control={"beats_p95": True, "p_value": 0.02},
+        )
+        weak = classify_walk_forward_result(
+            DCFuturesStrategySpec(symbol="IF2609", family="dc_reversal", theta_bps=32),
+            cost,
+            [
+                {"train_return": 0.01, "test_return": -0.02, "test_capture_ratio": -0.10, "test_events": 25, "test_trades": 12},
+                {"train_return": 0.01, "test_return": -0.01, "test_capture_ratio": -0.05, "test_events": 24, "test_trades": 12},
+                {"train_return": 0.01, "test_return": 0.001, "test_capture_ratio": 0.01, "test_events": 23, "test_trades": 12},
+            ],
+            cost_sensitivity={"cost_1_5x": {"avg_return": -0.02}},
+            random_control={"beats_p95": False, "p_value": 0.70},
+        )
+
+        aggregate = aggregate_research_results([good, weak])[0]
+
+        self.assertEqual(aggregate["spec"]["symbol"], "IF_AGG")
+        self.assertEqual(aggregate["aggregation"]["members"], ["IF2606", "IF2609"])
+        self.assertIn("CROSS_CONTRACT_MEMBER_EXPECTANCY_DIVERGENCE", aggregate["failure_reasons"])
+        self.assertIn("CROSS_CONTRACT_CAPTURE_DIVERGENCE", aggregate["failure_reasons"])
 
 
 if __name__ == "__main__":

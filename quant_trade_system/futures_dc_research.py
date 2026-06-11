@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -513,6 +514,119 @@ def rank_research_results(results: Sequence[Mapping[str, Any]]) -> List[Dict[str
     return [dict(row) for row in sorted(results, key=key)]
 
 
+def aggregate_research_results(
+    results: Sequence[Mapping[str, Any]],
+    cost_model: Optional[FuturesCostModel] = None,
+    min_members: int = 2,
+) -> List[Dict[str, Any]]:
+    cost_model = cost_model or FuturesCostModel()
+    groups: Dict[Tuple[Any, ...], List[Mapping[str, Any]]] = defaultdict(list)
+    for row in results:
+        spec = row.get("spec", {}) if isinstance(row.get("spec"), Mapping) else {}
+        product = normalize_futures_symbol(str(spec.get("symbol", "")))
+        if not product:
+            continue
+        key = (
+            product,
+            spec.get("family"),
+            float(_as_float(spec.get("theta_bps"))),
+            spec.get("vol_filter", "all"),
+            spec.get("open_interest_filter", "all"),
+            spec.get("time_filter", "all"),
+            int(_as_float(spec.get("event_spacing_bars"))),
+        )
+        groups[key].append(row)
+
+    aggregated: List[Dict[str, Any]] = []
+    for key, members in groups.items():
+        if len(members) < int(min_members):
+            continue
+        product, family, theta_bps, vol_filter, open_interest_filter, time_filter, spacing = key
+        member_symbols = sorted(
+            {
+                str(member.get("spec", {}).get("symbol"))
+                for member in members
+                if isinstance(member.get("spec"), Mapping)
+            }
+        )
+        folds: List[Dict[str, Any]] = []
+        for member in members:
+            symbol = str(member.get("spec", {}).get("symbol", ""))
+            for fold in member.get("folds", []):
+                if not isinstance(fold, Mapping):
+                    continue
+                fold_row = dict(fold)
+                fold_row["source_symbol"] = symbol
+                fold_row["fold"] = f"{symbol}:{fold.get('fold', '')}"
+                folds.append(fold_row)
+
+        aggregate_spec = DCFuturesStrategySpec(
+            symbol=f"{product}_AGG",
+            family=str(family),
+            theta_bps=float(theta_bps),
+            vol_filter=str(vol_filter),
+            open_interest_filter=str(open_interest_filter),
+            time_filter=str(time_filter),
+            event_spacing_bars=int(spacing),
+        )
+        cost_stress_values = [
+            _as_float(member.get("summary", {}).get("cost_1_5x_avg_return"))
+            for member in members
+            if isinstance(member.get("summary"), Mapping)
+        ]
+        random_controls = [
+            member.get("random_direction_control", {})
+            for member in members
+            if isinstance(member.get("random_direction_control"), Mapping)
+        ]
+        random_p_values = [_as_float(control.get("p_value"), 1.0) for control in random_controls]
+        aggregate = classify_walk_forward_result(
+            aggregate_spec,
+            cost_model,
+            folds,
+            cost_sensitivity={
+                "cost_1_5x": {
+                    "avg_return": float(np.mean(cost_stress_values)) if cost_stress_values else 0.0,
+                    "member_returns": [float(value) for value in cost_stress_values],
+                }
+            },
+            random_control={
+                "beats_p95": bool(random_controls and all(bool(control.get("beats_p95", False)) for control in random_controls)),
+                "p_value": float(max(random_p_values)) if random_p_values else 1.0,
+                "method": "all_member_random_controls_must_pass",
+            },
+        )
+        member_positive = sum(
+            1
+            for member in members
+            if isinstance(member.get("summary"), Mapping) and _as_float(member["summary"].get("avg_test_return")) > 0
+        )
+        member_target_capture = sum(
+            1
+            for member in members
+            if isinstance(member.get("summary"), Mapping)
+            and 0.05 <= _as_float(member["summary"].get("avg_test_capture_ratio")) <= 0.20
+        )
+        extra_flags: List[str] = []
+        if member_positive < len(members):
+            extra_flags.append("CROSS_CONTRACT_MEMBER_EXPECTANCY_DIVERGENCE")
+        if member_target_capture < len(members):
+            extra_flags.append("CROSS_CONTRACT_CAPTURE_DIVERGENCE")
+        if extra_flags:
+            aggregate["failure_reasons"] = list(dict.fromkeys(list(aggregate.get("failure_reasons", [])) + extra_flags))
+            aggregate["status"] = "WATCH" if aggregate["summary"]["avg_test_return"] > 0 else "FAIL"
+        aggregate["aggregation"] = {
+            "mode": "product_contract_rollup",
+            "product": product,
+            "member_count": len(members),
+            "members": member_symbols,
+            "member_positive_count": member_positive,
+            "member_target_capture_count": member_target_capture,
+        }
+        aggregated.append(aggregate)
+    return rank_research_results(aggregated)
+
+
 def fetch_main_contract_minute_frames(
     products: Sequence[str] = DEFAULT_PRODUCTS,
     period: str = "5",
@@ -536,6 +650,100 @@ def fetch_main_contract_minute_frames(
         if not normalized.empty:
             frames[contract] = normalized
     return frames
+
+
+def fetch_cached_main_contract_minute_frames(
+    products: Sequence[str] = DEFAULT_PRODUCTS,
+    period: str = "5",
+    max_contracts: Optional[int] = None,
+    cache_dir: str | Path = "state/futures_minute_cache",
+    ak: Any = None,
+) -> Dict[str, pd.DataFrame]:
+    if ak is None:
+        import akshare as ak  # type: ignore  # noqa: WPS433
+
+    wanted = [normalize_futures_symbol(product) for product in products]
+    contracts = _main_contracts_for_products(wanted, ak)
+    frames: Dict[str, pd.DataFrame] = {}
+    for contract in contracts:
+        if max_contracts is not None and len(frames) >= max_contracts:
+            break
+        cached = load_minute_cache(contract, period=period, cache_dir=cache_dir)
+        fresh = pd.DataFrame()
+        try:
+            fresh = ak.futures_zh_minute_sina(symbol=contract, period=str(period))
+        except Exception:
+            pass
+        merged = update_minute_cache(
+            contract,
+            fresh,
+            period=period,
+            cache_dir=cache_dir,
+            existing_frame=cached,
+        )
+        if not merged.empty:
+            frames[contract] = merged
+    return frames
+
+
+def load_cached_minute_frames(
+    cache_dir: str | Path = "state/futures_minute_cache",
+    period: str = "5",
+    symbols: Optional[Sequence[str]] = None,
+) -> Dict[str, pd.DataFrame]:
+    period_dir = Path(cache_dir) / str(period)
+    if not period_dir.exists():
+        return {}
+    wanted = {str(symbol).upper() for symbol in symbols or []}
+    frames: Dict[str, pd.DataFrame] = {}
+    for path in sorted(period_dir.glob("*.csv")):
+        symbol = path.stem.upper()
+        if wanted and symbol not in wanted:
+            continue
+        frame = load_minute_cache(symbol, period=period, cache_dir=cache_dir)
+        if not frame.empty:
+            frames[symbol] = frame
+    return frames
+
+
+def minute_cache_path(symbol: str, period: str = "5", cache_dir: str | Path = "state/futures_minute_cache") -> Path:
+    safe_symbol = "".join(ch for ch in str(symbol).upper() if ch.isalnum() or ch in {"_", "-"})
+    safe_period = "".join(ch for ch in str(period) if ch.isalnum() or ch in {"_", "-"})
+    return Path(cache_dir) / safe_period / f"{safe_symbol}.csv"
+
+
+def load_minute_cache(symbol: str, period: str = "5", cache_dir: str | Path = "state/futures_minute_cache") -> pd.DataFrame:
+    path = minute_cache_path(symbol, period=period, cache_dir=cache_dir)
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        return normalize_minute_frame(pd.read_csv(path))
+    except Exception:
+        return pd.DataFrame()
+
+
+def update_minute_cache(
+    symbol: str,
+    fresh_frame: pd.DataFrame,
+    period: str = "5",
+    cache_dir: str | Path = "state/futures_minute_cache",
+    existing_frame: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
+    frames: List[pd.DataFrame] = []
+    existing = existing_frame if existing_frame is not None else load_minute_cache(symbol, period=period, cache_dir=cache_dir)
+    if isinstance(existing, pd.DataFrame) and not existing.empty:
+        frames.append(normalize_minute_frame(existing))
+    if isinstance(fresh_frame, pd.DataFrame) and not fresh_frame.empty:
+        frames.append(normalize_minute_frame(fresh_frame))
+    if not frames:
+        return pd.DataFrame()
+    merged = pd.concat(frames, ignore_index=True)
+    merged = merged.drop_duplicates(subset=["timestamp"], keep="last")
+    merged = normalize_minute_frame(merged)
+    path = minute_cache_path(symbol, period=period, cache_dir=cache_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    merged.to_csv(path, index=False)
+    return merged
 
 
 def build_research_report(results: Sequence[Mapping[str, Any]], generated_at: Optional[datetime] = None) -> str:
@@ -585,12 +793,51 @@ def build_research_report(results: Sequence[Mapping[str, Any]], generated_at: Op
                 reasons=reasons or "-",
             )
         )
+    aggregates = aggregate_research_results(ranked)
+    lines.extend(
+        [
+            "",
+            "## Cross-Contract Aggregates",
+            "",
+            "| status | product | members | family | theta_bps | filters | avg_test_return | avg_capture | trades | reasons |",
+            "|---|---:|---:|---|---:|---|---:|---:|---:|---|",
+        ]
+    )
+    if not aggregates:
+        lines.append("| - | - | 0 | - | 0.0 | - | 0.0000% | 0.00% | 0 | no multi-contract product groups |")
+    for row in aggregates[:15]:
+        spec = row.get("spec", {}) if isinstance(row.get("spec"), Mapping) else {}
+        summary = row.get("summary", {}) if isinstance(row.get("summary"), Mapping) else {}
+        aggregation = row.get("aggregation", {}) if isinstance(row.get("aggregation"), Mapping) else {}
+        filters = ",".join(
+            [
+                str(spec.get("vol_filter", "all")),
+                str(spec.get("open_interest_filter", "all")),
+                str(spec.get("time_filter", "all")),
+                f"spacing={spec.get('event_spacing_bars', 0)}",
+            ]
+        )
+        reasons = ",".join(str(reason) for reason in row.get("failure_reasons", []))
+        lines.append(
+            "| {status} | {product} | {members} | {family} | {theta:.1f} | {filters} | {ret:.4%} | {capture:.2%} | {trades} | {reasons} |".format(
+                status=row.get("status", ""),
+                product=aggregation.get("product", spec.get("symbol", "")),
+                members=int(_as_float(aggregation.get("member_count"))),
+                family=spec.get("family", ""),
+                theta=_as_float(spec.get("theta_bps")),
+                filters=filters,
+                ret=_as_float(summary.get("avg_test_return")),
+                capture=_as_float(summary.get("avg_test_capture_ratio")),
+                trades=int(_as_float(summary.get("total_test_trades"))),
+                reasons=reasons or "-",
+            )
+        )
     lines.extend(
         [
             "",
             "## Interpretation",
             "",
-            "PASS means the fragment survived the strict research gate. WATCH means the path fragment is interesting but still fails at least one gate, usually event count, train/test stability, target capture band, cost stress, or random-direction control. FAIL means it is not evidence of a repeatable edge.",
+            "PASS means the fragment survived the strict research gate. WATCH means the path fragment is interesting but still fails at least one gate, usually event count, train/test stability, target capture band, cost stress, random-direction control, or cross-contract consistency. FAIL means it is not evidence of a repeatable edge.",
             "",
         ]
     )
