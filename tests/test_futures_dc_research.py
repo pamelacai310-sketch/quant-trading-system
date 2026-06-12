@@ -8,7 +8,11 @@ import pandas as pd
 from quant_trade_system.futures_dc_research import (
     DCFuturesStrategySpec,
     FuturesCostModel,
+    apply_holdout_validation,
+    apply_multiple_testing_control,
+    aggregate_cross_product_research_results,
     aggregate_research_results,
+    build_research_report,
     classify_walk_forward_result,
     cost_sensitivity_audit,
     fetch_main_contract_minute_frames,
@@ -19,6 +23,7 @@ from quant_trade_system.futures_dc_research import (
     normalize_minute_frame,
     random_direction_control,
     simulate_dc_strategy,
+    split_research_holdout_frames,
     update_minute_cache,
 )
 
@@ -138,6 +143,22 @@ class FuturesDCResearchTests(unittest.TestCase):
         self.assertTrue(all(trade["entry_lag_bars"] == 1 for trade in result["trades"]))
         self.assertTrue(all(trade["entry_index"] > trade["signal_index"] for trade in result["trades"]))
 
+    def test_overshoot_family_waits_for_confirmed_post_dc_move(self) -> None:
+        frame = _minute_frame([100, 99, 98, 102, 103, 106, 108, 110])
+        spec = DCFuturesStrategySpec(
+            symbol="IF2606",
+            family="dc_overshoot_continuation",
+            theta_bps=300,
+            overshoot_trigger_multiple=0.5,
+            max_hold_bars=20,
+        )
+
+        result = simulate_dc_strategy(frame, spec, cost_model=FuturesCostModel())
+
+        self.assertGreater(result["trade_count"], 0)
+        self.assertTrue(all(trade["entry_lag_bars"] > 1 for trade in result["trades"]))
+        self.assertEqual(result["trades"][0]["entry_index"], 6)
+
     def test_normalize_minute_frame_accepts_akshare_style_columns(self) -> None:
         raw = pd.DataFrame(
             {
@@ -247,6 +268,108 @@ class FuturesDCResearchTests(unittest.TestCase):
         self.assertEqual(result["status"], "PASS")
         self.assertEqual(result["failure_reasons"], [])
 
+    def test_multiple_testing_control_downgrades_lucky_scan_result(self) -> None:
+        cost = FuturesCostModel()
+        folds = [
+            {"train_return": 0.02, "test_return": 0.02, "test_capture_ratio": 0.10, "test_events": 25, "test_trades": 12},
+            {"train_return": 0.02, "test_return": 0.01, "test_capture_ratio": 0.08, "test_events": 24, "test_trades": 12},
+            {"train_return": 0.02, "test_return": -0.001, "test_capture_ratio": 0.06, "test_events": 23, "test_trades": 12},
+        ]
+        candidate = classify_walk_forward_result(
+            DCFuturesStrategySpec(symbol="IF2606", family="dc_reversal", theta_bps=32),
+            cost,
+            folds,
+            cost_sensitivity={"cost_1_5x": {"avg_return": 0.01}},
+            random_control={"beats_p95": True, "p_value": 0.04},
+        )
+        null_rows = [
+            classify_walk_forward_result(
+                DCFuturesStrategySpec(symbol=f"IC260{i}", family="dc_reversal", theta_bps=32),
+                cost,
+                [{"train_return": 0.0, "test_return": -0.01, "test_capture_ratio": -0.10, "test_events": 25, "test_trades": 12}],
+                random_control={"beats_p95": False, "p_value": 1.0},
+            )
+            for i in range(3)
+        ]
+
+        controlled = apply_multiple_testing_control([candidate, *null_rows], alpha=0.10)
+        controlled_candidate = next(row for row in controlled if row["spec"]["symbol"] == "IF2606")
+
+        self.assertEqual(controlled_candidate["status"], "WATCH")
+        self.assertAlmostEqual(controlled_candidate["summary"]["random_control_q_value"], 0.16)
+        self.assertIn("RANDOM_CONTROL_FDR_NOT_SIGNIFICANT", controlled_candidate["failure_reasons"])
+
+    def test_multiple_testing_control_preserves_fdr_significant_result(self) -> None:
+        cost = FuturesCostModel()
+        folds = [
+            {"train_return": 0.02, "test_return": 0.02, "test_capture_ratio": 0.10, "test_events": 25, "test_trades": 12},
+            {"train_return": 0.02, "test_return": 0.01, "test_capture_ratio": 0.08, "test_events": 24, "test_trades": 12},
+            {"train_return": 0.02, "test_return": -0.001, "test_capture_ratio": 0.06, "test_events": 23, "test_trades": 12},
+        ]
+        candidate = classify_walk_forward_result(
+            DCFuturesStrategySpec(symbol="AU2608", family="dc_continuation", theta_bps=32),
+            cost,
+            folds,
+            cost_sensitivity={"cost_1_5x": {"avg_return": 0.01}},
+            random_control={"beats_p95": True, "p_value": 0.01},
+        )
+        weak = classify_walk_forward_result(
+            DCFuturesStrategySpec(symbol="AG2608", family="dc_continuation", theta_bps=32),
+            cost,
+            [{"train_return": 0.0, "test_return": -0.01, "test_capture_ratio": -0.10, "test_events": 25, "test_trades": 12}],
+            random_control={"beats_p95": False, "p_value": 0.90},
+        )
+
+        controlled = apply_multiple_testing_control([candidate, weak], alpha=0.10)
+        controlled_candidate = next(row for row in controlled if row["spec"]["symbol"] == "AU2608")
+
+        self.assertEqual(controlled_candidate["status"], "PASS")
+        self.assertAlmostEqual(controlled_candidate["summary"]["random_control_q_value"], 0.02)
+        self.assertNotIn("RANDOM_CONTROL_FDR_NOT_SIGNIFICANT", controlled_candidate["failure_reasons"])
+
+    def test_split_research_holdout_frames_reserves_final_bars(self) -> None:
+        frame = _minute_frame([100 + index for index in range(100)])
+
+        research, holdout = split_research_holdout_frames(
+            {"IF2606": frame},
+            holdout_fraction=0.25,
+            min_research_bars=50,
+            min_holdout_bars=10,
+        )
+
+        self.assertEqual(len(research["IF2606"]), 75)
+        self.assertEqual(len(holdout["IF2606"]), 25)
+        self.assertLess(research["IF2606"]["timestamp"].max(), holdout["IF2606"]["timestamp"].min())
+
+    def test_holdout_validation_downgrades_candidate_without_final_confirmation(self) -> None:
+        cost = FuturesCostModel()
+        candidate = classify_walk_forward_result(
+            DCFuturesStrategySpec(symbol="IF2606", family="dc_reversal", theta_bps=32),
+            cost,
+            [
+                {"train_return": 0.02, "test_return": 0.02, "test_capture_ratio": 0.10, "test_events": 25, "test_trades": 12},
+                {"train_return": 0.02, "test_return": 0.01, "test_capture_ratio": 0.08, "test_events": 24, "test_trades": 12},
+                {"train_return": 0.02, "test_return": -0.001, "test_capture_ratio": 0.06, "test_events": 23, "test_trades": 12},
+            ],
+            cost_sensitivity={"cost_1_5x": {"avg_return": 0.01}},
+            random_control={"beats_p95": True, "p_value": 0.01},
+        )
+
+        validated = apply_holdout_validation(
+            [candidate],
+            {"IF2606": _minute_frame([100.0] * 80)},
+            cost_model=cost,
+            min_holdout_events=1,
+            min_holdout_trades=1,
+        )
+        row = validated[0]
+
+        self.assertEqual(row["status"], "WATCH")
+        self.assertEqual(row["summary"]["holdout_events"], 0)
+        self.assertEqual(row["summary"]["holdout_trades"], 0)
+        self.assertIn("HOLDOUT_NON_POSITIVE_EXPECTANCY", row["failure_reasons"])
+        self.assertIn("HOLDOUT_LOW_EVENT_COUNT", row["failure_reasons"])
+
     def test_aggregate_research_results_requires_multiple_contracts(self) -> None:
         spec = DCFuturesStrategySpec(symbol="IF2606", family="dc_reversal", theta_bps=32)
         row = classify_walk_forward_result(
@@ -287,6 +410,8 @@ class FuturesDCResearchTests(unittest.TestCase):
             cost_sensitivity={"cost_1_5x": {"avg_return": -0.02}},
             random_control={"beats_p95": False, "p_value": 0.70},
         )
+        good["summary"].update({"holdout_return": 0.01, "holdout_capture_ratio": 0.10, "holdout_trades": 12})
+        weak["summary"].update({"holdout_return": -0.02, "holdout_capture_ratio": -0.10, "holdout_trades": 12})
 
         aggregate = aggregate_research_results([good, weak])[0]
 
@@ -294,6 +419,76 @@ class FuturesDCResearchTests(unittest.TestCase):
         self.assertEqual(aggregate["aggregation"]["members"], ["IF2606", "IF2609"])
         self.assertIn("CROSS_CONTRACT_MEMBER_EXPECTANCY_DIVERGENCE", aggregate["failure_reasons"])
         self.assertIn("CROSS_CONTRACT_CAPTURE_DIVERGENCE", aggregate["failure_reasons"])
+        self.assertIn("CROSS_CONTRACT_HOLDOUT_EXPECTANCY_DIVERGENCE", aggregate["failure_reasons"])
+        self.assertIn("CROSS_CONTRACT_HOLDOUT_CAPTURE_DIVERGENCE", aggregate["failure_reasons"])
+        self.assertAlmostEqual(aggregate["summary"]["holdout_return"], -0.005)
+
+    def test_cross_product_aggregation_uses_product_representatives(self) -> None:
+        cost = FuturesCostModel()
+        good_folds = [
+            {"train_return": 0.02, "test_return": 0.02, "test_capture_ratio": 0.10, "test_events": 25, "test_trades": 12},
+            {"train_return": 0.02, "test_return": 0.01, "test_capture_ratio": 0.08, "test_events": 24, "test_trades": 12},
+            {"train_return": 0.02, "test_return": -0.001, "test_capture_ratio": 0.06, "test_events": 23, "test_trades": 12},
+        ]
+        weak_folds = [
+            {"train_return": 0.01, "test_return": -0.02, "test_capture_ratio": -0.10, "test_events": 25, "test_trades": 12},
+            {"train_return": 0.01, "test_return": -0.01, "test_capture_ratio": -0.05, "test_events": 24, "test_trades": 12},
+            {"train_return": 0.01, "test_return": 0.001, "test_capture_ratio": 0.01, "test_events": 23, "test_trades": 12},
+        ]
+        if_june = classify_walk_forward_result(
+            DCFuturesStrategySpec(symbol="IF2606", family="dc_reversal", theta_bps=32),
+            cost,
+            good_folds,
+            cost_sensitivity={"cost_1_5x": {"avg_return": 0.01}},
+            random_control={"beats_p95": True, "p_value": 0.02},
+        )
+        if_september = classify_walk_forward_result(
+            DCFuturesStrategySpec(symbol="IF2609", family="dc_reversal", theta_bps=32),
+            cost,
+            good_folds,
+            cost_sensitivity={"cost_1_5x": {"avg_return": 0.01}},
+            random_control={"beats_p95": True, "p_value": 0.02},
+        )
+        ic = classify_walk_forward_result(
+            DCFuturesStrategySpec(symbol="IC2606", family="dc_reversal", theta_bps=32),
+            cost,
+            weak_folds,
+            cost_sensitivity={"cost_1_5x": {"avg_return": -0.02}},
+            random_control={"beats_p95": False, "p_value": 0.70},
+        )
+        if_june["summary"].update({"holdout_return": 0.01, "holdout_capture_ratio": 0.10, "holdout_trades": 12})
+        if_september["summary"].update({"holdout_return": 0.02, "holdout_capture_ratio": 0.12, "holdout_trades": 13})
+        ic["summary"].update({"holdout_return": -0.03, "holdout_capture_ratio": -0.20, "holdout_trades": 12})
+
+        aggregate = aggregate_cross_product_research_results([if_june, if_september, ic])[0]
+
+        self.assertEqual(aggregate["spec"]["symbol"], "CROSS_PRODUCT_AGG")
+        self.assertEqual(aggregate["aggregation"]["members"], ["IC", "IF"])
+        self.assertEqual(aggregate["aggregation"]["member_count"], 2)
+        self.assertIn("CROSS_PRODUCT_MEMBER_EXPECTANCY_DIVERGENCE", aggregate["failure_reasons"])
+        self.assertIn("CROSS_PRODUCT_CAPTURE_DIVERGENCE", aggregate["failure_reasons"])
+        self.assertIn("CROSS_PRODUCT_HOLDOUT_EXPECTANCY_DIVERGENCE", aggregate["failure_reasons"])
+        self.assertIn("CROSS_PRODUCT_HOLDOUT_CAPTURE_DIVERGENCE", aggregate["failure_reasons"])
+        self.assertIn("CROSS_PRODUCT_SINGLE_CONTRACT_MEMBER", aggregate["failure_reasons"])
+
+    def test_report_includes_cross_product_section(self) -> None:
+        cost = FuturesCostModel()
+        row = classify_walk_forward_result(
+            DCFuturesStrategySpec(symbol="IF2606", family="dc_reversal", theta_bps=32),
+            cost,
+            [
+                {"train_return": 0.02, "test_return": 0.02, "test_capture_ratio": 0.10, "test_events": 25, "test_trades": 12},
+                {"train_return": 0.02, "test_return": 0.01, "test_capture_ratio": 0.08, "test_events": 24, "test_trades": 12},
+                {"train_return": 0.02, "test_return": -0.001, "test_capture_ratio": 0.06, "test_events": 23, "test_trades": 12},
+            ],
+            cost_sensitivity={"cost_1_5x": {"avg_return": 0.01}},
+            random_control={"beats_p95": True, "p_value": 0.02},
+        )
+
+        report = build_research_report([row])
+
+        self.assertIn("## Cross-Product Aggregates", report)
+        self.assertIn("no multi-product parameter groups", report)
 
 
 if __name__ == "__main__":

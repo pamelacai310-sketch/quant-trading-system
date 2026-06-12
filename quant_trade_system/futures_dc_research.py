@@ -17,11 +17,12 @@ from .path_capture import DCEvent, capture_ratio, dc_path_summary, directional_c
 
 DEFAULT_PRODUCTS = ("IF", "IC", "IM", "CU", "AU", "AG", "RB", "HC", "I", "M")
 DEFAULT_THETA_BPS = (8.0, 12.0, 16.0, 24.0, 32.0, 48.0, 64.0)
-DEFAULT_STRATEGY_FAMILIES = ("dc_continuation", "dc_reversal")
+DEFAULT_STRATEGY_FAMILIES = ("dc_continuation", "dc_reversal", "dc_overshoot_continuation", "dc_overshoot_reversal")
 DEFAULT_VOL_FILTERS = ("all", "mid_40_80", "high_70_plus")
 DEFAULT_OPEN_INTEREST_FILTERS = ("all", "rising")
 DEFAULT_TIME_FILTERS = ("all", "day", "night", "open30", "close30")
 DEFAULT_EVENT_SPACING_BARS = (0, 2, 4, 6)
+DEFAULT_OVERSHOOT_TRIGGER_MULTIPLES = (0.5, 1.0)
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,7 @@ class DCFuturesStrategySpec:
     max_hold_bars: int = 12
     stop_multiple: float = 1.0
     take_profit_multiple: float = 2.0
+    overshoot_trigger_multiple: float = 0.0
 
 
 def normalize_minute_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -118,16 +120,23 @@ def simulate_dc_strategy(
         return _empty_simulation_result(spec, cost_model, "insufficient_bars")
 
     events = directional_change_events(working, spec.theta_bps)
-    entry_events: Dict[int, DCEvent] = {
-        event.confirmation_index + 1: event
-        for event in events
-        if event.confirmation_index + 1 < len(working)
-    }
+    overshoot_family = _is_overshoot_family(spec.family)
+    entry_events: Dict[int, DCEvent] = {}
+    pending_events: Dict[int, DCEvent] = {}
+    for event in events:
+        entry_index = event.confirmation_index + 1
+        if entry_index >= len(working):
+            continue
+        if overshoot_family:
+            pending_events[entry_index] = event
+        else:
+            entry_events[entry_index] = event
     theta = float(spec.theta_bps) / 10_000.0
     position = 0
     entry_price = 0.0
     entry_index = -1
     entry_event: Optional[DCEvent] = None
+    active_event: Optional[DCEvent] = None
     last_entry_index = -10**9
     equity = 1.0
     trades: List[Dict[str, Any]] = []
@@ -156,7 +165,18 @@ def simulate_dc_strategy(
                 entry_index = -1
                 entry_event = None
 
-        event = entry_events.get(index)
+        if overshoot_family:
+            if index in pending_events:
+                active_event = pending_events[index]
+            if active_event is not None and index - active_event.confirmation_index > int(spec.max_hold_bars):
+                active_event = None
+            event = (
+                active_event
+                if active_event is not None and _overshoot_entry_ready(working, index, active_event, spec, theta)
+                else None
+            )
+        else:
+            event = entry_events.get(index)
         if event is None:
             continue
 
@@ -196,6 +216,8 @@ def simulate_dc_strategy(
         entry_index = index
         entry_event = event
         last_entry_index = index
+        if overshoot_family:
+            active_event = None
 
     if position != 0:
         final_index = len(working) - 1
@@ -460,6 +482,7 @@ def scan_futures_dc_strategies(
     open_interest_filters: Sequence[str] = DEFAULT_OPEN_INTEREST_FILTERS,
     time_filters: Sequence[str] = DEFAULT_TIME_FILTERS,
     event_spacing_bars_values: Sequence[int] = DEFAULT_EVENT_SPACING_BARS,
+    overshoot_trigger_multiples: Sequence[float] = DEFAULT_OVERSHOOT_TRIGGER_MULTIPLES,
     cost_model: Optional[FuturesCostModel] = None,
     folds: int = 3,
     max_candidates: Optional[int] = None,
@@ -472,32 +495,170 @@ def scan_futures_dc_strategies(
         if normalized.empty:
             continue
         for family in strategy_families:
-            for theta_bps in theta_bps_values:
-                for vol_filter in vol_filters:
-                    for open_interest_filter in open_interest_filters:
-                        for time_filter in time_filters:
-                            for spacing in event_spacing_bars_values:
-                                spec = DCFuturesStrategySpec(
-                                    symbol=str(symbol),
-                                    family=str(family),
-                                    theta_bps=float(theta_bps),
-                                    vol_filter=str(vol_filter),
-                                    open_interest_filter=str(open_interest_filter),
-                                    time_filter=str(time_filter),
-                                    event_spacing_bars=int(spacing),
-                                )
-                                results.append(
-                                    walk_forward_evaluate(
-                                        normalized,
-                                        spec,
-                                        cost_model=cost_model,
-                                        folds=folds,
-                                        random_trials=random_trials,
+            family_overshoot_values = overshoot_trigger_multiples if _is_overshoot_family(str(family)) else (0.0,)
+            for overshoot_multiple in family_overshoot_values:
+                for theta_bps in theta_bps_values:
+                    for vol_filter in vol_filters:
+                        for open_interest_filter in open_interest_filters:
+                            for time_filter in time_filters:
+                                for spacing in event_spacing_bars_values:
+                                    spec = DCFuturesStrategySpec(
+                                        symbol=str(symbol),
+                                        family=str(family),
+                                        theta_bps=float(theta_bps),
+                                        vol_filter=str(vol_filter),
+                                        open_interest_filter=str(open_interest_filter),
+                                        time_filter=str(time_filter),
+                                        event_spacing_bars=int(spacing),
+                                        overshoot_trigger_multiple=float(overshoot_multiple),
                                     )
-                                )
-                                if max_candidates is not None and len(results) >= max_candidates:
-                                    return rank_research_results(results)
-    return rank_research_results(results)
+                                    results.append(
+                                        walk_forward_evaluate(
+                                            normalized,
+                                            spec,
+                                            cost_model=cost_model,
+                                            folds=folds,
+                                            random_trials=random_trials,
+                                        )
+                                    )
+                                    if max_candidates is not None and len(results) >= max_candidates:
+                                        return apply_multiple_testing_control(results)
+    return apply_multiple_testing_control(results)
+
+
+def split_research_holdout_frames(
+    frames_by_symbol: Mapping[str, pd.DataFrame],
+    holdout_fraction: float = 0.20,
+    min_research_bars: int = 180,
+    min_holdout_bars: int = 60,
+) -> Tuple[Dict[str, pd.DataFrame], Dict[str, pd.DataFrame]]:
+    research_frames: Dict[str, pd.DataFrame] = {}
+    holdout_frames: Dict[str, pd.DataFrame] = {}
+    fraction = min(max(float(holdout_fraction), 0.0), 0.80)
+    for symbol, frame in frames_by_symbol.items():
+        normalized = normalize_minute_frame(frame)
+        if normalized.empty:
+            continue
+        if fraction <= 0.0:
+            research_frames[str(symbol)] = normalized
+            continue
+        holdout_bars = max(int(round(len(normalized) * fraction)), int(min_holdout_bars))
+        split_index = len(normalized) - holdout_bars
+        if split_index < int(min_research_bars) or holdout_bars <= 0:
+            research_frames[str(symbol)] = normalized
+            continue
+        research_frames[str(symbol)] = normalized.iloc[:split_index].copy().reset_index(drop=True)
+        holdout_frames[str(symbol)] = normalized.iloc[split_index:].copy().reset_index(drop=True)
+    return research_frames, holdout_frames
+
+
+def apply_holdout_validation(
+    results: Sequence[Mapping[str, Any]],
+    holdout_frames_by_symbol: Mapping[str, pd.DataFrame],
+    cost_model: Optional[FuturesCostModel] = None,
+    min_holdout_events: int = 10,
+    min_holdout_trades: int = 5,
+) -> List[Dict[str, Any]]:
+    cost_model = cost_model or FuturesCostModel()
+    rows: List[Dict[str, Any]] = []
+    for row in results:
+        copy = dict(row)
+        spec_mapping = copy.get("spec", {}) if isinstance(copy.get("spec"), Mapping) else {}
+        summary = dict(copy.get("summary", {})) if isinstance(copy.get("summary"), Mapping) else {}
+        copy["summary"] = summary
+        symbol = str(spec_mapping.get("symbol", ""))
+        holdout_frame = holdout_frames_by_symbol.get(symbol)
+        holdout_flags: List[str] = []
+        if not isinstance(holdout_frame, pd.DataFrame) or holdout_frame.empty:
+            summary.update(
+                {
+                    "holdout_return": 0.0,
+                    "holdout_capture_ratio": 0.0,
+                    "holdout_events": 0,
+                    "holdout_trades": 0,
+                    "holdout_start": "",
+                    "holdout_end": "",
+                }
+            )
+            holdout_flags.append("HOLDOUT_MISSING")
+        else:
+            spec = _strategy_spec_from_mapping(spec_mapping)
+            holdout = simulate_dc_strategy(holdout_frame, spec, cost_model=cost_model)
+            normalized = normalize_minute_frame(holdout_frame)
+            summary.update(
+                {
+                    "holdout_return": _as_float(holdout.get("strategy_return")),
+                    "holdout_capture_ratio": _as_float(holdout.get("capture_ratio")),
+                    "holdout_events": int(_as_float(holdout.get("event_count"))),
+                    "holdout_trades": int(_as_float(holdout.get("trade_count"))),
+                    "holdout_start": str(normalized.iloc[0]["timestamp"]) if not normalized.empty else "",
+                    "holdout_end": str(normalized.iloc[-1]["timestamp"]) if not normalized.empty else "",
+                }
+            )
+            if summary["holdout_return"] <= 0:
+                holdout_flags.append("HOLDOUT_NON_POSITIVE_EXPECTANCY")
+            if not 0.05 <= summary["holdout_capture_ratio"] <= 0.20:
+                holdout_flags.append("HOLDOUT_CAPTURE_OUT_OF_TARGET")
+            if summary["holdout_events"] < int(min_holdout_events):
+                holdout_flags.append("HOLDOUT_LOW_EVENT_COUNT")
+            if summary["holdout_trades"] < int(min_holdout_trades):
+                holdout_flags.append("HOLDOUT_LOW_TRADE_COUNT")
+
+        if holdout_flags:
+            copy["failure_reasons"] = _with_failure_reason(copy.get("failure_reasons", []), holdout_flags[0])
+            for flag in holdout_flags[1:]:
+                copy["failure_reasons"] = _with_failure_reason(copy.get("failure_reasons", []), flag)
+            if copy.get("status") == "PASS":
+                copy["status"] = (
+                    "WATCH"
+                    if _as_float(summary.get("avg_test_return")) > 0 and int(_as_float(summary.get("positive_test_folds"))) >= 2
+                    else "FAIL"
+                )
+        rows.append(copy)
+    return apply_multiple_testing_control(rows)
+
+
+def apply_multiple_testing_control(
+    results: Sequence[Mapping[str, Any]],
+    alpha: float = 0.10,
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    p_values: List[float] = []
+    for row in results:
+        copy = dict(row)
+        summary = dict(copy.get("summary", {})) if isinstance(copy.get("summary"), Mapping) else {}
+        copy["summary"] = summary
+        rows.append(copy)
+        p_values.append(min(max(_as_float(summary.get("random_control_p_value"), 1.0), 0.0), 1.0))
+
+    q_values = _benjamini_hochberg_q_values(p_values)
+    candidate_count = len(rows)
+    threshold = min(max(float(alpha), 0.0), 1.0)
+    for row, q_value in zip(rows, q_values):
+        summary = row["summary"]
+        summary["random_control_q_value"] = float(q_value)
+        summary["multiple_testing_alpha"] = threshold
+        summary["multiple_testing_candidates"] = candidate_count
+        row["multiple_testing"] = {
+            "method": "benjamini_hochberg_fdr_on_random_direction_p_values",
+            "alpha": threshold,
+            "candidate_count": candidate_count,
+            "random_control_q_value": float(q_value),
+        }
+        if (
+            row.get("status") in {"PASS", "WATCH"}
+            and q_value > threshold
+        ):
+            row["failure_reasons"] = _with_failure_reason(
+                row.get("failure_reasons", []),
+                "RANDOM_CONTROL_FDR_NOT_SIGNIFICANT",
+            )
+            row["status"] = (
+                "WATCH"
+                if _as_float(summary.get("avg_test_return")) > 0 and int(_as_float(summary.get("positive_test_folds"))) >= 2
+                else "FAIL"
+            )
+    return rank_research_results(rows)
 
 
 def rank_research_results(results: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
@@ -526,40 +687,14 @@ def aggregate_research_results(
         product = normalize_futures_symbol(str(spec.get("symbol", "")))
         if not product:
             continue
-        key = (
-            product,
-            spec.get("family"),
-            float(_as_float(spec.get("theta_bps"))),
-            spec.get("vol_filter", "all"),
-            spec.get("open_interest_filter", "all"),
-            spec.get("time_filter", "all"),
-            int(_as_float(spec.get("event_spacing_bars"))),
-        )
+        key = (product,) + _strategy_parameter_key(spec)
         groups[key].append(row)
 
     aggregated: List[Dict[str, Any]] = []
     for key, members in groups.items():
         if len(members) < int(min_members):
             continue
-        product, family, theta_bps, vol_filter, open_interest_filter, time_filter, spacing = key
-        member_symbols = sorted(
-            {
-                str(member.get("spec", {}).get("symbol"))
-                for member in members
-                if isinstance(member.get("spec"), Mapping)
-            }
-        )
-        folds: List[Dict[str, Any]] = []
-        for member in members:
-            symbol = str(member.get("spec", {}).get("symbol", ""))
-            for fold in member.get("folds", []):
-                if not isinstance(fold, Mapping):
-                    continue
-                fold_row = dict(fold)
-                fold_row["source_symbol"] = symbol
-                fold_row["fold"] = f"{symbol}:{fold.get('fold', '')}"
-                folds.append(fold_row)
-
+        product, family, theta_bps, vol_filter, open_interest_filter, time_filter, spacing, overshoot_multiple = key
         aggregate_spec = DCFuturesStrategySpec(
             symbol=f"{product}_AGG",
             family=str(family),
@@ -568,63 +703,318 @@ def aggregate_research_results(
             open_interest_filter=str(open_interest_filter),
             time_filter=str(time_filter),
             event_spacing_bars=int(spacing),
+            overshoot_trigger_multiple=float(overshoot_multiple),
         )
-        cost_stress_values = [
-            _as_float(member.get("summary", {}).get("cost_1_5x_avg_return"))
-            for member in members
-            if isinstance(member.get("summary"), Mapping)
-        ]
-        random_controls = [
-            member.get("random_direction_control", {})
-            for member in members
-            if isinstance(member.get("random_direction_control"), Mapping)
-        ]
-        random_p_values = [_as_float(control.get("p_value"), 1.0) for control in random_controls]
-        aggregate = classify_walk_forward_result(
+        aggregate = _aggregate_research_group(
+            members,
             aggregate_spec,
             cost_model,
-            folds,
-            cost_sensitivity={
-                "cost_1_5x": {
-                    "avg_return": float(np.mean(cost_stress_values)) if cost_stress_values else 0.0,
-                    "member_returns": [float(value) for value in cost_stress_values],
-                }
-            },
-            random_control={
-                "beats_p95": bool(random_controls and all(bool(control.get("beats_p95", False)) for control in random_controls)),
-                "p_value": float(max(random_p_values)) if random_p_values else 1.0,
-                "method": "all_member_random_controls_must_pass",
+            divergence_prefix="CROSS_CONTRACT",
+            aggregation={
+                "mode": "product_contract_rollup",
+                "product": product,
             },
         )
-        member_positive = sum(
-            1
-            for member in members
-            if isinstance(member.get("summary"), Mapping) and _as_float(member["summary"].get("avg_test_return")) > 0
-        )
-        member_target_capture = sum(
-            1
-            for member in members
-            if isinstance(member.get("summary"), Mapping)
-            and 0.05 <= _as_float(member["summary"].get("avg_test_capture_ratio")) <= 0.20
-        )
-        extra_flags: List[str] = []
-        if member_positive < len(members):
-            extra_flags.append("CROSS_CONTRACT_MEMBER_EXPECTANCY_DIVERGENCE")
-        if member_target_capture < len(members):
-            extra_flags.append("CROSS_CONTRACT_CAPTURE_DIVERGENCE")
-        if extra_flags:
-            aggregate["failure_reasons"] = list(dict.fromkeys(list(aggregate.get("failure_reasons", [])) + extra_flags))
-            aggregate["status"] = "WATCH" if aggregate["summary"]["avg_test_return"] > 0 else "FAIL"
-        aggregate["aggregation"] = {
-            "mode": "product_contract_rollup",
-            "product": product,
-            "member_count": len(members),
-            "members": member_symbols,
-            "member_positive_count": member_positive,
-            "member_target_capture_count": member_target_capture,
-        }
         aggregated.append(aggregate)
     return rank_research_results(aggregated)
+
+
+def aggregate_cross_product_research_results(
+    results: Sequence[Mapping[str, Any]],
+    cost_model: Optional[FuturesCostModel] = None,
+    min_products: int = 2,
+) -> List[Dict[str, Any]]:
+    cost_model = cost_model or FuturesCostModel()
+    representatives = _product_representative_results(results, cost_model)
+    groups: Dict[Tuple[Any, ...], List[Mapping[str, Any]]] = defaultdict(list)
+    for row in representatives:
+        spec = row.get("spec", {}) if isinstance(row.get("spec"), Mapping) else {}
+        groups[_strategy_parameter_key(spec)].append(row)
+
+    aggregated: List[Dict[str, Any]] = []
+    for key, members in groups.items():
+        products = sorted(
+            {
+                str(member.get("aggregation", {}).get("product"))
+                for member in members
+                if isinstance(member.get("aggregation"), Mapping) and member.get("aggregation", {}).get("product")
+            }
+        )
+        if len(products) < int(min_products):
+            continue
+        family, theta_bps, vol_filter, open_interest_filter, time_filter, spacing, overshoot_multiple = key
+        aggregate_spec = DCFuturesStrategySpec(
+            symbol="CROSS_PRODUCT_AGG",
+            family=str(family),
+            theta_bps=float(theta_bps),
+            vol_filter=str(vol_filter),
+            open_interest_filter=str(open_interest_filter),
+            time_filter=str(time_filter),
+            event_spacing_bars=int(spacing),
+            overshoot_trigger_multiple=float(overshoot_multiple),
+        )
+        single_contract_products = [
+            str(member.get("aggregation", {}).get("product"))
+            for member in members
+            if isinstance(member.get("aggregation"), Mapping)
+            and int(_as_float(member.get("aggregation", {}).get("member_count"))) == 1
+        ]
+        aggregate = _aggregate_research_group(
+            members,
+            aggregate_spec,
+            cost_model,
+            divergence_prefix="CROSS_PRODUCT",
+            member_labels=products,
+            aggregation={
+                "mode": "cross_product_param_family",
+                "products": products,
+                "single_contract_products": sorted(single_contract_products),
+            },
+        )
+        if single_contract_products:
+            aggregate["failure_reasons"] = list(
+                dict.fromkeys(list(aggregate.get("failure_reasons", [])) + ["CROSS_PRODUCT_SINGLE_CONTRACT_MEMBER"])
+            )
+            aggregate["status"] = "WATCH" if aggregate["summary"]["avg_test_return"] > 0 else "FAIL"
+        aggregated.append(aggregate)
+    return rank_research_results(aggregated)
+
+
+def _product_representative_results(
+    results: Sequence[Mapping[str, Any]],
+    cost_model: FuturesCostModel,
+) -> List[Dict[str, Any]]:
+    groups: Dict[Tuple[Any, ...], List[Mapping[str, Any]]] = defaultdict(list)
+    for row in results:
+        spec = row.get("spec", {}) if isinstance(row.get("spec"), Mapping) else {}
+        product = normalize_futures_symbol(str(spec.get("symbol", "")))
+        if product:
+            groups[(product,) + _strategy_parameter_key(spec)].append(row)
+
+    representatives: List[Dict[str, Any]] = []
+    for key, members in groups.items():
+        product = str(key[0])
+        if len(members) >= 2:
+            family, theta_bps, vol_filter, open_interest_filter, time_filter, spacing, overshoot_multiple = key[1:]
+            aggregate_spec = DCFuturesStrategySpec(
+                symbol=f"{product}_AGG",
+                family=str(family),
+                theta_bps=float(theta_bps),
+                vol_filter=str(vol_filter),
+                open_interest_filter=str(open_interest_filter),
+                time_filter=str(time_filter),
+                event_spacing_bars=int(spacing),
+                overshoot_trigger_multiple=float(overshoot_multiple),
+            )
+            representatives.append(
+                _aggregate_research_group(
+                    members,
+                    aggregate_spec,
+                    cost_model,
+                    divergence_prefix="CROSS_CONTRACT",
+                    aggregation={
+                        "mode": "product_contract_rollup",
+                        "product": product,
+                    },
+                )
+            )
+            continue
+
+        representative = dict(members[0])
+        spec = representative.get("spec", {}) if isinstance(representative.get("spec"), Mapping) else {}
+        symbol = str(spec.get("symbol", ""))
+        representative["aggregation"] = {
+            "mode": "single_contract_product_representative",
+            "product": product,
+            "member_count": 1,
+            "members": [symbol] if symbol else [],
+            "member_positive_count": int(
+                isinstance(representative.get("summary"), Mapping)
+                and _as_float(representative["summary"].get("avg_test_return")) > 0
+            ),
+            "member_target_capture_count": int(
+                isinstance(representative.get("summary"), Mapping)
+                and 0.05 <= _as_float(representative["summary"].get("avg_test_capture_ratio")) <= 0.20
+            ),
+        }
+        representatives.append(representative)
+    return representatives
+
+
+def _aggregate_research_group(
+    members: Sequence[Mapping[str, Any]],
+    aggregate_spec: DCFuturesStrategySpec,
+    cost_model: FuturesCostModel,
+    divergence_prefix: str,
+    aggregation: Mapping[str, Any],
+    member_labels: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
+    folds: List[Dict[str, Any]] = []
+    for member in members:
+        spec = member.get("spec", {}) if isinstance(member.get("spec"), Mapping) else {}
+        symbol = str(spec.get("symbol", ""))
+        product = normalize_futures_symbol(symbol)
+        for fold in member.get("folds", []):
+            if not isinstance(fold, Mapping):
+                continue
+            fold_row = dict(fold)
+            had_source_symbol = "source_symbol" in fold_row
+            fold_row["source_symbol"] = fold_row.get("source_symbol", symbol)
+            fold_row["source_product"] = fold_row.get("source_product", product)
+            if not had_source_symbol:
+                fold_row["fold"] = f"{fold_row.get('source_symbol', symbol)}:{fold.get('fold', '')}"
+            folds.append(fold_row)
+
+    cost_stress_values = [
+        _as_float(member.get("summary", {}).get("cost_1_5x_avg_return"))
+        for member in members
+        if isinstance(member.get("summary"), Mapping)
+    ]
+    random_controls = [
+        member.get("random_direction_control", {})
+        for member in members
+        if isinstance(member.get("random_direction_control"), Mapping)
+    ]
+    random_p_values = [_as_float(control.get("p_value"), 1.0) for control in random_controls]
+    aggregate = classify_walk_forward_result(
+        aggregate_spec,
+        cost_model,
+        folds,
+        cost_sensitivity={
+            "cost_1_5x": {
+                "avg_return": float(np.mean(cost_stress_values)) if cost_stress_values else 0.0,
+                "member_returns": [float(value) for value in cost_stress_values],
+            }
+        },
+        random_control={
+            "beats_p95": bool(random_controls and all(bool(control.get("beats_p95", False)) for control in random_controls)),
+            "p_value": float(max(random_p_values)) if random_p_values else 1.0,
+            "method": "all_member_random_controls_must_pass",
+        },
+    )
+    member_positive = sum(
+        1
+        for member in members
+        if isinstance(member.get("summary"), Mapping) and _as_float(member["summary"].get("avg_test_return")) > 0
+    )
+    member_target_capture = sum(
+        1
+        for member in members
+        if isinstance(member.get("summary"), Mapping)
+        and 0.05 <= _as_float(member["summary"].get("avg_test_capture_ratio")) <= 0.20
+    )
+    member_cost_survival = sum(1 for value in cost_stress_values if value > 0)
+    member_random_survival = sum(1 for control in random_controls if bool(control.get("beats_p95", False)))
+    holdout_summaries = [
+        member.get("summary", {})
+        for member in members
+        if isinstance(member.get("summary"), Mapping) and "holdout_return" in member.get("summary", {})
+    ]
+    holdout_returns = [_as_float(summary.get("holdout_return")) for summary in holdout_summaries]
+    holdout_captures = [_as_float(summary.get("holdout_capture_ratio")) for summary in holdout_summaries]
+    holdout_trades = [int(_as_float(summary.get("holdout_trades"))) for summary in holdout_summaries]
+    member_holdout_positive = sum(1 for value in holdout_returns if value > 0)
+    member_holdout_target_capture = sum(
+        1
+        for value, capture in zip(holdout_returns, holdout_captures)
+        if value > 0 and 0.05 <= capture <= 0.20
+    )
+    if holdout_summaries:
+        aggregate["summary"]["holdout_return"] = float(np.mean(holdout_returns)) if holdout_returns else 0.0
+        aggregate["summary"]["holdout_capture_ratio"] = float(np.mean(holdout_captures)) if holdout_captures else 0.0
+        aggregate["summary"]["holdout_trades"] = int(sum(holdout_trades))
+        aggregate["summary"]["holdout_member_count"] = len(holdout_summaries)
+        aggregate["summary"]["holdout_positive_member_count"] = member_holdout_positive
+        aggregate["summary"]["holdout_target_capture_member_count"] = member_holdout_target_capture
+    extra_flags: List[str] = []
+    if member_positive < len(members):
+        extra_flags.append(f"{divergence_prefix}_MEMBER_EXPECTANCY_DIVERGENCE")
+    if member_target_capture < len(members):
+        extra_flags.append(f"{divergence_prefix}_CAPTURE_DIVERGENCE")
+    if member_cost_survival < len(members):
+        extra_flags.append(f"{divergence_prefix}_COST_STRESS_DIVERGENCE")
+    if member_random_survival < len(members):
+        extra_flags.append(f"{divergence_prefix}_RANDOM_CONTROL_DIVERGENCE")
+    if holdout_summaries and member_holdout_positive < len(holdout_summaries):
+        extra_flags.append(f"{divergence_prefix}_HOLDOUT_EXPECTANCY_DIVERGENCE")
+    if holdout_summaries and member_holdout_target_capture < len(holdout_summaries):
+        extra_flags.append(f"{divergence_prefix}_HOLDOUT_CAPTURE_DIVERGENCE")
+    if extra_flags:
+        aggregate["failure_reasons"] = list(dict.fromkeys(list(aggregate.get("failure_reasons", [])) + extra_flags))
+        aggregate["status"] = "WATCH" if aggregate["summary"]["avg_test_return"] > 0 else "FAIL"
+
+    if member_labels is None:
+        member_labels = sorted(
+            {
+                str(member.get("spec", {}).get("symbol"))
+                for member in members
+                if isinstance(member.get("spec"), Mapping)
+            }
+        )
+    aggregate["aggregation"] = dict(aggregation) | {
+        "member_count": len(members),
+        "members": list(member_labels),
+        "member_positive_count": member_positive,
+        "member_target_capture_count": member_target_capture,
+        "member_cost_survival_count": member_cost_survival,
+        "member_random_survival_count": member_random_survival,
+        "member_holdout_positive_count": member_holdout_positive,
+        "member_holdout_target_capture_count": member_holdout_target_capture,
+    }
+    return aggregate
+
+
+def _strategy_parameter_key(spec: Mapping[str, Any]) -> Tuple[Any, ...]:
+    return (
+        spec.get("family"),
+        float(_as_float(spec.get("theta_bps"))),
+        spec.get("vol_filter", "all"),
+        spec.get("open_interest_filter", "all"),
+        spec.get("time_filter", "all"),
+        int(_as_float(spec.get("event_spacing_bars"))),
+        float(_as_float(spec.get("overshoot_trigger_multiple"))),
+    )
+
+
+def _strategy_spec_from_mapping(spec: Mapping[str, Any]) -> DCFuturesStrategySpec:
+    return DCFuturesStrategySpec(
+        symbol=str(spec.get("symbol", "")),
+        family=str(spec.get("family", "")),
+        theta_bps=float(_as_float(spec.get("theta_bps"))),
+        vol_filter=str(spec.get("vol_filter", "all")),
+        open_interest_filter=str(spec.get("open_interest_filter", "all")),
+        time_filter=str(spec.get("time_filter", "all")),
+        event_spacing_bars=int(_as_float(spec.get("event_spacing_bars"))),
+        max_hold_bars=int(_as_float(spec.get("max_hold_bars"), 12.0)),
+        stop_multiple=float(_as_float(spec.get("stop_multiple"), 1.0)),
+        take_profit_multiple=float(_as_float(spec.get("take_profit_multiple"), 2.0)),
+        overshoot_trigger_multiple=float(_as_float(spec.get("overshoot_trigger_multiple"))),
+    )
+
+
+def _benjamini_hochberg_q_values(p_values: Sequence[float]) -> List[float]:
+    if not p_values:
+        return []
+    sanitized = [min(max(_as_float(value, 1.0), 0.0), 1.0) for value in p_values]
+    sorted_indices = sorted(range(len(sanitized)), key=lambda index: sanitized[index])
+    q_values = [1.0] * len(sanitized)
+    running_min = 1.0
+    total = len(sanitized)
+    for rank, index in reversed(list(enumerate(sorted_indices, start=1))):
+        running_min = min(running_min, sanitized[index] * total / rank)
+        q_values[index] = float(min(max(running_min, 0.0), 1.0))
+    return q_values
+
+
+def _with_failure_reason(reasons: Any, reason: str) -> List[str]:
+    if isinstance(reasons, str):
+        existing = [reasons]
+    else:
+        try:
+            existing = [str(item) for item in reasons]
+        except TypeError:
+            existing = []
+    return list(dict.fromkeys(existing + [reason]))
 
 
 def fetch_main_contract_minute_frames(
@@ -748,9 +1138,21 @@ def update_minute_cache(
 
 def build_research_report(results: Sequence[Mapping[str, Any]], generated_at: Optional[datetime] = None) -> str:
     generated_at = generated_at or datetime.now()
-    ranked = rank_research_results(results)
+    ranked = apply_multiple_testing_control(results)
     pass_count = sum(1 for row in ranked if row.get("status") == "PASS")
     watch_count = sum(1 for row in ranked if row.get("status") == "WATCH")
+    holdout_positive_count = sum(
+        1
+        for row in ranked
+        if isinstance(row.get("summary"), Mapping) and _as_float(row["summary"].get("holdout_return")) > 0
+    )
+    holdout_target_count = sum(
+        1
+        for row in ranked
+        if isinstance(row.get("summary"), Mapping)
+        and _as_float(row["summary"].get("holdout_return")) > 0
+        and 0.05 <= _as_float(row["summary"].get("holdout_capture_ratio")) <= 0.20
+    )
     lines = [
         "# Futures DC Capture Research Report",
         "",
@@ -758,13 +1160,15 @@ def build_research_report(results: Sequence[Mapping[str, Any]], generated_at: Op
         f"- Candidates scanned: {len(ranked)}",
         f"- PASS: {pass_count}",
         f"- WATCH: {watch_count}",
-        "- Gate: OOS net positive, average and median capture_ratio in 5%-20%, at least two target-capture folds, positive 1.5x-cost stress, random-direction control beaten, event/trade sufficiency, no bias flags.",
+        f"- Holdout positive: {holdout_positive_count}",
+        f"- Holdout positive with 5%-20% capture: {holdout_target_count}",
+        "- Gate: OOS net positive, average and median capture_ratio in 5%-20%, untouched holdout confirmation, at least two target-capture folds, positive 1.5x-cost stress, random-direction control beaten after FDR adjustment, event/trade sufficiency, no bias flags.",
         "- Trading rule: DC confirmation is tradable only from the next bar open.",
         "",
         "## Top Candidates",
         "",
-        "| status | symbol | family | theta_bps | filters | avg_test_return | avg_capture | stress_1_5x | rand_p | trades | reasons |",
-        "|---|---:|---|---:|---|---:|---:|---:|---:|---:|---|",
+        "| status | symbol | family | theta_bps | filters | avg_test_return | avg_capture | holdout_return | holdout_capture | holdout_trades | stress_1_5x | rand_p | rand_q | trades | reasons |",
+        "|---|---:|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for row in ranked[:25]:
         spec = row.get("spec", {}) if isinstance(row.get("spec"), Mapping) else {}
@@ -775,11 +1179,12 @@ def build_research_report(results: Sequence[Mapping[str, Any]], generated_at: Op
                 str(spec.get("open_interest_filter", "all")),
                 str(spec.get("time_filter", "all")),
                 f"spacing={spec.get('event_spacing_bars', 0)}",
+                f"overshoot={_as_float(spec.get('overshoot_trigger_multiple')):.1f}",
             ]
         )
         reasons = ",".join(str(reason) for reason in row.get("failure_reasons", []))
         lines.append(
-            "| {status} | {symbol} | {family} | {theta:.1f} | {filters} | {ret:.4%} | {capture:.2%} | {stress:.4%} | {rand_p:.3f} | {trades} | {reasons} |".format(
+            "| {status} | {symbol} | {family} | {theta:.1f} | {filters} | {ret:.4%} | {capture:.2%} | {holdout_ret:.4%} | {holdout_capture:.2%} | {holdout_trades} | {stress:.4%} | {rand_p:.3f} | {rand_q:.3f} | {trades} | {reasons} |".format(
                 status=row.get("status", ""),
                 symbol=spec.get("symbol", ""),
                 family=spec.get("family", ""),
@@ -787,25 +1192,29 @@ def build_research_report(results: Sequence[Mapping[str, Any]], generated_at: Op
                 filters=filters,
                 ret=_as_float(summary.get("avg_test_return")),
                 capture=_as_float(summary.get("avg_test_capture_ratio")),
+                holdout_ret=_as_float(summary.get("holdout_return")),
+                holdout_capture=_as_float(summary.get("holdout_capture_ratio")),
+                holdout_trades=int(_as_float(summary.get("holdout_trades"))),
                 stress=_as_float(summary.get("cost_1_5x_avg_return")),
                 rand_p=_as_float(summary.get("random_control_p_value"), 1.0),
+                rand_q=_as_float(summary.get("random_control_q_value"), 1.0),
                 trades=int(_as_float(summary.get("total_test_trades"))),
                 reasons=reasons or "-",
             )
         )
-    aggregates = aggregate_research_results(ranked)
+    contract_aggregates = apply_multiple_testing_control(aggregate_research_results(ranked))
     lines.extend(
         [
             "",
             "## Cross-Contract Aggregates",
             "",
-            "| status | product | members | family | theta_bps | filters | avg_test_return | avg_capture | trades | reasons |",
-            "|---|---:|---:|---|---:|---|---:|---:|---:|---|",
+            "| status | product | members | family | theta_bps | filters | avg_test_return | avg_capture | holdout_return | holdout_capture | holdout_pos/target/total | rand_q | trades | reasons |",
+            "|---|---:|---:|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---|",
         ]
     )
-    if not aggregates:
-        lines.append("| - | - | 0 | - | 0.0 | - | 0.0000% | 0.00% | 0 | no multi-contract product groups |")
-    for row in aggregates[:15]:
+    if not contract_aggregates:
+        lines.append("| - | - | 0 | - | 0.0 | - | 0.0000% | 0.00% | 0.0000% | 0.00% | 0/0/0 | 1.000 | 0 | no multi-contract product groups |")
+    for row in contract_aggregates[:15]:
         spec = row.get("spec", {}) if isinstance(row.get("spec"), Mapping) else {}
         summary = row.get("summary", {}) if isinstance(row.get("summary"), Mapping) else {}
         aggregation = row.get("aggregation", {}) if isinstance(row.get("aggregation"), Mapping) else {}
@@ -815,11 +1224,17 @@ def build_research_report(results: Sequence[Mapping[str, Any]], generated_at: Op
                 str(spec.get("open_interest_filter", "all")),
                 str(spec.get("time_filter", "all")),
                 f"spacing={spec.get('event_spacing_bars', 0)}",
+                f"overshoot={_as_float(spec.get('overshoot_trigger_multiple')):.1f}",
             ]
         )
         reasons = ",".join(str(reason) for reason in row.get("failure_reasons", []))
+        holdout_members = "{positive}/{target}/{total}".format(
+            positive=int(_as_float(aggregation.get("member_holdout_positive_count"))),
+            target=int(_as_float(aggregation.get("member_holdout_target_capture_count"))),
+            total=int(_as_float(summary.get("holdout_member_count"))),
+        )
         lines.append(
-            "| {status} | {product} | {members} | {family} | {theta:.1f} | {filters} | {ret:.4%} | {capture:.2%} | {trades} | {reasons} |".format(
+            "| {status} | {product} | {members} | {family} | {theta:.1f} | {filters} | {ret:.4%} | {capture:.2%} | {holdout_ret:.4%} | {holdout_capture:.2%} | {holdout_members} | {rand_q:.3f} | {trades} | {reasons} |".format(
                 status=row.get("status", ""),
                 product=aggregation.get("product", spec.get("symbol", "")),
                 members=int(_as_float(aggregation.get("member_count"))),
@@ -828,6 +1243,62 @@ def build_research_report(results: Sequence[Mapping[str, Any]], generated_at: Op
                 filters=filters,
                 ret=_as_float(summary.get("avg_test_return")),
                 capture=_as_float(summary.get("avg_test_capture_ratio")),
+                holdout_ret=_as_float(summary.get("holdout_return")),
+                holdout_capture=_as_float(summary.get("holdout_capture_ratio")),
+                holdout_members=holdout_members,
+                rand_q=_as_float(summary.get("random_control_q_value"), 1.0),
+                trades=int(_as_float(summary.get("total_test_trades"))),
+                reasons=reasons or "-",
+            )
+        )
+    product_aggregates = apply_multiple_testing_control(aggregate_cross_product_research_results(ranked))
+    lines.extend(
+        [
+            "",
+            "## Cross-Product Aggregates",
+            "",
+            "| status | products | members | family | theta_bps | filters | avg_test_return | avg_capture | holdout_return | holdout_capture | holdout_pos/target/total | stress_1_5x | rand_p | rand_q | trades | reasons |",
+            "|---|---:|---:|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+        ]
+    )
+    if not product_aggregates:
+        lines.append("| - | - | 0 | - | 0.0 | - | 0.0000% | 0.00% | 0.0000% | 0.00% | 0/0/0 | 0.0000% | 1.000 | 1.000 | 0 | no multi-product parameter groups |")
+    for row in product_aggregates[:15]:
+        spec = row.get("spec", {}) if isinstance(row.get("spec"), Mapping) else {}
+        summary = row.get("summary", {}) if isinstance(row.get("summary"), Mapping) else {}
+        aggregation = row.get("aggregation", {}) if isinstance(row.get("aggregation"), Mapping) else {}
+        filters = ",".join(
+            [
+                str(spec.get("vol_filter", "all")),
+                str(spec.get("open_interest_filter", "all")),
+                str(spec.get("time_filter", "all")),
+                f"spacing={spec.get('event_spacing_bars', 0)}",
+                f"overshoot={_as_float(spec.get('overshoot_trigger_multiple')):.1f}",
+            ]
+        )
+        products = ",".join(str(product) for product in aggregation.get("members", []))
+        reasons = ",".join(str(reason) for reason in row.get("failure_reasons", []))
+        holdout_members = "{positive}/{target}/{total}".format(
+            positive=int(_as_float(aggregation.get("member_holdout_positive_count"))),
+            target=int(_as_float(aggregation.get("member_holdout_target_capture_count"))),
+            total=int(_as_float(summary.get("holdout_member_count"))),
+        )
+        lines.append(
+            "| {status} | {products} | {members} | {family} | {theta:.1f} | {filters} | {ret:.4%} | {capture:.2%} | {holdout_ret:.4%} | {holdout_capture:.2%} | {holdout_members} | {stress:.4%} | {rand_p:.3f} | {rand_q:.3f} | {trades} | {reasons} |".format(
+                status=row.get("status", ""),
+                products=products or "-",
+                members=int(_as_float(aggregation.get("member_count"))),
+                family=spec.get("family", ""),
+                theta=_as_float(spec.get("theta_bps")),
+                filters=filters,
+                ret=_as_float(summary.get("avg_test_return")),
+                capture=_as_float(summary.get("avg_test_capture_ratio")),
+                holdout_ret=_as_float(summary.get("holdout_return")),
+                holdout_capture=_as_float(summary.get("holdout_capture_ratio")),
+                holdout_members=holdout_members,
+                stress=_as_float(summary.get("cost_1_5x_avg_return")),
+                rand_p=_as_float(summary.get("random_control_p_value"), 1.0),
+                rand_q=_as_float(summary.get("random_control_q_value"), 1.0),
                 trades=int(_as_float(summary.get("total_test_trades"))),
                 reasons=reasons or "-",
             )
@@ -837,7 +1308,7 @@ def build_research_report(results: Sequence[Mapping[str, Any]], generated_at: Op
             "",
             "## Interpretation",
             "",
-            "PASS means the fragment survived the strict research gate. WATCH means the path fragment is interesting but still fails at least one gate, usually event count, train/test stability, target capture band, cost stress, random-direction control, or cross-contract consistency. FAIL means it is not evidence of a repeatable edge.",
+            "PASS means the fragment survived the strict research gate, including untouched holdout. WATCH means the path fragment is interesting but still fails at least one gate, usually event count, train/test stability, target capture band, holdout, cost stress, random-direction control after FDR adjustment, cross-contract consistency, or cross-product scalability. FAIL means it is not evidence of a repeatable edge.",
             "",
         ]
     )
@@ -849,7 +1320,7 @@ def write_research_outputs(
     state_dir: str | Path = "state",
     report_path: str | Path = "FUTURES_DC_CAPTURE_REPORT.md",
 ) -> Dict[str, str]:
-    ranked = rank_research_results(results)
+    ranked = apply_multiple_testing_control(results)
     state_path = Path(state_dir)
     state_path.mkdir(parents=True, exist_ok=True)
     json_path = state_path / "futures_dc_capture_candidates.json"
@@ -976,11 +1447,34 @@ def _compound_trades_with_cost(
 
 
 def _position_for_event(event: DCEvent, family: str) -> int:
-    if family == "dc_continuation":
+    if family in {"dc_continuation", "dc_overshoot_continuation"}:
         return 1 if event.kind == "DC_UP" else -1
-    if family == "dc_reversal":
+    if family in {"dc_reversal", "dc_overshoot_reversal"}:
         return -1 if event.kind == "DC_UP" else 1
     raise ValueError(f"unknown DC strategy family: {family}")
+
+
+def _is_overshoot_family(family: str) -> bool:
+    return str(family) in {"dc_overshoot_continuation", "dc_overshoot_reversal"}
+
+
+def _overshoot_entry_ready(
+    frame: pd.DataFrame,
+    index: int,
+    event: DCEvent,
+    spec: DCFuturesStrategySpec,
+    theta: float,
+) -> bool:
+    if index <= event.confirmation_index or index >= len(frame):
+        return False
+    trigger = max(float(spec.overshoot_trigger_multiple), 0.0) * max(theta, 0.0)
+    prior_close = _as_float(frame.iloc[index - 1].get("close"))
+    confirmation_price = max(float(event.confirmation_price), 1e-12)
+    if event.kind == "DC_UP":
+        return bool(prior_close >= confirmation_price * (1.0 + trigger))
+    if event.kind == "DC_DOWN":
+        return bool(prior_close <= confirmation_price * (1.0 - trigger))
+    return False
 
 
 def _entry_allowed(frame: pd.DataFrame, index: int, spec: DCFuturesStrategySpec) -> bool:

@@ -12,10 +12,12 @@ sys.path.insert(0, str(ROOT))
 from quant_trade_system.futures_dc_research import (  # noqa: E402
     DEFAULT_PRODUCTS,
     FuturesCostModel,
+    apply_holdout_validation,
     fetch_cached_main_contract_minute_frames,
     fetch_main_contract_minute_frames,
     load_cached_minute_frames,
     scan_futures_dc_strategies,
+    split_research_holdout_frames,
     write_research_outputs,
 )
 
@@ -28,10 +30,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--quick", action="store_true", help="Use a smaller parameter grid for a fast smoke run.")
     parser.add_argument("--min-bars", type=int, default=180, help="Skip contracts with fewer bars.")
     parser.add_argument("--random-trials", type=int, default=128, help="Random-direction control trials per candidate.")
+    parser.add_argument("--overshoot-multiples", default="0.5,1.0", help="Comma-separated theta multiples required after DC confirmation for overshoot families.")
     parser.add_argument("--cache-dir", default="state/futures_minute_cache", help="Minute data cache directory.")
     parser.add_argument("--no-cache", action="store_true", help="Disable local minute cache updates.")
     parser.add_argument("--include-cached-contracts", action="store_true", help="Also scan cached contracts that are no longer current main contracts.")
     parser.add_argument("--stale-days", type=int, default=3, help="Warn when latest cached bar is older than this many days.")
+    parser.add_argument("--holdout-fraction", type=float, default=0.20, help="Final fraction of each contract reserved from scanning.")
+    parser.add_argument("--min-holdout-bars", type=int, default=60, help="Minimum bars required for an untouched holdout split.")
+    parser.add_argument("--no-holdout", action="store_true", help="Disable final untouched holdout validation.")
     parser.add_argument("--state-dir", default="state", help="Directory for JSON candidate output.")
     parser.add_argument("--report-path", default="FUTURES_DC_CAPTURE_REPORT.md", help="Markdown report path.")
     return parser.parse_args()
@@ -41,6 +47,7 @@ def main() -> int:
     args = parse_args()
     os.chdir(ROOT)
     products = [item.strip().upper() for item in args.products.split(",") if item.strip()]
+    overshoot_multiples = [float(item.strip()) for item in args.overshoot_multiples.split(",") if item.strip()]
     if args.no_cache:
         frames = fetch_main_contract_minute_frames(products=products, period=args.period, max_contracts=args.max_contracts)
     else:
@@ -58,25 +65,52 @@ def main() -> int:
         print("No usable minute frames fetched. Check AkShare availability, products, period, or min-bars.")
         return 2
 
+    cost_model = FuturesCostModel()
+    if args.no_holdout:
+        research_frames = frames
+        holdout_frames = {}
+    else:
+        research_frames, holdout_frames = split_research_holdout_frames(
+            frames,
+            holdout_fraction=args.holdout_fraction,
+            min_research_bars=args.min_bars,
+            min_holdout_bars=args.min_holdout_bars,
+        )
+    if not research_frames:
+        print("No usable research frames after holdout split. Lower --min-bars or --min-holdout-bars.")
+        return 2
+
     if args.quick:
         results = scan_futures_dc_strategies(
-            frames,
+            research_frames,
             theta_bps_values=(16.0, 24.0, 32.0),
             vol_filters=("all", "high_70_plus"),
             open_interest_filters=("all",),
             time_filters=("all", "day", "night"),
             event_spacing_bars_values=(0, 4),
-            cost_model=FuturesCostModel(),
+            overshoot_trigger_multiples=overshoot_multiples[:1] or (0.5,),
+            cost_model=cost_model,
             random_trials=args.random_trials,
         )
     else:
-        results = scan_futures_dc_strategies(frames, cost_model=FuturesCostModel(), random_trials=args.random_trials)
+        results = scan_futures_dc_strategies(
+            research_frames,
+            overshoot_trigger_multiples=overshoot_multiples or (0.5,),
+            cost_model=cost_model,
+            random_trials=args.random_trials,
+        )
+
+    if holdout_frames:
+        results = apply_holdout_validation(results, holdout_frames, cost_model=cost_model)
 
     paths = write_research_outputs(results, state_dir=args.state_dir, report_path=args.report_path)
     pass_count = sum(1 for row in results if row.get("status") == "PASS")
     watch_count = sum(1 for row in results if row.get("status") == "WATCH")
     print(f"Fetched contracts: {', '.join(frames)}")
     print("Bars: " + ", ".join(_frame_coverage(symbol, frame, args.stale_days) for symbol, frame in frames.items()))
+    print("Research bars: " + ", ".join(_frame_coverage(symbol, frame, args.stale_days) for symbol, frame in research_frames.items()))
+    if holdout_frames:
+        print("Holdout bars: " + ", ".join(_frame_coverage(symbol, frame, args.stale_days) for symbol, frame in holdout_frames.items()))
     print(f"Candidates scanned: {len(results)}")
     print(f"PASS: {pass_count}, WATCH: {watch_count}")
     print(f"JSON: {paths['json_path']}")
