@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 
@@ -13,10 +15,12 @@ from quant_trade_system.futures_dc_research import (
     aggregate_cross_product_research_results,
     aggregate_research_results,
     build_research_report,
+    candidate_history_path,
     classify_walk_forward_result,
     cost_sensitivity_audit,
     fetch_main_contract_minute_frames,
     fetch_cached_main_contract_minute_frames,
+    load_candidate_history,
     load_cached_minute_frames,
     load_minute_cache,
     minute_cache_path,
@@ -24,7 +28,10 @@ from quant_trade_system.futures_dc_research import (
     random_direction_control,
     simulate_dc_strategy,
     split_research_holdout_frames,
+    summarize_candidate_history,
+    update_candidate_history,
     update_minute_cache,
+    write_research_outputs,
 )
 
 
@@ -489,6 +496,93 @@ class FuturesDCResearchTests(unittest.TestCase):
 
         self.assertIn("## Cross-Product Aggregates", report)
         self.assertIn("no multi-product parameter groups", report)
+
+    def test_candidate_history_deduplicates_identical_scan_and_summarizes_persistence(self) -> None:
+        cost = FuturesCostModel()
+        row = classify_walk_forward_result(
+            DCFuturesStrategySpec(symbol="IF2606", family="dc_reversal", theta_bps=32),
+            cost,
+            [
+                {"train_return": 0.02, "test_return": 0.02, "test_capture_ratio": 0.10, "test_events": 25, "test_trades": 12},
+                {"train_return": 0.02, "test_return": 0.01, "test_capture_ratio": 0.08, "test_events": 24, "test_trades": 12},
+                {"train_return": 0.02, "test_return": -0.001, "test_capture_ratio": 0.06, "test_events": 23, "test_trades": 12},
+            ],
+            cost_sensitivity={"cost_1_5x": {"avg_return": 0.01}},
+            random_control={"beats_p95": True, "p_value": 0.01},
+        )
+        row["summary"].update(
+            {
+                "holdout_return": 0.010,
+                "holdout_capture_ratio": 0.10,
+                "holdout_events": 12,
+                "holdout_trades": 8,
+                "holdout_start": "2026-06-01 14:00:00",
+                "holdout_end": "2026-06-01 15:00:00",
+            }
+        )
+        changed = dict(row)
+        changed["summary"] = dict(row["summary"])
+        changed["summary"]["holdout_return"] = 0.012
+        changed["summary"]["holdout_capture_ratio"] = 0.11
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history, path = update_candidate_history(
+                [row],
+                state_dir=tmpdir,
+                generated_at=datetime(2026, 6, 1, 15, 0, 0),
+            )
+            history, _ = update_candidate_history(
+                [row],
+                state_dir=tmpdir,
+                generated_at=datetime(2026, 6, 1, 16, 0, 0),
+            )
+            self.assertEqual(path, candidate_history_path(tmpdir))
+            self.assertEqual(len(history["scans"]), 1)
+
+            history, _ = update_candidate_history(
+                [changed],
+                state_dir=tmpdir,
+                generated_at=datetime(2026, 6, 2, 15, 0, 0),
+            )
+            loaded = load_candidate_history(tmpdir)
+            summary = summarize_candidate_history(loaded, current_results=[changed])
+
+            self.assertEqual(len(history["scans"]), 2)
+            self.assertEqual(summary[0]["seen_scans"], 2)
+            self.assertEqual(summary[0]["holdout_positive_scans"], 2)
+            self.assertEqual(summary[0]["holdout_target_scans"], 2)
+            self.assertAlmostEqual(summary[0]["median_holdout_return"], 0.011)
+
+    def test_write_research_outputs_creates_history_and_persistence_report(self) -> None:
+        cost = FuturesCostModel()
+        row = classify_walk_forward_result(
+            DCFuturesStrategySpec(symbol="AU2608", family="dc_continuation", theta_bps=32),
+            cost,
+            [
+                {"train_return": 0.02, "test_return": 0.02, "test_capture_ratio": 0.10, "test_events": 25, "test_trades": 12},
+                {"train_return": 0.02, "test_return": 0.01, "test_capture_ratio": 0.08, "test_events": 24, "test_trades": 12},
+                {"train_return": 0.02, "test_return": -0.001, "test_capture_ratio": 0.06, "test_events": 23, "test_trades": 12},
+            ],
+            cost_sensitivity={"cost_1_5x": {"avg_return": 0.01}},
+            random_control={"beats_p95": True, "p_value": 0.01},
+        )
+        row["summary"].update(
+            {
+                "holdout_return": 0.010,
+                "holdout_capture_ratio": 0.10,
+                "holdout_events": 12,
+                "holdout_trades": 8,
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = f"{tmpdir}/report.md"
+            paths = write_research_outputs([row], state_dir=tmpdir, report_path=report_path)
+            report = Path(report_path).read_text(encoding="utf-8")
+
+            self.assertTrue(paths["history_path"].endswith("futures_dc_candidate_history.json"))
+            self.assertIn("## Persistence Watchlist", report)
+            self.assertIn("AU2608 dc_continuation theta=32.0", report)
 
 
 if __name__ == "__main__":

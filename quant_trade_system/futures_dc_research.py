@@ -23,6 +23,8 @@ DEFAULT_OPEN_INTEREST_FILTERS = ("all", "rising")
 DEFAULT_TIME_FILTERS = ("all", "day", "night", "open30", "close30")
 DEFAULT_EVENT_SPACING_BARS = (0, 2, 4, 6)
 DEFAULT_OVERSHOOT_TRIGGER_MULTIPLES = (0.5, 1.0)
+DEFAULT_HISTORY_MAX_SCANS = 60
+HISTORY_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -1136,7 +1138,291 @@ def update_minute_cache(
     return merged
 
 
-def build_research_report(results: Sequence[Mapping[str, Any]], generated_at: Optional[datetime] = None) -> str:
+def candidate_history_key(row: Mapping[str, Any]) -> str:
+    spec = row.get("spec", {}) if isinstance(row.get("spec"), Mapping) else {}
+    parts = [
+        str(spec.get("symbol", "")).upper(),
+        str(spec.get("family", "")),
+        _format_float_key(spec.get("theta_bps")),
+        str(spec.get("vol_filter", "all")),
+        str(spec.get("open_interest_filter", "all")),
+        str(spec.get("time_filter", "all")),
+        str(int(_as_float(spec.get("event_spacing_bars")))),
+        str(int(_as_float(spec.get("max_hold_bars"), 12.0))),
+        _format_float_key(spec.get("stop_multiple", 1.0)),
+        _format_float_key(spec.get("take_profit_multiple", 2.0)),
+        _format_float_key(spec.get("overshoot_trigger_multiple")),
+    ]
+    return "|".join(parts)
+
+
+def candidate_history_path(state_dir: str | Path = "state") -> Path:
+    return Path(state_dir) / "futures_dc_candidate_history.json"
+
+
+def load_candidate_history(state_dir: str | Path = "state") -> Dict[str, Any]:
+    path = candidate_history_path(state_dir)
+    if not path.exists():
+        return _empty_candidate_history()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return _empty_candidate_history()
+    if not isinstance(payload, Mapping):
+        return _empty_candidate_history()
+    scans = payload.get("scans", [])
+    if not isinstance(scans, list):
+        scans = []
+    return {
+        "schema_version": int(_as_float(payload.get("schema_version"), HISTORY_SCHEMA_VERSION)),
+        "updated_at": str(payload.get("updated_at", "")),
+        "scans": [dict(scan) for scan in scans if isinstance(scan, Mapping)],
+    }
+
+
+def update_candidate_history(
+    results: Sequence[Mapping[str, Any]],
+    state_dir: str | Path = "state",
+    generated_at: Optional[datetime] = None,
+    max_scans: int = DEFAULT_HISTORY_MAX_SCANS,
+) -> Tuple[Dict[str, Any], Path]:
+    generated_at = generated_at or datetime.now()
+    path = candidate_history_path(state_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ranked = apply_multiple_testing_control(results)
+    rows = [_candidate_history_row(row) for row in ranked]
+    scan_signature = hashlib.sha256(
+        json.dumps(_json_safe(rows), sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    scan_id = scan_signature[:16]
+    history = load_candidate_history(state_dir)
+    scans = history.get("scans", []) if isinstance(history.get("scans"), list) else []
+    existing_ids = {str(scan.get("scan_id", "")) for scan in scans if isinstance(scan, Mapping)}
+    if scan_id not in existing_ids:
+        scans.append(
+            {
+                "scan_id": scan_id,
+                "signature": scan_signature,
+                "generated_at": generated_at.isoformat(timespec="seconds"),
+                "candidate_count": len(rows),
+                "pass_count": sum(1 for row in rows if row.get("status") == "PASS"),
+                "watch_count": sum(1 for row in rows if row.get("status") == "WATCH"),
+                "rows": rows,
+            }
+        )
+    scan_limit = max(int(max_scans), 1)
+    if len(scans) > scan_limit:
+        scans = scans[-scan_limit:]
+    updated = {
+        "schema_version": HISTORY_SCHEMA_VERSION,
+        "updated_at": generated_at.isoformat(timespec="seconds"),
+        "scans": scans,
+    }
+    path.write_text(json.dumps(_json_safe(updated), ensure_ascii=False, indent=2), encoding="utf-8")
+    return updated, path
+
+
+def summarize_candidate_history(
+    history: Mapping[str, Any],
+    current_results: Optional[Sequence[Mapping[str, Any]]] = None,
+    limit: int = 15,
+) -> List[Dict[str, Any]]:
+    scans = history.get("scans", []) if isinstance(history.get("scans"), list) else []
+    current_keys = (
+        {candidate_history_key(row) for row in current_results}
+        if current_results is not None
+        else set()
+    )
+    rows_by_key: Dict[str, List[Tuple[int, Mapping[str, Any]]]] = defaultdict(list)
+    for scan_index, scan in enumerate(scans):
+        if not isinstance(scan, Mapping):
+            continue
+        for row in scan.get("rows", []):
+            if not isinstance(row, Mapping):
+                continue
+            key = str(row.get("candidate_key", ""))
+            if not key:
+                continue
+            if current_results is not None and key not in current_keys:
+                continue
+            rows_by_key[key].append((scan_index, row))
+
+    summaries: List[Dict[str, Any]] = []
+    for key, entries in rows_by_key.items():
+        ordered = sorted(entries, key=lambda item: item[0])
+        latest = ordered[-1][1]
+        holdout_returns = [_as_float(row.get("holdout_return")) for _, row in ordered]
+        holdout_captures = [_as_float(row.get("holdout_capture_ratio")) for _, row in ordered]
+        avg_returns = [_as_float(row.get("avg_test_return")) for _, row in ordered]
+        avg_captures = [_as_float(row.get("avg_test_capture_ratio")) for _, row in ordered]
+        positive_holdout = sum(1 for value in holdout_returns if value > 0)
+        target_holdout = sum(
+            1
+            for value, capture in zip(holdout_returns, holdout_captures)
+            if value > 0 and 0.05 <= capture <= 0.20
+        )
+        positive_research = sum(1 for value in avg_returns if value > 0)
+        target_research = sum(
+            1
+            for value, capture in zip(avg_returns, avg_captures)
+            if value > 0 and 0.05 <= capture <= 0.20
+        )
+        summaries.append(
+            {
+                "candidate_key": key,
+                "label": _candidate_history_label(latest),
+                "latest_status": str(latest.get("status", "")),
+                "seen_scans": len(ordered),
+                "research_positive_scans": positive_research,
+                "research_target_scans": target_research,
+                "holdout_positive_scans": positive_holdout,
+                "holdout_target_scans": target_holdout,
+                "median_holdout_return": float(np.median(holdout_returns)) if holdout_returns else 0.0,
+                "median_holdout_capture_ratio": float(np.median(holdout_captures)) if holdout_captures else 0.0,
+                "latest_avg_test_return": _as_float(latest.get("avg_test_return")),
+                "latest_avg_test_capture_ratio": _as_float(latest.get("avg_test_capture_ratio")),
+                "latest_holdout_return": _as_float(latest.get("holdout_return")),
+                "latest_holdout_capture_ratio": _as_float(latest.get("holdout_capture_ratio")),
+                "latest_random_control_q_value": _as_float(latest.get("random_control_q_value"), 1.0),
+                "latest_failure_reasons": list(latest.get("failure_reasons", []))
+                if isinstance(latest.get("failure_reasons"), list)
+                else [],
+            }
+        )
+
+    def sort_key(row: Mapping[str, Any]) -> Tuple[int, int, int, int, int, float, float]:
+        status_rank = {"PASS": 0, "WATCH": 1, "FAIL": 2}
+        return (
+            -int(_as_float(row.get("holdout_target_scans"))),
+            -int(_as_float(row.get("holdout_positive_scans"))),
+            -int(_as_float(row.get("research_target_scans"))),
+            -int(_as_float(row.get("seen_scans"))),
+            status_rank.get(str(row.get("latest_status")), 9),
+            -_as_float(row.get("latest_avg_test_return")),
+            abs(_as_float(row.get("latest_avg_test_capture_ratio")) - 0.12),
+        )
+
+    return [dict(row) for row in sorted(summaries, key=sort_key)[: max(int(limit), 0)]]
+
+
+def _build_persistence_watchlist_lines(
+    history_summary: Sequence[Mapping[str, Any]],
+    history_scan_count: int,
+) -> List[str]:
+    lines = [
+        "",
+        "## Persistence Watchlist",
+        "",
+        f"- Unique scans in history: {int(history_scan_count)}",
+        "- Persistence is not proven until the same parameter family survives at least 3 unique scans with positive holdout and 5%-20% holdout capture.",
+        "",
+        "| latest | candidate | seen | research_pos/target | holdout_pos/target | median_holdout_return | median_holdout_capture | latest_avg_return | latest_capture | latest_rand_q | latest_reasons |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+    ]
+    if not history_summary:
+        lines.append("| - | - | 0 | 0/0 | 0/0 | 0.0000% | 0.00% | 0.0000% | 0.00% | 1.000 | no history yet |")
+        return lines
+    for row in history_summary[:15]:
+        reasons = ",".join(str(reason) for reason in row.get("latest_failure_reasons", [])) or "-"
+        lines.append(
+            "| {status} | {label} | {seen} | {research_pos}/{research_target} | {holdout_pos}/{holdout_target} | {median_holdout_ret:.4%} | {median_holdout_capture:.2%} | {latest_ret:.4%} | {latest_capture:.2%} | {rand_q:.3f} | {reasons} |".format(
+                status=row.get("latest_status", ""),
+                label=row.get("label", ""),
+                seen=int(_as_float(row.get("seen_scans"))),
+                research_pos=int(_as_float(row.get("research_positive_scans"))),
+                research_target=int(_as_float(row.get("research_target_scans"))),
+                holdout_pos=int(_as_float(row.get("holdout_positive_scans"))),
+                holdout_target=int(_as_float(row.get("holdout_target_scans"))),
+                median_holdout_ret=_as_float(row.get("median_holdout_return")),
+                median_holdout_capture=_as_float(row.get("median_holdout_capture_ratio")),
+                latest_ret=_as_float(row.get("latest_avg_test_return")),
+                latest_capture=_as_float(row.get("latest_avg_test_capture_ratio")),
+                rand_q=_as_float(row.get("latest_random_control_q_value"), 1.0),
+                reasons=reasons,
+            )
+        )
+    return lines
+
+
+def _candidate_history_row(row: Mapping[str, Any]) -> Dict[str, Any]:
+    spec = row.get("spec", {}) if isinstance(row.get("spec"), Mapping) else {}
+    summary = row.get("summary", {}) if isinstance(row.get("summary"), Mapping) else {}
+    folds = row.get("folds", []) if isinstance(row.get("folds"), list) else []
+    test_starts = [str(fold.get("test_start", "")) for fold in folds if isinstance(fold, Mapping) and fold.get("test_start")]
+    test_ends = [str(fold.get("test_end", "")) for fold in folds if isinstance(fold, Mapping) and fold.get("test_end")]
+    symbol = str(spec.get("symbol", "")).upper()
+    return {
+        "candidate_key": candidate_history_key(row),
+        "status": str(row.get("status", "")),
+        "symbol": symbol,
+        "product": normalize_futures_symbol(symbol),
+        "family": str(spec.get("family", "")),
+        "theta_bps": _as_float(spec.get("theta_bps")),
+        "vol_filter": str(spec.get("vol_filter", "all")),
+        "open_interest_filter": str(spec.get("open_interest_filter", "all")),
+        "time_filter": str(spec.get("time_filter", "all")),
+        "event_spacing_bars": int(_as_float(spec.get("event_spacing_bars"))),
+        "max_hold_bars": int(_as_float(spec.get("max_hold_bars"), 12.0)),
+        "stop_multiple": _as_float(spec.get("stop_multiple", 1.0)),
+        "take_profit_multiple": _as_float(spec.get("take_profit_multiple", 2.0)),
+        "overshoot_trigger_multiple": _as_float(spec.get("overshoot_trigger_multiple")),
+        "avg_test_return": _as_float(summary.get("avg_test_return")),
+        "avg_test_capture_ratio": _as_float(summary.get("avg_test_capture_ratio")),
+        "median_test_capture_ratio": _as_float(summary.get("median_test_capture_ratio")),
+        "positive_test_folds": int(_as_float(summary.get("positive_test_folds"))),
+        "target_capture_folds": int(_as_float(summary.get("target_capture_folds"))),
+        "total_test_trades": int(_as_float(summary.get("total_test_trades"))),
+        "cost_1_5x_avg_return": _as_float(summary.get("cost_1_5x_avg_return")),
+        "random_control_p_value": _as_float(summary.get("random_control_p_value"), 1.0),
+        "random_control_q_value": _as_float(summary.get("random_control_q_value"), 1.0),
+        "holdout_return": _as_float(summary.get("holdout_return")),
+        "holdout_capture_ratio": _as_float(summary.get("holdout_capture_ratio")),
+        "holdout_events": int(_as_float(summary.get("holdout_events"))),
+        "holdout_trades": int(_as_float(summary.get("holdout_trades"))),
+        "holdout_start": str(summary.get("holdout_start", "")),
+        "holdout_end": str(summary.get("holdout_end", "")),
+        "test_start": min(test_starts) if test_starts else "",
+        "test_end": max(test_ends) if test_ends else "",
+        "failure_reasons": [str(reason) for reason in row.get("failure_reasons", [])],
+    }
+
+
+def _candidate_history_label(row: Mapping[str, Any]) -> str:
+    filters = ",".join(
+        [
+            str(row.get("vol_filter", "all")),
+            str(row.get("open_interest_filter", "all")),
+            str(row.get("time_filter", "all")),
+            f"spacing={int(_as_float(row.get('event_spacing_bars')))}",
+            f"overshoot={_as_float(row.get('overshoot_trigger_multiple')):.1f}",
+        ]
+    )
+    return "{symbol} {family} theta={theta:.1f} {filters}".format(
+        symbol=row.get("symbol", ""),
+        family=row.get("family", ""),
+        theta=_as_float(row.get("theta_bps")),
+        filters=filters,
+    )
+
+
+def _empty_candidate_history() -> Dict[str, Any]:
+    return {
+        "schema_version": HISTORY_SCHEMA_VERSION,
+        "updated_at": "",
+        "scans": [],
+    }
+
+
+def _format_float_key(value: Any) -> str:
+    return f"{_as_float(value):.6f}".rstrip("0").rstrip(".") or "0"
+
+
+def build_research_report(
+    results: Sequence[Mapping[str, Any]],
+    generated_at: Optional[datetime] = None,
+    history_summary: Optional[Sequence[Mapping[str, Any]]] = None,
+    history_scan_count: int = 0,
+) -> str:
     generated_at = generated_at or datetime.now()
     ranked = apply_multiple_testing_control(results)
     pass_count = sum(1 for row in ranked if row.get("status") == "PASS")
@@ -1202,6 +1488,12 @@ def build_research_report(results: Sequence[Mapping[str, Any]], generated_at: Op
                 reasons=reasons or "-",
             )
         )
+    lines.extend(
+        _build_persistence_watchlist_lines(
+            history_summary or [],
+            history_scan_count=history_scan_count,
+        )
+    )
     contract_aggregates = apply_multiple_testing_control(aggregate_research_results(ranked))
     lines.extend(
         [
@@ -1321,14 +1613,26 @@ def write_research_outputs(
     report_path: str | Path = "FUTURES_DC_CAPTURE_REPORT.md",
 ) -> Dict[str, str]:
     ranked = apply_multiple_testing_control(results)
+    generated_at = datetime.now()
     state_path = Path(state_dir)
     state_path.mkdir(parents=True, exist_ok=True)
     json_path = state_path / "futures_dc_capture_candidates.json"
     json_path.write_text(json.dumps(_json_safe(ranked), ensure_ascii=False, indent=2), encoding="utf-8")
-    report = build_research_report(ranked)
+    history, history_path = update_candidate_history(
+        ranked,
+        state_dir=state_path,
+        generated_at=generated_at,
+    )
+    history_summary = summarize_candidate_history(history, current_results=ranked)
+    report = build_research_report(
+        ranked,
+        generated_at=generated_at,
+        history_summary=history_summary,
+        history_scan_count=len(history.get("scans", [])) if isinstance(history, Mapping) else 0,
+    )
     markdown_path = Path(report_path)
     markdown_path.write_text(report, encoding="utf-8")
-    return {"json_path": str(json_path), "report_path": str(markdown_path)}
+    return {"json_path": str(json_path), "history_path": str(history_path), "report_path": str(markdown_path)}
 
 
 def _empty_simulation_result(
