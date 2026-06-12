@@ -19,6 +19,8 @@ from quant_trade_system.nightly_quant_orders import (
     FAILURE_SCHEDULER_NOT_RUN,
     MarketValidation,
     _aggregate_weekly_quality_metrics,
+    _attach_data_quality_to_market_status,
+    _build_data_quality_report,
     _build_evidence_snapshot,
     _build_instruction,
     _build_cycle_payload,
@@ -36,6 +38,7 @@ from quant_trade_system.nightly_quant_orders import (
     _observation_lines,
     _failure_category_from_market_status,
     _fetch_us_data,
+    _market_context_with_data_quality,
     _optional_yf_frame,
     _pct_change_over_window,
     _tail_hedge_effectiveness_gate,
@@ -1300,6 +1303,78 @@ class NightlyQuantOrdersTests(unittest.TestCase):
             FAILURE_ALL_MARKETS_INVALID,
         )
 
+    def test_data_quality_scores_fresh_and_fallback_markets(self) -> None:
+        us_validation = MarketValidation("US", "2026-05-15", "2026-05-15", True, "ok", sample_count=3)
+        hk_validation = MarketValidation("HK", "2026-05-15", "2026-05-12", True, "最近有效交易日回退。", sample_count=1)
+        futures_data = {
+            "SHFE": {
+                "validation": MarketValidation(
+                    "SHFE",
+                    "2026-05-15",
+                    "2026-05-15",
+                    True,
+                    "SHFE 结算参数直接命中 T 日。",
+                    sample_count=2,
+                    price_source="futures_main_sina",
+                )
+            }
+        }
+
+        quality = _build_data_quality_report(
+            us_validation,
+            hk_validation,
+            futures_data,
+            {"US": 3, "HK": 3, "SHFE": 2},
+        )
+
+        self.assertEqual(quality["markets"]["US"]["decision"], "ALLOW")
+        self.assertLess(quality["markets"]["HK"]["score"], quality["markets"]["US"]["score"])
+        self.assertIn("date_lag_days=3", quality["markets"]["HK"]["reasons"])
+        self.assertIn("HK", quality["summary"]["weak_markets"])
+
+    def test_data_quality_attaches_to_market_status_and_context(self) -> None:
+        market_status = {"US": {"status": "OK", "tradable": True, "reason": "ok"}}
+        quality = {
+            "markets": {
+                "US": {
+                    "score": 0.61,
+                    "decision": "OBSERVE_ONLY",
+                    "reasons": ["low_sample_coverage"],
+                }
+            }
+        }
+
+        updated = _attach_data_quality_to_market_status(market_status, quality)
+        context = _market_context_with_data_quality({"crisis_probability": 0.12}, quality, "US")
+
+        self.assertEqual(updated["US"]["data_quality_score"], 0.61)
+        self.assertEqual(updated["US"]["data_quality_decision"], "OBSERVE_ONLY")
+        self.assertFalse(context["data_validation_passed"])
+        self.assertEqual(context["data_quality_reasons"], ["low_sample_coverage"])
+
+    def test_render_report_text_includes_data_quality_summary(self) -> None:
+        report = {
+            "status": "failed_validation",
+            "failure_category": FAILURE_ALL_MARKETS_INVALID,
+            "report_date": "2026-05-15",
+            "generated_at": "2026-05-15T20:00:00+08:00",
+            "repo": {"branch": "main", "head": "abc123", "origin_main": "abc123", "synced_with_origin_main": True},
+            "us_validation": {"passed": False, "requested_date": "2026-05-15", "actual_date": None, "reason": "empty"},
+            "hk_validation": {"passed": True, "requested_date": "2026-05-15", "actual_date": "2026-05-15", "reason": "ok"},
+            "futures_validations": {},
+            "market_status": {"US": {"status": "NO_TRADE_DATA_INVALID", "reason": "empty"}},
+            "data_quality": {
+                "summary": {"min_score": 0.0, "avg_score": 0.5, "decision_counts": {"NO_TRADE": 1}},
+                "markets": {"US": {"score": 0.0, "decision": "NO_TRADE", "date_lag_days": None, "coverage_score": 0.0}},
+            },
+            "recap_lines": [],
+        }
+
+        text = render_report_text(report)
+
+        self.assertIn("数据质量评分", text)
+        self.assertIn("US：score=0.000 decision=NO_TRADE", text)
+
     def test_nightly_health_check_detects_missing_and_failed_reports(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -1342,6 +1417,10 @@ class NightlyQuantOrdersTests(unittest.TestCase):
             "us_validation": {"passed": True, "actual_date": "2026-05-08"},
             "hk_validation": {"passed": True, "actual_date": "2026-05-11"},
             "futures_validations": {"SHFE": {"passed": True, "actual_date": "2026-05-11"}},
+            "data_quality": {
+                "summary": {"min_score": 0.72, "avg_score": 0.86, "weak_markets": ["US"]},
+                "markets": {"US": {"score": 0.72, "decision": "REDUCE"}},
+            },
             "execution_actions": [
                 {
                     "market": "HK",
@@ -1424,6 +1503,7 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertEqual(snapshot["net_edge_execution_gate"]["rejected_actions"][0]["symbol"], "00700.HK")
         self.assertEqual(snapshot["mae_mfe_risk_overlay"]["applied_count"], 1)
         self.assertEqual(snapshot["mae_mfe_risk_overlay"]["applied_actions"][0]["stop_loss_pct"], 0.02)
+        self.assertEqual(snapshot["data_quality"]["summary"]["min_score"], 0.72)
 
 
 if __name__ == "__main__":

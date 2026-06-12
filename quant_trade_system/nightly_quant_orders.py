@@ -24,6 +24,7 @@ from .core.causal import (
     SelfIteratingCausalEngine,
 )
 from .core.robustness import deflated_sharpe_ratio, effective_breadth, evaluate_cpcv_returns
+from .data_quality import assess_market_data_quality, summarize_data_quality
 from .factors.factor_library import FactorLibrary
 from .futures_specs import build_one_lot_margin_table, normalize_futures_symbol
 from .path_capture import capture_target_status, dc_path_summary
@@ -980,6 +981,58 @@ def _build_market_status(
     return status
 
 
+def _build_data_quality_report(
+    us_validation: MarketValidation,
+    hk_validation: MarketValidation,
+    futures_market_data: Dict[str, Dict[str, Any]],
+    expected_sample_counts: Dict[str, int],
+) -> Dict[str, Any]:
+    assessments = {
+        "US": assess_market_data_quality(us_validation, expected_sample_counts.get("US", 1)),
+        "HK": assess_market_data_quality(hk_validation, expected_sample_counts.get("HK", 1)),
+    }
+    for exchange, payload in futures_market_data.items():
+        assessments[exchange] = assess_market_data_quality(
+            payload["validation"],
+            expected_sample_counts.get(exchange, 1),
+        )
+    return {
+        "markets": assessments,
+        "summary": summarize_data_quality(assessments),
+    }
+
+
+def _attach_data_quality_to_market_status(
+    market_status: Dict[str, Dict[str, Any]],
+    data_quality: Dict[str, Any],
+) -> Dict[str, Dict[str, Any]]:
+    markets = data_quality.get("markets", {}) if isinstance(data_quality, dict) else {}
+    updated = {market: dict(status) for market, status in market_status.items()}
+    for market, assessment in markets.items():
+        if market not in updated or not isinstance(assessment, dict):
+            continue
+        updated[market]["data_quality_score"] = assessment.get("score")
+        updated[market]["data_quality_decision"] = assessment.get("decision")
+        updated[market]["data_quality_reasons"] = assessment.get("reasons", [])
+    return updated
+
+
+def _market_context_with_data_quality(
+    market_context: Dict[str, Any],
+    data_quality: Dict[str, Any],
+    market: str,
+) -> Dict[str, Any]:
+    assessment = (data_quality.get("markets", {}) if isinstance(data_quality, dict) else {}).get(market.upper(), {})
+    decision = str(assessment.get("decision", "NO_TRADE"))
+    context = dict(market_context)
+    context["data_quality_market"] = market.upper()
+    context["data_quality_score"] = float(assessment.get("score", 0.0) or 0.0)
+    context["data_quality_decision"] = decision
+    context["data_quality_reasons"] = list(assessment.get("reasons", []) or [])
+    context["data_validation_passed"] = decision in {"ALLOW", "REDUCE"}
+    return context
+
+
 def _market_is_tradable(market_status: Dict[str, Dict[str, Any]], market: str) -> bool:
     return bool(market_status.get(market.upper(), {}).get("tradable"))
 
@@ -1180,6 +1233,7 @@ def _build_market_context(
         "game_relation_reports": game_analysis.get("game_relation_reports", []),
         "macro_event_state": macro_event_state,
         "futures_dc_overlay": market_context.get("futures_dc_overlay", {}),
+        "data_quality": market_context.get("data_quality", {}),
     }
     return market_context, market_data
 
@@ -2247,6 +2301,7 @@ def _build_evidence_snapshot(
         "event_driven_causal_chains": game_analysis.get("event_causal_chains", [])[:10],
         "macro_event_state": market_data.get("macro_event_state", {}),
         "futures_dc_overlay": market_data.get("futures_dc_overlay", {}),
+        "data_quality": report.get("data_quality", market_data.get("data_quality", {})),
         "sensitive_asset_confirmations": [
             {
                 "relation_id": item.get("relation_id"),
@@ -2366,6 +2421,18 @@ def generate_report(target_day: date) -> Dict[str, Any]:
     )
     futures_execution_last = _latest_price_map(futures_execution_data)
     market_status = _build_market_status(us_validation, hk_validation, futures_market_data)
+    expected_sample_counts = {
+        "US": len(us_universe),
+        "HK": len(hk_universe),
+        **{exchange: len(symbols) for exchange, symbols in futures_universe_by_exchange.items()},
+    }
+    data_quality = _build_data_quality_report(
+        us_validation,
+        hk_validation,
+        futures_market_data,
+        expected_sample_counts,
+    )
+    market_status = _attach_data_quality_to_market_status(market_status, data_quality)
     failure_category = _failure_category_from_market_status(market_status)
 
     report: Dict[str, Any] = {
@@ -2387,6 +2454,7 @@ def generate_report(target_day: date) -> Dict[str, Any]:
         "hk_execution_last": _latest_price_map(hk_execution_data),
         "futures_execution_last": futures_execution_last,
         "market_status": market_status,
+        "data_quality": data_quality,
         "recap_lines": [],
         "primary_actions": [],
         "report_text": "",
@@ -2433,6 +2501,7 @@ def generate_report(target_day: date) -> Dict[str, Any]:
         copper_peer,
     )
     macro_event_inputs = _build_macro_event_inputs(yf, futures_market_data)
+    macro_event_inputs["data_quality"] = data_quality
     futures_dc_overlay = _load_futures_dc_overlay(repo_root, futures_universe_by_exchange)
     macro_event_inputs["futures_dc_overlay"] = futures_dc_overlay
     macro_event_inputs["symbol_tags"] = _merge_symbol_tags(
@@ -2456,7 +2525,7 @@ def generate_report(target_day: date) -> Dict[str, Any]:
         self_iterating_engine.run_learning_cycle(
             us_data,
             benchmark_frame=qqq,
-            market_context=market_context,
+            market_context=_market_context_with_data_quality(market_context, data_quality, "US"),
             global_peer_datasets={},
         )
         if _market_is_tradable(market_status, "US")
@@ -2466,7 +2535,7 @@ def generate_report(target_day: date) -> Dict[str, Any]:
         self_iterating_engine.run_learning_cycle(
             hk_data,
             benchmark_frame=None,
-            market_context=market_context,
+            market_context=_market_context_with_data_quality(market_context, data_quality, "HK"),
             global_peer_datasets={},
         )
         if _market_is_tradable(market_status, "HK")
@@ -2481,7 +2550,7 @@ def generate_report(target_day: date) -> Dict[str, Any]:
         futures_cycles[exchange] = self_iterating_engine.run_learning_cycle(
             exchange_data,
             benchmark_frame=None,
-            market_context=market_context,
+            market_context=_market_context_with_data_quality(market_context, data_quality, exchange),
             global_peer_datasets=_build_futures_peer_datasets(exchange_data, gold, copper_peer),
         )
     legacy = trading_agent.execute_decision(current_date=target_date, market_data=market_data)
@@ -2669,6 +2738,23 @@ def render_report_text(report: Dict[str, Any]) -> str:
         lines.append("市场出单状态：")
         for market, status in market_status.items():
             lines.append(f"{market}：{status.get('status')}；{status.get('reason')}")
+    data_quality = report.get("data_quality", {})
+    if data_quality:
+        summary = data_quality.get("summary", {})
+        lines.append("")
+        lines.append("数据质量评分：")
+        lines.append(
+            f"summary：min={float(summary.get('min_score', 0.0) or 0.0):.3f} "
+            f"avg={float(summary.get('avg_score', 0.0) or 0.0):.3f} "
+            f"decisions={summary.get('decision_counts', {})}"
+        )
+        for market, assessment in (data_quality.get("markets", {}) or {}).items():
+            lines.append(
+                f"{market}：score={float(assessment.get('score', 0.0) or 0.0):.3f} "
+                f"decision={assessment.get('decision')} "
+                f"lag={assessment.get('date_lag_days')} "
+                f"coverage={float(assessment.get('coverage_score', 0.0) or 0.0):.2f}"
+            )
 
     lines.append("")
     lines.append("复盘：")
@@ -2700,6 +2786,15 @@ def render_report_text(report: Dict[str, Any]) -> str:
         lines.append("")
         lines.append("证据快照：")
         lines.append(f"- 因果验证：{validation_text or '本次无可交易因果边'}")
+        quality_snapshot = snapshot.get("data_quality", {})
+        if quality_snapshot:
+            quality_summary = quality_snapshot.get("summary", {})
+            lines.append(
+                "- 数据质量门："
+                f"min={float(quality_summary.get('min_score', 0.0) or 0.0):.3f} "
+                f"avg={float(quality_summary.get('avg_score', 0.0) or 0.0):.3f} "
+                f"weak={quality_summary.get('weak_markets', [])}"
+            )
         event_intensity = snapshot.get("event_intensity", {})
         if event_intensity:
             latest_values = event_intensity.get("latest_values", {})
