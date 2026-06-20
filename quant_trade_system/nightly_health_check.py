@@ -31,21 +31,47 @@ def _load_json(path: Path) -> Dict[str, Any]:
         return {"status": "runtime_error", "failure_category": FAILURE_RUNTIME_EXCEPTION, "error": str(exc)}
 
 
+def _scheduler_status_dir(root: Path) -> Path:
+    return root / "state" / "nightly_status"
+
+
 def check_nightly_health(target_day: date, repo_root: Optional[Path] = None) -> Dict[str, Any]:
     root = repo_root or _repo_root()
     report_dir = _state_dir(root)
     logs_dir = _log_dir(root)
+    status_dir = _scheduler_status_dir(root)
     target_name = f"{target_day.isoformat()}.json"
     report_path = report_dir / target_name
+    scheduler_status_path = status_dir / f"nightly_quant_orders_{target_day.isoformat()}.json"
     report_exists = report_path.exists()
     report = _load_json(report_path) if report_exists else {}
+    scheduler_status = _load_json(scheduler_status_path) if scheduler_status_path.exists() else {}
     latest_report = _latest_file(sorted(report_dir.glob("*.json"))) if report_dir.exists() else None
     latest_log = _latest_file(sorted(logs_dir.glob("*.log"))) if logs_dir.exists() else None
 
     if not report_exists:
         status = "failed"
         failure_category = FAILURE_SCHEDULER_NOT_RUN
-        reason = f"未找到目标日期夜报 {target_name}，20:00 调度可能未触发或写入了其他目录。"
+        if scheduler_status:
+            scheduler_reason = scheduler_status.get("reason") or scheduler_status.get("status") or "unknown"
+            run_exit = scheduler_status.get("run_exit")
+            health_exit = scheduler_status.get("health_exit")
+            now = datetime.now(CHINA_TZ)
+            before_today_window = target_day == now.date() and now.hour < 20
+            if scheduler_status.get("status") == "skipped" and scheduler_reason == "before_20_00_asia_shanghai" and before_today_window:
+                status = "pending"
+                failure_category = FAILURE_NONE
+                reason = f"尚未到 Asia/Shanghai 20:00，目标日期夜报 {target_name} 等待调度。"
+            elif scheduler_status.get("status") == "skipped":
+                reason = f"未找到目标日期夜报 {target_name}；调度器记录为 skipped：{scheduler_reason}。"
+            else:
+                failure_category = FAILURE_RUNTIME_EXCEPTION
+                reason = (
+                    f"未找到目标日期夜报 {target_name}；调度器已运行但未产出报告，"
+                    f"reason={scheduler_reason}, run_exit={run_exit}, health_exit={health_exit}。"
+                )
+        else:
+            reason = f"未找到目标日期夜报 {target_name}，20:00 调度可能未触发或写入了其他目录。"
     else:
         report_status = str(report.get("status", "unknown"))
         failure_category = str(report.get("failure_category") or FAILURE_NONE)
@@ -71,6 +97,8 @@ def check_nightly_health(target_day: date, repo_root: Optional[Path] = None) -> 
         "report_exists": report_exists,
         "latest_report": str(latest_report) if latest_report else None,
         "latest_log": str(latest_log) if latest_log else None,
+        "scheduler_status_path": str(scheduler_status_path),
+        "scheduler_status": scheduler_status,
         "generated_at": report.get("generated_at"),
         "report_status": report.get("status"),
         "market_status": report.get("market_status", {}),
@@ -95,7 +123,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"原因：{result['reason']}")
         print(f"夜报：{result['report_path']}")
         print(f"最新日志：{result['latest_log']}")
-    return 0 if result["status"] == "ok" else 2
+    return 0 if result["status"] in {"ok", "pending"} else 2
 
 
 if __name__ == "__main__":

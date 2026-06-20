@@ -29,9 +29,12 @@ import numpy as np
 import pandas as pd
 
 from .market_universe import (
+    CFFEX_FUTURES_PRODUCTS,
+    CN_FUTURES_PRODUCTS_BY_EXCHANGE,
+    CZCE_FUTURES_PRODUCTS,
+    DCE_FUTURES_PRODUCTS,
+    GFEX_FUTURES_PRODUCTS,
     HANG_SENG_INDEX_SYMBOLS,
-    SHFE_FUTURES_NAME_MAP,
-    SHFE_FUTURES_PRODUCTS,
     get_hang_seng_symbols,
 )
 
@@ -77,46 +80,6 @@ STAR_MARKET_LEADERS_FALLBACK = [
     "688234.SH", "688536.SH", "688686.SH", "688295.SH", "688029.SH", "688289.SH",
     "688516.SH", "688072.SH",
 ]
-
-DCE_FUTURES_PRODUCTS = [
-    {"symbol": "A", "name_zh": "豆一"}, {"symbol": "B", "name_zh": "豆二"},
-    {"symbol": "M", "name_zh": "豆粕"}, {"symbol": "Y", "name_zh": "豆油"},
-    {"symbol": "P", "name_zh": "棕榈油"}, {"symbol": "C", "name_zh": "玉米"},
-    {"symbol": "CS", "name_zh": "玉米淀粉"}, {"symbol": "JD", "name_zh": "鸡蛋"},
-    {"symbol": "LH", "name_zh": "生猪"}, {"symbol": "L", "name_zh": "聚乙烯"},
-    {"symbol": "V", "name_zh": "PVC"}, {"symbol": "PP", "name_zh": "聚丙烯"},
-    {"symbol": "EG", "name_zh": "乙二醇"}, {"symbol": "EB", "name_zh": "苯乙烯"},
-    {"symbol": "PG", "name_zh": "液化石油气"}, {"symbol": "I", "name_zh": "铁矿石"},
-    {"symbol": "J", "name_zh": "焦炭"}, {"symbol": "JM", "name_zh": "焦煤"},
-    {"symbol": "FB", "name_zh": "纤维板"}, {"symbol": "BB", "name_zh": "胶合板"},
-    {"symbol": "RR", "name_zh": "粳米"},
-]
-
-CZCE_FUTURES_PRODUCTS = [
-    {"symbol": "CF", "name_zh": "棉花"}, {"symbol": "SR", "name_zh": "白糖"},
-    {"symbol": "TA", "name_zh": "PTA"}, {"symbol": "OI", "name_zh": "菜油"},
-    {"symbol": "RM", "name_zh": "菜粕"}, {"symbol": "MA", "name_zh": "甲醇"},
-    {"symbol": "FG", "name_zh": "玻璃"}, {"symbol": "SA", "name_zh": "纯碱"},
-    {"symbol": "UR", "name_zh": "尿素"}, {"symbol": "PF", "name_zh": "短纤"},
-    {"symbol": "PK", "name_zh": "花生"}, {"symbol": "AP", "name_zh": "苹果"},
-    {"symbol": "CJ", "name_zh": "红枣"}, {"symbol": "CY", "name_zh": "棉纱"},
-    {"symbol": "SF", "name_zh": "硅铁"}, {"symbol": "SM", "name_zh": "锰硅"},
-    {"symbol": "SH", "name_zh": "烧碱"}, {"symbol": "PX", "name_zh": "对二甲苯"},
-    {"symbol": "PR", "name_zh": "瓶片"}, {"symbol": "ZC", "name_zh": "动力煤"},
-]
-
-CFFEX_FUTURES_PRODUCTS = [
-    {"symbol": "IF", "name_zh": "沪深300股指"}, {"symbol": "IH", "name_zh": "上证50股指"},
-    {"symbol": "IC", "name_zh": "中证500股指"}, {"symbol": "IM", "name_zh": "中证1000股指"},
-    {"symbol": "T", "name_zh": "10年期国债"}, {"symbol": "TF", "name_zh": "5年期国债"},
-    {"symbol": "TS", "name_zh": "2年期国债"}, {"symbol": "TL", "name_zh": "30年期国债"},
-]
-
-GFEX_FUTURES_PRODUCTS = [
-    {"symbol": "SI", "name_zh": "工业硅"}, {"symbol": "LC", "name_zh": "碳酸锂"},
-    {"symbol": "PS", "name_zh": "多晶硅"},
-]
-
 
 class MarketUniverseProvider:
     """Central provider for all market universes used by strategies and APIs."""
@@ -275,19 +238,17 @@ class MarketUniverseProvider:
 
     def _cn_futures_products(self) -> List[MarketSymbol]:
         products = []
-        for product in SHFE_FUTURES_PRODUCTS:
-            products.append(MarketSymbol(
-                product["symbol"], product.get("name_zh", product["symbol"]), "future_product", "CN", product.get("exchange", "SHFE"), "CNY",
-                metadata={"product_symbol": product["symbol"], "exchange": product.get("exchange", "SHFE")},
-            ))
-        for exchange, product_list in [
-            ("DCE", DCE_FUTURES_PRODUCTS), ("CZCE", CZCE_FUTURES_PRODUCTS),
-            ("CFFEX", CFFEX_FUTURES_PRODUCTS), ("GFEX", GFEX_FUTURES_PRODUCTS),
-        ]:
+        for exchange, product_list in CN_FUTURES_PRODUCTS_BY_EXCHANGE.items():
             for product in product_list:
+                product_exchange = product.get("exchange", exchange)
                 products.append(MarketSymbol(
-                    product["symbol"], product.get("name_zh", product["symbol"]), "future_product", "CN", exchange, "CNY",
-                    metadata={"product_symbol": product["symbol"], "exchange": exchange},
+                    product["symbol"],
+                    product.get("name_zh", product["symbol"]),
+                    "future_product",
+                    "CN",
+                    product_exchange,
+                    "CNY",
+                    metadata={"product_symbol": product["symbol"], "exchange": product_exchange},
                 ))
         return self._dedupe(products)
 

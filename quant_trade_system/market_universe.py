@@ -11,8 +11,8 @@ Notes
 * Hang Seng constituents are reviewed quarterly.  If AkShare is installed and
   exposes an index-constituent endpoint, ``get_hang_seng_symbols`` will prefer
   live data.  Otherwise it falls back to the static list below.
-* SHFE product coverage follows the SHFE English product manual categories:
-  metals, energy, chemical products and index futures.
+* China futures coverage is grouped by exchange for SHFE, INE, DCE, CZCE,
+  CFFEX and GFEX while preserving the historical SHFE/INE compatibility fields.
 """
 
 from __future__ import annotations
@@ -80,6 +80,106 @@ SHFE_FUTURES_PRODUCTS: List[dict[str, str]] = [
 SHFE_FUTURES_SYMBOLS: List[str] = [item["symbol"] for item in SHFE_FUTURES_PRODUCTS]
 SHFE_FUTURES_NAME_MAP: dict[str, str] = {
     item["symbol"]: item["name_zh"] for item in SHFE_FUTURES_PRODUCTS
+}
+
+DCE_FUTURES_PRODUCTS: List[dict[str, str]] = [
+    {"symbol": "A", "name_zh": "豆一", "exchange": "DCE"},
+    {"symbol": "B", "name_zh": "豆二", "exchange": "DCE"},
+    {"symbol": "M", "name_zh": "豆粕", "exchange": "DCE"},
+    {"symbol": "Y", "name_zh": "豆油", "exchange": "DCE"},
+    {"symbol": "P", "name_zh": "棕榈油", "exchange": "DCE"},
+    {"symbol": "C", "name_zh": "玉米", "exchange": "DCE"},
+    {"symbol": "CS", "name_zh": "玉米淀粉", "exchange": "DCE"},
+    {"symbol": "JD", "name_zh": "鸡蛋", "exchange": "DCE"},
+    {"symbol": "LH", "name_zh": "生猪", "exchange": "DCE"},
+    {"symbol": "L", "name_zh": "聚乙烯", "exchange": "DCE"},
+    {"symbol": "V", "name_zh": "PVC", "exchange": "DCE"},
+    {"symbol": "PP", "name_zh": "聚丙烯", "exchange": "DCE"},
+    {"symbol": "EG", "name_zh": "乙二醇", "exchange": "DCE"},
+    {"symbol": "EB", "name_zh": "苯乙烯", "exchange": "DCE"},
+    {"symbol": "PG", "name_zh": "液化石油气", "exchange": "DCE"},
+    {"symbol": "I", "name_zh": "铁矿石", "exchange": "DCE"},
+    {"symbol": "J", "name_zh": "焦炭", "exchange": "DCE"},
+    {"symbol": "JM", "name_zh": "焦煤", "exchange": "DCE"},
+    {"symbol": "FB", "name_zh": "纤维板", "exchange": "DCE"},
+    {"symbol": "BB", "name_zh": "胶合板", "exchange": "DCE"},
+    {"symbol": "RR", "name_zh": "粳米", "exchange": "DCE"},
+]
+
+CZCE_FUTURES_PRODUCTS: List[dict[str, str]] = [
+    {"symbol": "CF", "name_zh": "棉花", "exchange": "CZCE"},
+    {"symbol": "SR", "name_zh": "白糖", "exchange": "CZCE"},
+    {"symbol": "TA", "name_zh": "PTA", "exchange": "CZCE"},
+    {"symbol": "OI", "name_zh": "菜油", "exchange": "CZCE"},
+    {"symbol": "RM", "name_zh": "菜粕", "exchange": "CZCE"},
+    {"symbol": "MA", "name_zh": "甲醇", "exchange": "CZCE"},
+    {"symbol": "FG", "name_zh": "玻璃", "exchange": "CZCE"},
+    {"symbol": "SA", "name_zh": "纯碱", "exchange": "CZCE"},
+    {"symbol": "UR", "name_zh": "尿素", "exchange": "CZCE"},
+    {"symbol": "PF", "name_zh": "短纤", "exchange": "CZCE"},
+    {"symbol": "PK", "name_zh": "花生", "exchange": "CZCE"},
+    {"symbol": "AP", "name_zh": "苹果", "exchange": "CZCE"},
+    {"symbol": "CJ", "name_zh": "红枣", "exchange": "CZCE"},
+    {"symbol": "CY", "name_zh": "棉纱", "exchange": "CZCE"},
+    {"symbol": "PM", "name_zh": "普麦", "exchange": "CZCE"},
+    {"symbol": "WH", "name_zh": "强麦", "exchange": "CZCE"},
+    {"symbol": "JR", "name_zh": "粳稻", "exchange": "CZCE"},
+    {"symbol": "RI", "name_zh": "早籼稻", "exchange": "CZCE"},
+    {"symbol": "LR", "name_zh": "晚籼稻", "exchange": "CZCE"},
+    {"symbol": "RS", "name_zh": "菜籽", "exchange": "CZCE"},
+    {"symbol": "SF", "name_zh": "硅铁", "exchange": "CZCE"},
+    {"symbol": "SM", "name_zh": "锰硅", "exchange": "CZCE"},
+    {"symbol": "SH", "name_zh": "烧碱", "exchange": "CZCE"},
+    {"symbol": "PX", "name_zh": "对二甲苯", "exchange": "CZCE"},
+    {"symbol": "PR", "name_zh": "瓶片", "exchange": "CZCE"},
+    {"symbol": "ZC", "name_zh": "动力煤", "exchange": "CZCE"},
+]
+
+CFFEX_FUTURES_PRODUCTS: List[dict[str, str]] = [
+    {"symbol": "IF", "name_zh": "沪深300股指", "exchange": "CFFEX"},
+    {"symbol": "IH", "name_zh": "上证50股指", "exchange": "CFFEX"},
+    {"symbol": "IC", "name_zh": "中证500股指", "exchange": "CFFEX"},
+    {"symbol": "IM", "name_zh": "中证1000股指", "exchange": "CFFEX"},
+    {"symbol": "T", "name_zh": "10年期国债", "exchange": "CFFEX"},
+    {"symbol": "TF", "name_zh": "5年期国债", "exchange": "CFFEX"},
+    {"symbol": "TS", "name_zh": "2年期国债", "exchange": "CFFEX"},
+    {"symbol": "TL", "name_zh": "30年期国债", "exchange": "CFFEX"},
+]
+
+GFEX_FUTURES_PRODUCTS: List[dict[str, str]] = [
+    {"symbol": "SI", "name_zh": "工业硅", "exchange": "GFEX"},
+    {"symbol": "LC", "name_zh": "碳酸锂", "exchange": "GFEX"},
+    {"symbol": "PS", "name_zh": "多晶硅", "exchange": "GFEX"},
+]
+
+CN_FUTURES_PRODUCTS_BY_EXCHANGE: dict[str, List[dict[str, str]]] = {
+    "SHFE": [item for item in SHFE_FUTURES_PRODUCTS if item.get("exchange") == "SHFE"],
+    "INE": [item for item in SHFE_FUTURES_PRODUCTS if item.get("exchange") == "INE"],
+    "DCE": DCE_FUTURES_PRODUCTS,
+    "CZCE": CZCE_FUTURES_PRODUCTS,
+    "CFFEX": CFFEX_FUTURES_PRODUCTS,
+    "GFEX": GFEX_FUTURES_PRODUCTS,
+}
+
+ALL_CN_FUTURES_PRODUCTS: List[dict[str, str]] = [
+    item for products in CN_FUTURES_PRODUCTS_BY_EXCHANGE.values() for item in products
+]
+CN_FUTURES_SYMBOLS: List[str] = [item["symbol"] for item in ALL_CN_FUTURES_PRODUCTS]
+CN_FUTURES_NAME_MAP: dict[str, str] = {
+    item["symbol"]: item["name_zh"] for item in ALL_CN_FUTURES_PRODUCTS
+}
+CN_FUTURES_ALIAS_MAP: dict[str, str] = {
+    "IF股指": "IF",
+    "IH股指": "IH",
+    "IC股指": "IC",
+    "2年期国债": "TS",
+    "5年期国债": "TF",
+    "10年期国债": "T",
+    "热轧卷": "HC",
+    "塑料": "L",
+    "胶板": "BB",
+    "橡胶": "RU",
+    "中证1000": "IM",
 }
 
 
@@ -157,8 +257,21 @@ def get_shfe_futures_symbols() -> List[str]:
     return SHFE_FUTURES_SYMBOLS.copy()
 
 
+def get_cn_futures_symbols() -> List[str]:
+    """Return all China futures product symbols grouped in the project universe."""
+    return CN_FUTURES_SYMBOLS.copy()
+
+
 def get_market_universe_summary() -> dict[str, Any]:
     hs_symbols = get_hang_seng_symbols()
+    cn_by_exchange = {
+        exchange: {
+            "count": len(products),
+            "symbols": [item["symbol"] for item in products],
+            "products": products,
+        }
+        for exchange, products in CN_FUTURES_PRODUCTS_BY_EXCHANGE.items()
+    }
     return {
         "hong_kong_equities": {
             "name": "Hang Seng Index constituents",
@@ -170,5 +283,12 @@ def get_market_universe_summary() -> dict[str, Any]:
             "count": len(SHFE_FUTURES_SYMBOLS),
             "symbols": SHFE_FUTURES_SYMBOLS,
             "products": SHFE_FUTURES_PRODUCTS,
+        },
+        "china_futures": {
+            "name": "China futures products",
+            "count": len(CN_FUTURES_SYMBOLS),
+            "symbols": CN_FUTURES_SYMBOLS,
+            "products": ALL_CN_FUTURES_PRODUCTS,
+            "by_exchange": cn_by_exchange,
         },
     }

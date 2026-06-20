@@ -22,6 +22,7 @@ from quant_trade_system.futures_dc_research import (
     fetch_cached_main_contract_minute_frames,
     load_candidate_history,
     load_cached_minute_frames,
+    load_csv_minute_frames,
     load_minute_cache,
     minute_cache_path,
     normalize_minute_frame,
@@ -133,6 +134,28 @@ class FuturesDCResearchTests(unittest.TestCase):
             self.assertEqual(list(frames), ["IC2606", "IF2606"])
             self.assertEqual(list(filtered), ["IF2606"])
             self.assertEqual(filtered["IF2606"]["close"].tolist(), [100.0, 101.0, 102.0])
+
+    def test_load_csv_minute_frames_uses_file_stem_and_symbol_column(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            first_path = Path(tmpdir) / "IF2606.csv"
+            mixed_path = Path(tmpdir) / "mixed.csv"
+            _minute_frame([100, 101, 102]).to_csv(first_path, index=False)
+            mixed = pd.concat(
+                [
+                    _minute_frame([200, 201]).assign(symbol="IC2606"),
+                    _minute_frame([300, 301]).assign(symbol="CU2607"),
+                    _minute_frame([202]).assign(symbol="IC2606"),
+                ],
+                ignore_index=True,
+            )
+            mixed.to_csv(mixed_path, index=False)
+
+            frames = load_csv_minute_frames([first_path, mixed_path])
+
+            self.assertEqual(list(frames), ["CU2607", "IC2606", "IF2606"])
+            self.assertEqual(frames["IF2606"]["close"].tolist(), [100.0, 101.0, 102.0])
+            self.assertEqual(frames["IC2606"]["close"].tolist(), [202.0, 201.0])
+            self.assertEqual(frames["CU2607"]["close"].tolist(), [300.0, 301.0])
 
     def test_simulation_enters_after_dc_confirmation_next_bar(self) -> None:
         frame = _minute_frame([100, 99, 98, 102, 105, 104, 100, 96, 95, 98, 101, 103, 100, 97, 96, 99, 103])

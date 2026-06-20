@@ -1098,6 +1098,48 @@ def load_cached_minute_frames(
     return frames
 
 
+def load_csv_minute_frames(
+    paths: Sequence[str | Path],
+    symbol_column: str = "symbol",
+) -> Dict[str, pd.DataFrame]:
+    frames_by_symbol: Dict[str, List[pd.DataFrame]] = defaultdict(list)
+    wanted_symbol_column = str(symbol_column).strip().lower()
+    for pathlike in paths:
+        path = Path(pathlike).expanduser()
+        if not path.exists():
+            raise FileNotFoundError(str(path))
+        raw = pd.read_csv(path)
+        if raw.empty:
+            continue
+        columns_by_lower = {str(column).strip().lower(): column for column in raw.columns}
+        actual_symbol_column = columns_by_lower.get(wanted_symbol_column) if wanted_symbol_column else None
+        if actual_symbol_column is None:
+            symbol = _sanitize_csv_symbol(path.stem)
+            frame = normalize_minute_frame(raw)
+            if not frame.empty:
+                frames_by_symbol[symbol].append(frame)
+            continue
+
+        for raw_symbol, group in raw.groupby(raw[actual_symbol_column].astype(str), dropna=True):
+            symbol = _sanitize_csv_symbol(raw_symbol)
+            if not symbol:
+                continue
+            frame = normalize_minute_frame(group.drop(columns=[actual_symbol_column], errors="ignore"))
+            if not frame.empty:
+                frames_by_symbol[symbol].append(frame)
+
+    frames: Dict[str, pd.DataFrame] = {}
+    for symbol, symbol_frames in frames_by_symbol.items():
+        if not symbol_frames:
+            continue
+        merged = pd.concat(symbol_frames, ignore_index=True)
+        merged = merged.drop_duplicates(subset=["timestamp"], keep="last")
+        merged = normalize_minute_frame(merged)
+        if not merged.empty:
+            frames[symbol] = merged
+    return dict(sorted(frames.items()))
+
+
 def minute_cache_path(symbol: str, period: str = "5", cache_dir: str | Path = "state/futures_minute_cache") -> Path:
     safe_symbol = "".join(ch for ch in str(symbol).upper() if ch.isalnum() or ch in {"_", "-"})
     safe_period = "".join(ch for ch in str(period) if ch.isalnum() or ch in {"_", "-"})
@@ -1267,12 +1309,28 @@ def summarize_candidate_history(
             for value, capture in zip(avg_returns, avg_captures)
             if value > 0 and 0.05 <= capture <= 0.20
         )
+        full_target = sum(
+            1
+            for avg_return, avg_capture, holdout_return, holdout_capture in zip(
+                avg_returns,
+                avg_captures,
+                holdout_returns,
+                holdout_captures,
+            )
+            if (
+                avg_return > 0
+                and 0.05 <= avg_capture <= 0.20
+                and holdout_return > 0
+                and 0.05 <= holdout_capture <= 0.20
+            )
+        )
         summaries.append(
             {
                 "candidate_key": key,
                 "label": _candidate_history_label(latest),
                 "latest_status": str(latest.get("status", "")),
                 "seen_scans": len(ordered),
+                "full_target_scans": full_target,
                 "research_positive_scans": positive_research,
                 "research_target_scans": target_research,
                 "holdout_positive_scans": positive_holdout,
@@ -1293,9 +1351,11 @@ def summarize_candidate_history(
     def sort_key(row: Mapping[str, Any]) -> Tuple[int, int, int, int, int, float, float]:
         status_rank = {"PASS": 0, "WATCH": 1, "FAIL": 2}
         return (
-            -int(_as_float(row.get("holdout_target_scans"))),
-            -int(_as_float(row.get("holdout_positive_scans"))),
+            -int(_as_float(row.get("full_target_scans"))),
             -int(_as_float(row.get("research_target_scans"))),
+            -int(_as_float(row.get("holdout_target_scans"))),
+            -int(_as_float(row.get("research_positive_scans"))),
+            -int(_as_float(row.get("holdout_positive_scans"))),
             -int(_as_float(row.get("seen_scans"))),
             status_rank.get(str(row.get("latest_status")), 9),
             -_as_float(row.get("latest_avg_test_return")),
@@ -1316,19 +1376,20 @@ def _build_persistence_watchlist_lines(
         f"- Unique scans in history: {int(history_scan_count)}",
         "- Persistence is not proven until the same parameter family survives at least 3 unique scans with positive holdout and 5%-20% holdout capture.",
         "",
-        "| latest | candidate | seen | research_pos/target | holdout_pos/target | median_holdout_return | median_holdout_capture | latest_avg_return | latest_capture | latest_rand_q | latest_reasons |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| latest | candidate | seen | full_target | research_pos/target | holdout_pos/target | median_holdout_return | median_holdout_capture | latest_avg_return | latest_capture | latest_rand_q | latest_reasons |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     if not history_summary:
-        lines.append("| - | - | 0 | 0/0 | 0/0 | 0.0000% | 0.00% | 0.0000% | 0.00% | 1.000 | no history yet |")
+        lines.append("| - | - | 0 | 0 | 0/0 | 0/0 | 0.0000% | 0.00% | 0.0000% | 0.00% | 1.000 | no history yet |")
         return lines
     for row in history_summary[:15]:
         reasons = ",".join(str(reason) for reason in row.get("latest_failure_reasons", [])) or "-"
         lines.append(
-            "| {status} | {label} | {seen} | {research_pos}/{research_target} | {holdout_pos}/{holdout_target} | {median_holdout_ret:.4%} | {median_holdout_capture:.2%} | {latest_ret:.4%} | {latest_capture:.2%} | {rand_q:.3f} | {reasons} |".format(
+            "| {status} | {label} | {seen} | {full_target} | {research_pos}/{research_target} | {holdout_pos}/{holdout_target} | {median_holdout_ret:.4%} | {median_holdout_capture:.2%} | {latest_ret:.4%} | {latest_capture:.2%} | {rand_q:.3f} | {reasons} |".format(
                 status=row.get("latest_status", ""),
                 label=row.get("label", ""),
                 seen=int(_as_float(row.get("seen_scans"))),
+                full_target=int(_as_float(row.get("full_target_scans"))),
                 research_pos=int(_as_float(row.get("research_positive_scans"))),
                 research_target=int(_as_float(row.get("research_target_scans"))),
                 holdout_pos=int(_as_float(row.get("holdout_positive_scans"))),
@@ -1411,6 +1472,10 @@ def _empty_candidate_history() -> Dict[str, Any]:
         "updated_at": "",
         "scans": [],
     }
+
+
+def _sanitize_csv_symbol(symbol: Any) -> str:
+    return "".join(ch for ch in str(symbol).strip().upper() if ch.isalnum() or ch in {"_", "-"})
 
 
 def _format_float_key(value: Any) -> str:

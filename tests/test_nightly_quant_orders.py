@@ -16,6 +16,7 @@ from quant_trade_system.nightly_quant_orders import (
     FAILURE_ALL_MARKETS_INVALID,
     FAILURE_DATA_VALIDATION_PARTIAL,
     FAILURE_NONE,
+    FAILURE_RUNTIME_EXCEPTION,
     FAILURE_SCHEDULER_NOT_RUN,
     MarketValidation,
     _aggregate_weekly_quality_metrics,
@@ -1384,6 +1385,27 @@ class NightlyQuantOrdersTests(unittest.TestCase):
             missing = check_nightly_health(date(2026, 5, 20), repo_root=repo_root)
             self.assertEqual(missing["failure_category"], FAILURE_SCHEDULER_NOT_RUN)
             self.assertFalse(missing["report_exists"])
+            self.assertEqual(missing["scheduler_status"], {})
+
+            status_dir = repo_root / "state" / "nightly_status"
+            status_dir.mkdir(parents=True)
+            scheduler_status = {
+                "status": "failed",
+                "reason": "nightly_runner_failed",
+                "run_date": "2026-05-22",
+                "run_exit": 143,
+                "health_exit": 2,
+                "log_file": str(repo_root / "state" / "nightly_logs" / "nightly_quant_orders_2026-05-22.log"),
+            }
+            (status_dir / "nightly_quant_orders_2026-05-22.json").write_text(
+                json.dumps(scheduler_status),
+                encoding="utf-8",
+            )
+            runtime_failed = check_nightly_health(date(2026, 5, 22), repo_root=repo_root)
+            self.assertEqual(runtime_failed["status"], "failed")
+            self.assertEqual(runtime_failed["failure_category"], FAILURE_RUNTIME_EXCEPTION)
+            self.assertEqual(runtime_failed["scheduler_status"]["run_exit"], 143)
+            self.assertIn("调度器已运行但未产出报告", runtime_failed["reason"])
 
             failed_report = {
                 "status": "failed_validation",

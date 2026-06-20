@@ -16,15 +16,17 @@ from quant_trade_system.futures_dc_research import (  # noqa: E402
     fetch_cached_main_contract_minute_frames,
     fetch_main_contract_minute_frames,
     load_cached_minute_frames,
+    load_csv_minute_frames,
     scan_futures_dc_strategies,
     split_research_holdout_frames,
     write_research_outputs,
 )
+from quant_trade_system.futures_specs import normalize_futures_symbol  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Scan China futures DC path-capture candidates.")
-    parser.add_argument("--products", default=",".join(DEFAULT_PRODUCTS), help="Comma-separated product codes.")
+    parser.add_argument("--products", default=",".join(DEFAULT_PRODUCTS), help="Comma-separated product codes. Use --products= with CSV input to scan all symbols.")
     parser.add_argument("--period", default="5", choices=["1", "5", "15", "30", "60"], help="AkShare minute period.")
     parser.add_argument("--max-contracts", type=int, default=None, help="Limit fetched main contracts.")
     parser.add_argument("--quick", action="store_true", help="Use a smaller parameter grid for a fast smoke run.")
@@ -34,6 +36,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-dir", default="state/futures_minute_cache", help="Minute data cache directory.")
     parser.add_argument("--no-cache", action="store_true", help="Disable local minute cache updates.")
     parser.add_argument("--include-cached-contracts", action="store_true", help="Also scan cached contracts that are no longer current main contracts.")
+    parser.add_argument("--csv-dir", default="", help="Directory of local minute CSV files. When set, AkShare fetching is skipped.")
+    parser.add_argument("--csv-glob", default="*.csv", help="Glob used with --csv-dir.")
+    parser.add_argument("--csv-files", default="", help="Comma-separated local minute CSV files. Can be combined with --csv-dir.")
+    parser.add_argument("--csv-symbol-column", default="symbol", help="Optional CSV column used to split a file into symbols.")
     parser.add_argument("--stale-days", type=int, default=3, help="Warn when latest cached bar is older than this many days.")
     parser.add_argument("--holdout-fraction", type=float, default=0.20, help="Final fraction of each contract reserved from scanning.")
     parser.add_argument("--min-holdout-bars", type=int, default=60, help="Minimum bars required for an untouched holdout split.")
@@ -48,7 +54,17 @@ def main() -> int:
     os.chdir(ROOT)
     products = [item.strip().upper() for item in args.products.split(",") if item.strip()]
     overshoot_multiples = [float(item.strip()) for item in args.overshoot_multiples.split(",") if item.strip()]
-    if args.no_cache:
+    csv_paths = _csv_paths(args)
+    if csv_paths:
+        frames = load_csv_minute_frames(csv_paths, symbol_column=args.csv_symbol_column)
+        if products:
+            wanted_products = {normalize_futures_symbol(product) for product in products}
+            frames = {
+                symbol: frame
+                for symbol, frame in frames.items()
+                if normalize_futures_symbol(symbol) in wanted_products
+            }
+    elif args.no_cache:
         frames = fetch_main_contract_minute_frames(products=products, period=args.period, max_contracts=args.max_contracts)
     else:
         frames = fetch_cached_main_contract_minute_frames(
@@ -62,7 +78,7 @@ def main() -> int:
                 frames.setdefault(symbol, frame)
     frames = {symbol: frame for symbol, frame in frames.items() if len(frame) >= args.min_bars}
     if not frames:
-        print("No usable minute frames fetched. Check AkShare availability, products, period, or min-bars.")
+        print("No usable minute frames loaded. Check CSV paths, AkShare availability, products, period, or min-bars.")
         return 2
 
     cost_model = FuturesCostModel()
@@ -116,6 +132,20 @@ def main() -> int:
     print(f"JSON: {paths['json_path']}")
     print(f"Report: {paths['report_path']}")
     return 0
+
+
+def _csv_paths(args: argparse.Namespace) -> list[Path]:
+    paths: list[Path] = []
+    if args.csv_dir:
+        paths.extend(sorted(Path(args.csv_dir).expanduser().glob(str(args.csv_glob))))
+    for item in str(args.csv_files).split(","):
+        item = item.strip()
+        if item:
+            paths.append(Path(item).expanduser())
+    unique: dict[str, Path] = {}
+    for path in paths:
+        unique[str(path)] = path
+    return list(unique.values())
 
 
 def _frame_coverage(symbol, frame, stale_days: int) -> str:
