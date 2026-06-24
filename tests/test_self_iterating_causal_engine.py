@@ -501,6 +501,56 @@ class SelfIteratingCausalEngineTests(unittest.TestCase):
         self.assertGreater(plan.active_weight, 0.0)
         self.assertLessEqual(plan.tail_hedge_weight, 0.12)
 
+    def test_state_conditioning_and_counterfactual_stress_modify_position_and_exits(self) -> None:
+        base_candidate = {
+            "symbol": "AAPL",
+            "asset_type": "stock",
+            "direction": "long",
+            "raw_score": 0.9,
+            "confidence": 0.9,
+            "objective_score": 0.9,
+            "objective_metrics": {"win_rate": 0.75, "payoff_ratio": 3.0, "elasticity": 2.0},
+            "selected_features": ["base_ret_5"],
+            "decoder_long_posterior": 0.85,
+            "decoder_short_posterior": 0.05,
+            "state_conditioning": {"base_ret_5": 1.20},
+        }
+        risk_on_plan = self.engine.optimize_portfolio(
+            [{**base_candidate, "decoder_state_entropy": 0.05, "decoder_risk_off_probability": 0.02}],
+            market_context={"hmm_barbell_state": "risk_on", "crisis_probability": 0.05},
+        )
+        stress_plan = self.engine.optimize_portfolio(
+            [{**base_candidate, "decoder_state_entropy": 0.85, "decoder_risk_off_probability": 0.80}],
+            market_context={
+                "counterfactual_scenarios": ["hormuz_blockade", "us_yield_5pct_break"],
+                "crisis_probability": 0.05,
+            },
+        )
+
+        risk_on = risk_on_plan.signal_allocations[0]
+        stressed = stress_plan.signal_allocations[0]
+        self.assertGreater(risk_on.target_weight, stressed.target_weight)
+        self.assertGreater(risk_on.take_profit_pct, stressed.take_profit_pct)
+        self.assertGreater(stressed.counterfactual_tail_risk_score, 0.50)
+        self.assertLess(stressed.counterfactual_position_multiplier, 1.0)
+        self.assertIn("geopolitical_or_shipping_blockade", stressed.counterfactual_stress_audit["reasons"])
+
+    def test_counterfactual_scenarios_raise_tail_hedge_budget(self) -> None:
+        low_plan = self.engine.optimize_portfolio([], {"crisis_probability": 0.05})
+        high_plan = self.engine.optimize_portfolio(
+            [],
+            {
+                "counterfactual_scenarios": {
+                    "us_yield_5pct_break": True,
+                    "hawkish_fed_usd_weakness": True,
+                },
+                "crisis_probability": 0.05,
+            },
+        )
+
+        self.assertGreater(high_plan.tail_hedge_weight, low_plan.tail_hedge_weight)
+        self.assertGreater(high_plan.hmm_barbell_audit["tail_risk_score"], low_plan.hmm_barbell_audit["tail_risk_score"])
+
     def test_validation_gate_marks_unstable_features_observation_only(self) -> None:
         idx = pd.RangeIndex(80)
         feature = pd.Series(np.r_[np.linspace(0, 1, 40), np.linspace(1, 0, 40)], index=idx)

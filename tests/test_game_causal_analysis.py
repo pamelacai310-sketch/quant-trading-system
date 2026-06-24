@@ -195,6 +195,38 @@ class GameCausalAnalysisEngineTests(unittest.TestCase):
         self.assertGreater(brent_confirmation["effective_weight"], brent_confirmation["weight"])
         self.assertGreaterEqual(brent_confirmation["learned_sample_count"], 2)
         self.assertIn(report["actionability"], {"trade_allowed", "observe_only"})
+        self.assertIn("price_confirmation_quality", report["bilateral_probability"])
+        self.assertGreater(report["bilateral_probability"]["position_multiplier"], 0.0)
+
+    def test_game_probability_overlay_summarizes_position_and_tail_pressure(self) -> None:
+        result = self.engine.analyze(
+            news_items=[
+                {
+                    "title": "Iran war risk threatens Hormuz Strait oil supply disruption",
+                    "source": "unit_test",
+                    "relevance_score": 1.0,
+                    "sentiment_score": -0.6,
+                }
+            ],
+            market_context={
+                "asset_signals": {
+                    "Brent": {"direction": "up"},
+                    "WTI": {"direction": "up"},
+                    "gold": {"direction": "up"},
+                    "VIX": {"direction": "up"},
+                    "credit_spreads": {"direction": "widen"},
+                }
+            },
+        )
+
+        overlay = result["game_probability_overlay"]
+        self.assertEqual(overlay["status"], "active")
+        self.assertGreaterEqual(overlay["max_dominant_probability"], 0.5)
+        self.assertGreater(overlay["max_exposure_scaler"], 0.0)
+        self.assertGreaterEqual(overlay["position_multiplier"], 0.25)
+        self.assertIn("geopolitical_risk_vs_risk_appetite", [
+            item["relation_id"] for item in result["game_relation_reports"]
+        ])
 
     def test_event_intensity_snapshot_is_returned_for_game_analysis(self) -> None:
         result = self.engine.analyze(

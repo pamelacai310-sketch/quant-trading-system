@@ -516,6 +516,64 @@ class NightlyQuantOrdersTests(unittest.TestCase):
         self.assertEqual(execution[0]["position_sizing_gate"]["binding_constraint"], "kelly_fraction")
         self.assertAlmostEqual(execution[0]["position_sizing_gate"]["weight_reduction"], 0.18)
 
+    def test_materialize_execution_actions_caps_high_contradiction_game_signal(self) -> None:
+        actions = [
+            {
+                "action": "LONG",
+                "symbol": "00700.HK",
+                "target_weight": 0.15,
+                "confidence": 0.90,
+                "objective_score": 0.80,
+                "game_probability_audit": {
+                    "contradiction_score": 0.90,
+                    "exposure_scaler": 0.10,
+                    "dominant_probability": 0.55,
+                },
+                "reason": "strong but contested game",
+            }
+        ]
+        price_map = {"00700.HK": {"date": "2026-05-11", "close": 480.0}}
+
+        execution = _materialize_execution_actions(actions, "HK", price_map, "2026-05-11")
+
+        self.assertEqual(execution[0]["action"], "LONG")
+        self.assertEqual(execution[0]["position_sizing_gate"]["decision"], "REDUCE")
+        self.assertEqual(execution[0]["position_sizing_gate"]["binding_constraint"], "game_probability_position_multiplier")
+        self.assertLess(execution[0]["target_weight"], 0.15)
+        self.assertEqual(
+            execution[0]["position_sizing_gate"]["game_probability_execution_overlay"]["status"],
+            "active",
+        )
+
+    def test_materialize_execution_actions_uses_execution_feedback_to_raise_costs(self) -> None:
+        actions = [
+            {
+                "action": "LONG",
+                "symbol": "00700.HK",
+                "target_weight": 0.15,
+                "confidence": 0.80,
+                "objective_score": 0.40,
+                "execution_feedback": {
+                    "fill_ratio": 0.60,
+                    "realized_slippage_bps": 15.0,
+                    "realized_impact_bps": 10.0,
+                    "cost_drag_bps": 5.0,
+                },
+                "reason": "paper edge with poor execution",
+            }
+        ]
+        price_map = {"00700.HK": {"date": "2026-05-11", "close": 480.0}}
+
+        execution = _materialize_execution_actions(actions, "HK", price_map, "2026-05-11")
+
+        self.assertEqual(execution[0]["bucket_action"], "COST_GATE_REJECTED")
+        self.assertEqual(execution[0]["net_edge_gate"]["decision"], "OBSERVE_ONLY")
+        self.assertGreater(execution[0]["net_edge_gate"]["cost_bps"], 100.0)
+        self.assertEqual(
+            execution[0]["net_edge_gate"]["game_probability_execution_overlay"]["status"],
+            "missing",
+        )
+
     def test_materialize_execution_actions_applies_mae_mfe_feedback(self) -> None:
         actions = [
             {

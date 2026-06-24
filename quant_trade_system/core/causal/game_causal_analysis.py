@@ -454,6 +454,7 @@ class GameCausalAnalysisEngine:
             market_context=market_context,
             event_chains=event_chains,
         )
+        game_probability_overlay = self._game_probability_overlay(relation_reports)
         aggregate_score = self._aggregate_risk_score(risk_scores)
         return {
             "status": "active" if events else "no_events",
@@ -470,6 +471,71 @@ class GameCausalAnalysisEngine:
             "event_causal_chains": [asdict(chain) for chain in event_chains],
             "dominant_game_logics": [asdict(item) for item in dominance],
             "game_relation_reports": [asdict(item) for item in relation_reports],
+            "game_probability_overlay": game_probability_overlay,
+        }
+
+    @staticmethod
+    def _game_probability_overlay(reports: Sequence[GameRelationReport]) -> Dict[str, Any]:
+        if not reports:
+            return {
+                "status": "no_relations",
+                "position_multiplier": 1.0,
+                "tail_risk_addon": 0.0,
+                "rule": "no bilateral game reports available",
+            }
+
+        contradictions = []
+        exposures = []
+        probabilities = []
+        actionable = []
+        tail_addons = []
+        top_relation = None
+        top_exposure = -1.0
+        for report in reports:
+            bilateral = report.bilateral_probability or {}
+            contradiction = _to_float(bilateral.get("contradiction_score"), 0.0)
+            exposure = _to_float(bilateral.get("exposure_scaler"), 0.0)
+            probability = _to_float(bilateral.get("dominant_probability"), 0.50)
+            contradictions.append(contradiction)
+            exposures.append(exposure)
+            probabilities.append(probability)
+            if report.actionability == "trade_allowed":
+                actionable.append(report.relation_id)
+            if exposure > top_exposure:
+                top_exposure = exposure
+                top_relation = {
+                    "relation_id": report.relation_id,
+                    "relation_name": report.relation_name,
+                    "dominant_name": bilateral.get("dominant_name"),
+                    "exposure_scaler": round(float(exposure), 6),
+                }
+            risk_category = report.category.startswith(("B_", "E_", "F_"))
+            risk_side = any(
+                token in str(bilateral.get("dominant_name", "")).lower()
+                for token in ["risk", "stress", "intervention", "safehaven", "credit", "geopolitical"]
+            )
+            if risk_category and risk_side and probability >= 0.65:
+                tail_addons.append(exposure * probability)
+
+        max_contradiction = max(contradictions or [0.0])
+        max_exposure = max(exposures or [0.0])
+        max_probability = max(probabilities or [0.50])
+        position_multiplier = 1.0 - 0.55 * max_contradiction
+        if max_exposure > 0:
+            position_multiplier *= 0.65 + 0.45 * max_exposure
+        if max_probability >= 0.70 and max_contradiction <= 0.35:
+            position_multiplier *= 1.10
+        return {
+            "status": "active",
+            "actionable_relation_count": len(actionable),
+            "actionable_relations": actionable,
+            "top_relation": top_relation,
+            "max_contradiction_score": round(float(max_contradiction), 6),
+            "max_exposure_scaler": round(float(max_exposure), 6),
+            "max_dominant_probability": round(float(max_probability), 6),
+            "position_multiplier": round(float(_clip(position_multiplier, 0.25, 1.15)), 6),
+            "tail_risk_addon": round(float(_clip(max(tail_addons or [0.0]), 0.0, 0.50)), 6),
+            "rule": "P(A wins)/P(B wins) controls exposure; contradiction de-levers and risk-dominant games add tail hedge pressure.",
         }
 
     def analyze_game_relations(
@@ -1441,10 +1507,17 @@ class GameCausalAnalysisEngine:
         p_b = 1.0 - p_a
         contradiction = float(_clip(1.0 - abs(p_a - p_b) * 2.0, 0.0, 1.0))
         best_price = max(_to_float(side_a_price.get("score"), 0.0), _to_float(side_b_price.get("score"), 0.0))
+        price_quality = self._price_confirmation_quality(side_a_price, side_b_price)
         can_trade = bool(identification.get("can_trade")) and best_price >= 0.30
         dominant_side = "A" if p_a > p_b else "B"
         dominant_prob = max(p_a, p_b)
         causal_gate_multiplier = 1.0 if can_trade else 0.0
+        if can_trade:
+            causal_gate_multiplier *= _clip(
+                0.65 + 0.45 * price_quality["max_reliability"] + min(price_quality["sample_count"], 20) / 40.0,
+                0.50,
+                1.25,
+            )
         if contradiction > 0.60:
             causal_gate_multiplier *= 0.35
         if dominant_prob >= 0.70 and best_price >= 0.55:
@@ -1456,6 +1529,11 @@ class GameCausalAnalysisEngine:
         else:
             sizing_rule = "observe_only"
         exposure_scaler = float(_clip(confidence * (1.0 - contradiction) * causal_gate_multiplier, 0.0, 1.0))
+        position_multiplier = 0.0 if not can_trade else _clip(
+            (0.35 + exposure_scaler + 0.20 * float(dominant_prob >= 0.70) - 0.50 * contradiction),
+            0.0,
+            1.25,
+        )
         return {
             "A": round(float(p_a), 6),
             "B": round(float(p_b), 6),
@@ -1464,12 +1542,35 @@ class GameCausalAnalysisEngine:
             "dominant_probability": round(float(dominant_prob), 6),
             "contradiction_score": round(float(contradiction), 6),
             "exposure_scaler": round(exposure_scaler, 6),
+            "position_multiplier": round(float(position_multiplier), 6),
             "causal_gate_multiplier": round(float(causal_gate_multiplier), 6),
             "sizing_rule": sizing_rule,
             "actionability": "trade_allowed" if exposure_scaler > 0 and sizing_rule != "observe_only" else "observe_only",
+            "price_confirmation_quality": price_quality,
             "side_a_quant_inputs": list(spec.side_a.quant_inputs),
             "side_b_quant_inputs": list(spec.side_b.quant_inputs),
             "formula": "softmax(A_score,B_score); contradiction=1-2*abs(P(A)-0.5); scaler=confidence*(1-contradiction)*gate",
+        }
+
+    @staticmethod
+    def _price_confirmation_quality(*side_prices: Mapping[str, Any]) -> Dict[str, Any]:
+        reliabilities = []
+        sample_count = 0
+        effective_weights = []
+        for side_price in side_prices:
+            for item in side_price.get("confirmations", []):
+                reliability = item.get("learned_reliability")
+                if reliability is not None:
+                    reliabilities.append(_to_float(reliability, 0.0))
+                sample_count += int(_to_float(item.get("learned_sample_count"), 0.0))
+                effective_weights.append(_to_float(item.get("effective_weight"), _to_float(item.get("weight"), 1.0)))
+        return {
+            "max_reliability": round(float(max(reliabilities or [0.50])), 6),
+            "avg_reliability": round(float(sum(reliabilities) / len(reliabilities)), 6) if reliabilities else 0.50,
+            "sample_count": int(sample_count),
+            "avg_effective_weight": round(float(sum(effective_weights) / len(effective_weights)), 6)
+            if effective_weights
+            else 0.0,
         }
 
     def _score_context_rules(self, rules: Sequence[ContextRule], market_context: Mapping[str, Any]) -> float:

@@ -1313,7 +1313,8 @@ def _active_signal_net_edge_gate(action: Dict[str, Any], market_upper: str) -> D
         }
     objective_score = max(0.0, float(action.get("objective_score", 0.0) or 0.0))
     confidence = max(0.0, float(action.get("confidence", 1.0) or 0.0))
-    expected_edge_bps = objective_score * confidence * 100.0
+    probability_overlay = _game_probability_execution_overlay(action)
+    expected_edge_bps = objective_score * confidence * 100.0 * float(probability_overlay["edge_multiplier"])
     cost = _execution_cost_components({**action, "market": market_upper}, is_cash=False)
     cost_bps = float(cost.get("total_bps", 0.0) or 0.0)
     required_edge_bps = max(cost_bps + _min_net_edge_buffer_bps(), cost_bps * 1.20)
@@ -1324,7 +1325,8 @@ def _active_signal_net_edge_gate(action: Dict[str, Any], market_upper: str) -> D
         "cost_bps": round(cost_bps, 6),
         "required_edge_bps": round(required_edge_bps, 6),
         "buffer_bps": round(_min_net_edge_buffer_bps(), 6),
-        "formula": "objective_score * confidence * 100 >= max(round_trip_cost_bps + buffer, round_trip_cost_bps * 1.20)",
+        "game_probability_execution_overlay": probability_overlay,
+        "formula": "objective_score * confidence * 100 * game_edge_multiplier >= max(round_trip_cost_bps + buffer, round_trip_cost_bps * 1.20)",
         "reason": (
             "预计净边际覆盖交易成本，允许执行。"
             if decision == "ALLOW"
@@ -1342,6 +1344,18 @@ def _active_signal_position_sizing_gate(action: Dict[str, Any]) -> Dict[str, Any
     capacity_weight_limit = action.get("capacity_weight_limit")
     if capacity_weight_limit is not None:
         caps["capacity_weight_limit"] = max(0.0, float(capacity_weight_limit or 0.0))
+    state_multiplier = float(action.get("state_conditioning_multiplier", 1.0) or 1.0)
+    if state_multiplier < 1.0:
+        caps["state_conditioning_multiplier"] = original_weight * max(0.0, state_multiplier)
+    counterfactual_multiplier = float(action.get("counterfactual_position_multiplier", 1.0) or 1.0)
+    if counterfactual_multiplier < 1.0:
+        caps["counterfactual_position_multiplier"] = original_weight * max(0.0, counterfactual_multiplier)
+    game_overlay = _game_probability_execution_overlay(action)
+    if float(game_overlay["position_multiplier"]) < 1.0:
+        caps["game_probability_position_multiplier"] = original_weight * max(0.0, float(game_overlay["position_multiplier"]))
+    execution_feedback = _execution_feedback_overlay(action)
+    if float(execution_feedback["position_multiplier"]) < 1.0:
+        caps["execution_feedback_position_multiplier"] = original_weight * max(0.0, float(execution_feedback["position_multiplier"]))
     binding_constraint = min(caps, key=lambda key: caps[key])
     capped_weight = min(original_weight, caps[binding_constraint])
     applied_caps = [key for key, value in caps.items() if value + 1e-12 < original_weight]
@@ -1354,12 +1368,81 @@ def _active_signal_position_sizing_gate(action: Dict[str, Any]) -> Dict[str, Any
         "binding_constraint": binding_constraint if decision == "REDUCE" else None,
         "applied_caps": applied_caps,
         "caps": {key: round(float(value), 6) for key, value in caps.items()},
-        "formula": "min(target_weight, max_active_single_weight, optional kelly_fraction, optional capacity_weight_limit)",
+        "game_probability_execution_overlay": game_overlay,
+        "execution_feedback_overlay": execution_feedback,
+        "formula": "min(target_weight, hard limits, Kelly/capacity, HMM state cap, counterfactual cap, game probability cap, execution feedback cap)",
         "reason": (
-            "目标仓位超过 fractional Kelly/容量/单标的硬上限，执行前降权。"
+            "目标仓位超过 fractional Kelly/容量/状态/反事实/博弈/执行反馈上限，执行前降权。"
             if decision == "REDUCE"
-            else "目标仓位未超过 fractional Kelly/容量/单标的硬上限。"
+            else "目标仓位未超过 fractional Kelly/容量/状态/反事实/博弈/执行反馈上限。"
         ),
+    }
+
+
+def _game_probability_execution_overlay(action: Dict[str, Any]) -> Dict[str, Any]:
+    source = (
+        action.get("game_probability_audit")
+        or action.get("game_probability")
+        or action.get("bilateral_probability")
+        or ((action.get("risk_limits") or {}).get("game_probability") if isinstance(action.get("risk_limits"), dict) else None)
+        or {}
+    )
+    if not isinstance(source, dict) or not source:
+        return {
+            "status": "missing",
+            "edge_multiplier": 1.0,
+            "position_multiplier": 1.0,
+            "reason": "动作未提供博弈概率审计，保持兼容。",
+        }
+    contradiction = float(np.clip(source.get("contradiction_score", source.get("max_contradiction_score", 0.0)) or 0.0, 0.0, 1.0))
+    exposure = float(np.clip(source.get("exposure_scaler", source.get("max_exposure_scaler", 1.0)) or 1.0, 0.0, 1.0))
+    probability = float(
+        np.clip(source.get("dominant_probability", source.get("max_dominant_probability", 0.50)) or 0.50, 0.0, 1.0)
+    )
+    source_multiplier = float(source.get("position_multiplier", 1.0) or 1.0)
+    edge_multiplier = (1.0 - 0.55 * contradiction) * (0.65 + 0.45 * exposure)
+    if probability >= 0.70 and contradiction <= 0.35:
+        edge_multiplier *= 1.10
+    position_multiplier = min(source_multiplier, edge_multiplier)
+    return {
+        "status": "active",
+        "edge_multiplier": round(float(np.clip(edge_multiplier, 0.10, 1.20)), 6),
+        "position_multiplier": round(float(np.clip(position_multiplier, 0.0, 1.20)), 6),
+        "contradiction_score": round(float(contradiction), 6),
+        "exposure_scaler": round(float(exposure), 6),
+        "dominant_probability": round(float(probability), 6),
+        "rule": "high contradiction lowers expected edge and caps active position.",
+    }
+
+
+def _execution_feedback_overlay(action: Dict[str, Any]) -> Dict[str, Any]:
+    source = (
+        action.get("execution_feedback")
+        or action.get("execution_quality_feedback")
+        or ((action.get("risk_feedback") or {}).get("execution_feedback") if isinstance(action.get("risk_feedback"), dict) else None)
+        or {}
+    )
+    if not isinstance(source, dict) or not source:
+        return {
+            "status": "missing",
+            "cost_multiplier": 1.0,
+            "position_multiplier": 1.0,
+            "reason": "动作未提供真实成交质量反馈。",
+        }
+    fill_ratio = float(np.clip(source.get("fill_ratio", source.get("avg_fill_ratio", 1.0)) or 1.0, 0.0, 1.0))
+    slippage_bps = max(0.0, float(source.get("realized_slippage_bps", source.get("slippage_bps", 0.0)) or 0.0))
+    impact_bps = max(0.0, float(source.get("realized_impact_bps", source.get("impact_bps", 0.0)) or 0.0))
+    cost_drag = max(0.0, float(source.get("cost_drag_bps", source.get("realized_cost_drag_bps", 0.0)) or 0.0))
+    quality_penalty = (1.0 - fill_ratio) + min((slippage_bps + impact_bps + cost_drag) / 100.0, 1.0)
+    return {
+        "status": "active",
+        "cost_multiplier": round(float(np.clip(1.0 + quality_penalty, 1.0, 3.0)), 6),
+        "position_multiplier": round(float(np.clip(1.0 - 0.50 * quality_penalty, 0.20, 1.0)), 6),
+        "fill_ratio": round(float(fill_ratio), 6),
+        "realized_slippage_bps": round(float(slippage_bps), 6),
+        "realized_impact_bps": round(float(impact_bps), 6),
+        "cost_drag_bps": round(float(cost_drag), 6),
+        "rule": "poor fill quality raises round-trip cost assumptions and caps next signal size.",
     }
 
 
@@ -1899,7 +1982,20 @@ def _execution_cost_components(action: Dict[str, Any], is_cash: bool) -> Dict[st
         if action.get(key) is not None:
             defaults[key] = float(action[key])
 
+    execution_feedback = _execution_feedback_overlay(action)
+    if execution_feedback.get("status") == "active":
+        defaults["slippage_bps"] = max(
+            float(defaults.get("slippage_bps", 0.0)),
+            float(execution_feedback.get("realized_slippage_bps", 0.0) or 0.0),
+        )
+        defaults["impact_bps"] = max(
+            float(defaults.get("impact_bps", 0.0)),
+            float(execution_feedback.get("realized_impact_bps", 0.0) or 0.0),
+        )
+        defaults["impact_bps"] += float(execution_feedback.get("cost_drag_bps", 0.0) or 0.0)
+
     multiplier = float(action.get("round_trip_cost_multiplier", ROUND_TRIP_COST_MULTIPLIER) or 0.0)
+    multiplier *= float(execution_feedback.get("cost_multiplier", 1.0) or 1.0)
     commission_bps = max(0.0, float(defaults.get("commission_bps", 0.0))) * multiplier
     slippage_bps = max(0.0, float(defaults.get("slippage_bps", 0.0))) * multiplier
     impact_bps = max(0.0, float(defaults.get("impact_bps", 0.0))) * multiplier
@@ -1910,6 +2006,7 @@ def _execution_cost_components(action: Dict[str, Any], is_cash: bool) -> Dict[st
         "impact_bps": round(impact_bps, 6),
         "total_bps": round(total_bps, 6),
         "round_trip_multiplier": round(multiplier, 6),
+        "execution_feedback_overlay": execution_feedback,
     }
 
 

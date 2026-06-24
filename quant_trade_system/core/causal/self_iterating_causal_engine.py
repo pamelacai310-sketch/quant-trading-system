@@ -142,9 +142,15 @@ class SignalAllocation:
     slippage_bps: float = 0.0
     impact_bps: float = 12.0
     state_conditioning_multiplier: float = 1.0
+    state_conditioning_audit: Dict[str, Any] = field(default_factory=dict)
     cross_asset_transfer_multiplier: float = 1.0
     transferred_factor_count: int = 0
     macro_event_overlay_multiplier: float = 1.0
+    counterfactual_position_multiplier: float = 1.0
+    counterfactual_tail_risk_score: float = 0.0
+    counterfactual_stress_audit: Dict[str, Any] = field(default_factory=dict)
+    game_probability_position_multiplier: float = 1.0
+    game_probability_audit: Dict[str, Any] = field(default_factory=dict)
     abstention_decision: str = ALLOW
     abstention_risk_score: float = 0.0
     abstention_reasons: List[str] = field(default_factory=list)
@@ -1744,6 +1750,9 @@ class SelfIteratingCausalEngine:
                 * abs(item["raw_score"])
                 * max(kelly_fraction, 0.002)
                 * float(item.get("abstention_weight_multiplier", 1.0) or 1.0)
+                * self._state_conditioning_trade_profile(item)["position_multiplier"]
+                * self._counterfactual_position_overlay(market_context)["position_multiplier"]
+                * self._game_probability_position_overlay(market_context)["position_multiplier"]
                 for item, kelly_fraction in zip(candidates, kelly_fractions)
             ],
             dtype=float,
@@ -1754,12 +1763,34 @@ class SelfIteratingCausalEngine:
         allocations: List[SignalAllocation] = []
         for item, base_weight, kelly_fraction in zip(candidates, raw_scores.tolist(), kelly_fractions):
             confidence = float(item["confidence"])
-            stop_loss = self.constraints.base_stop_loss_pct * (1.10 - min(confidence, 0.9) * 0.20)
-            take_profit = self.constraints.base_take_profit_pct * (1.0 + confidence)
+            state_profile = self._state_conditioning_trade_profile(item)
+            counterfactual_overlay = self._counterfactual_position_overlay(market_context)
+            game_overlay = self._game_probability_position_overlay(market_context)
+            combined_position_multiplier = (
+                float(state_profile["position_multiplier"])
+                * float(counterfactual_overlay["position_multiplier"])
+                * float(game_overlay["position_multiplier"])
+            )
+            stop_loss = (
+                self.constraints.base_stop_loss_pct
+                * (1.10 - min(confidence, 0.9) * 0.20)
+                * float(state_profile["stop_loss_multiplier"])
+                * float(counterfactual_overlay["stop_loss_multiplier"])
+            )
+            take_profit = (
+                self.constraints.base_take_profit_pct
+                * (1.0 + confidence)
+                * float(state_profile["take_profit_multiplier"])
+                * float(counterfactual_overlay["take_profit_multiplier"])
+            )
             execution_profile = self._execution_profile(item["symbol"], market_context)
             capacity_weight_limit = self._capacity_weight_limit(item["symbol"], market_context)
             abstention_multiplier = float(item.get("abstention_weight_multiplier", 1.0) or 1.0)
-            target_weight = min(active_weight * base_weight * abstention_multiplier, max(kelly_fraction, 0.0))
+            target_weight = min(
+                active_weight * base_weight * abstention_multiplier * combined_position_multiplier,
+                max(kelly_fraction, 0.0),
+                capacity_weight_limit,
+            )
             state_multipliers = list((item.get("state_conditioning") or {}).values())
             transfer_multipliers = item.get("cross_asset_transfer") or {}
             macro_event_multipliers = item.get("macro_event_overlay") or {}
@@ -1788,6 +1819,7 @@ class SelfIteratingCausalEngine:
                     slippage_bps=round(float(execution_profile["slippage_bps"]), 6),
                     impact_bps=round(float(execution_profile["impact_bps"]), 6),
                     state_conditioning_multiplier=round(float(np.mean(state_multipliers)), 6) if state_multipliers else 1.0,
+                    state_conditioning_audit=state_profile,
                     cross_asset_transfer_multiplier=round(max(transfer_multipliers.values()), 6)
                     if transfer_multipliers
                     else 1.0,
@@ -1795,6 +1827,11 @@ class SelfIteratingCausalEngine:
                     macro_event_overlay_multiplier=round(float(np.mean(list(macro_event_multipliers.values()))), 6)
                     if macro_event_multipliers
                     else 1.0,
+                    counterfactual_position_multiplier=round(float(counterfactual_overlay["position_multiplier"]), 6),
+                    counterfactual_tail_risk_score=round(float(counterfactual_overlay["tail_risk_score"]), 6),
+                    counterfactual_stress_audit=counterfactual_overlay,
+                    game_probability_position_multiplier=round(float(game_overlay["position_multiplier"]), 6),
+                    game_probability_audit=game_overlay,
                     abstention_decision=str(item.get("abstention_decision", ALLOW)),
                     abstention_risk_score=round(float(item.get("abstention_risk_score", 0.0) or 0.0), 6),
                     abstention_reasons=list(item.get("abstention_reasons", [])),
@@ -1813,7 +1850,7 @@ class SelfIteratingCausalEngine:
         full_kelly = max(0.0, win_rate - (1.0 - win_rate) / payoff_ratio)
         elasticity_scale = float(np.clip(elasticity / 2.0, 0.10, 1.0))
         confidence = float(np.clip(candidate.get("confidence", 0.0) or 0.0, 0.0, 1.0))
-        entropy = float(np.clip(candidate.get("decoder_state_entropy", 1.0) or 1.0, 0.0, 1.0))
+        entropy = float(np.clip(candidate.get("decoder_state_entropy", 0.35) or 0.35, 0.0, 1.0))
         risk_off = float(np.clip(candidate.get("decoder_risk_off_probability", 0.0) or 0.0, 0.0, 1.0))
         direction = str(candidate.get("direction", "long")).lower()
         risk_haircut = 1.0 - (0.45 * risk_off if direction == "long" else 0.20 * risk_off)
@@ -2024,6 +2061,174 @@ class SelfIteratingCausalEngine:
             return 1.0
         return float(np.clip((adv_notional * participation) / portfolio_notional, 0.0, 1.0))
 
+    @staticmethod
+    def _mean_multiplier(values: Any, default: float = 1.0) -> float:
+        if isinstance(values, dict):
+            values = list(values.values())
+        if not isinstance(values, list) or not values:
+            return default
+        parsed: List[float] = []
+        for value in values:
+            try:
+                parsed_value = float(value)
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(parsed_value):
+                parsed.append(parsed_value)
+        return float(np.mean(parsed)) if parsed else default
+
+    def _state_conditioning_trade_profile(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
+        """Translate hidden-state posterior into weight and exit-parameter scalers."""
+
+        state_multiplier = self._mean_multiplier(candidate.get("state_conditioning") or {}, 1.0)
+        entropy = float(np.clip(candidate.get("decoder_state_entropy", 0.35) or 0.35, 0.0, 1.0))
+        risk_off = float(np.clip(candidate.get("decoder_risk_off_probability", 0.0) or 0.0, 0.0, 1.0))
+        long_p = float(np.clip(candidate.get("decoder_long_posterior", 0.0) or 0.0, 0.0, 1.0))
+        short_p = float(np.clip(candidate.get("decoder_short_posterior", 0.0) or 0.0, 0.0, 1.0))
+        posterior_gap = abs(long_p - short_p)
+        direction = str(candidate.get("direction", "long")).lower()
+
+        direction_risk_haircut = 1.0 - (0.55 * risk_off if direction == "long" else 0.25 * risk_off)
+        uncertainty_haircut = 1.0 - 0.35 * entropy
+        posterior_confirmation = 0.90 + 0.25 * posterior_gap
+        position_multiplier = state_multiplier * direction_risk_haircut * uncertainty_haircut * posterior_confirmation
+        stop_loss_multiplier = 1.10 - 0.35 * risk_off - 0.25 * entropy + 0.20 * posterior_gap
+        take_profit_multiplier = 1.00 + 0.30 * posterior_gap - 0.25 * risk_off - 0.15 * entropy
+
+        return {
+            "position_multiplier": round(float(np.clip(position_multiplier, 0.10, 1.50)), 6),
+            "stop_loss_multiplier": round(float(np.clip(stop_loss_multiplier, 0.55, 1.25)), 6),
+            "take_profit_multiplier": round(float(np.clip(take_profit_multiplier, 0.60, 1.35)), 6),
+            "state_conditioning_multiplier": round(float(state_multiplier), 6),
+            "decoder_state_entropy": round(float(entropy), 6),
+            "decoder_risk_off_probability": round(float(risk_off), 6),
+            "posterior_gap": round(float(posterior_gap), 6),
+            "rule": "HMM/HHMM posterior conditions factor weight, active sizing, stop-loss and take-profit.",
+        }
+
+    def _counterfactual_position_overlay(self, market_context: Dict[str, Any]) -> Dict[str, Any]:
+        scenario = self._counterfactual_scenario_tail_overlay(market_context)
+        scm_stress = market_context.get("scm_counterfactual_stress", {})
+        macro_event_state = market_context.get("macro_event_state", {})
+        tail_risk = float(scenario.get("tail_risk_score", 0.0) or 0.0)
+        reasons = list(scenario.get("reasons", []))
+        if isinstance(scm_stress, dict):
+            tail_risk = max(tail_risk, float(scm_stress.get("max_tail_risk_score", 0.0) or 0.0))
+            if float(scm_stress.get("max_tail_risk_score", 0.0) or 0.0) > 0:
+                reasons.append("scm_counterfactual_stress")
+        if isinstance(macro_event_state, dict):
+            tail_risk = max(tail_risk, float(macro_event_state.get("tail_risk_score", 0.0) or 0.0))
+            if float(macro_event_state.get("tail_risk_score", 0.0) or 0.0) > 0:
+                reasons.append("macro_event_tail_risk")
+
+        active_haircut = 1.0 - 0.65 * max(0.0, tail_risk - 0.20)
+        return {
+            "tail_risk_score": round(float(np.clip(tail_risk, 0.0, 0.80)), 6),
+            "position_multiplier": round(float(np.clip(active_haircut, 0.20, 1.0)), 6),
+            "stop_loss_multiplier": round(float(np.clip(1.0 - 0.35 * tail_risk, 0.55, 1.0)), 6),
+            "take_profit_multiplier": round(float(np.clip(1.0 - 0.20 * tail_risk, 0.70, 1.0)), 6),
+            "reasons": sorted(set(reasons)),
+            "rule": "counterfactual stress caps active risk before portfolio optimization raises tail/cash budgets.",
+        }
+
+    def _game_probability_position_overlay(self, market_context: Dict[str, Any]) -> Dict[str, Any]:
+        game_analysis = market_context.get("game_causal_analysis", {})
+        if not isinstance(game_analysis, dict):
+            return {"status": "missing", "position_multiplier": 1.0}
+        overlay = game_analysis.get("game_probability_overlay")
+        if not isinstance(overlay, dict):
+            reports = game_analysis.get("game_relation_reports", [])
+            if isinstance(reports, list) and reports:
+                contradictions = []
+                exposures = []
+                dominant_probs = []
+                for report in reports:
+                    if not isinstance(report, dict):
+                        continue
+                    bilateral = report.get("bilateral_probability", {})
+                    if not isinstance(bilateral, dict):
+                        continue
+                    contradictions.append(float(bilateral.get("contradiction_score", 0.0) or 0.0))
+                    exposures.append(float(bilateral.get("exposure_scaler", 0.0) or 0.0))
+                    dominant_probs.append(float(bilateral.get("dominant_probability", 0.0) or 0.0))
+                overlay = {
+                    "max_contradiction_score": max(contradictions or [0.0]),
+                    "max_exposure_scaler": max(exposures or [0.0]),
+                    "max_dominant_probability": max(dominant_probs or [0.0]),
+                }
+            else:
+                return {"status": "missing", "position_multiplier": 1.0}
+
+        contradiction = float(np.clip(overlay.get("max_contradiction_score", 0.0) or 0.0, 0.0, 1.0))
+        exposure = float(np.clip(overlay.get("max_exposure_scaler", 1.0) or 1.0, 0.0, 1.0))
+        probability = float(np.clip(overlay.get("max_dominant_probability", 0.50) or 0.50, 0.0, 1.0))
+        multiplier = 1.0 - 0.55 * contradiction
+        if exposure > 0:
+            multiplier *= 0.65 + 0.45 * exposure
+        if probability >= 0.70 and contradiction <= 0.35:
+            multiplier *= 1.10
+        return {
+            "status": "active",
+            "position_multiplier": round(float(np.clip(multiplier, 0.25, 1.15)), 6),
+            "max_contradiction_score": round(float(contradiction), 6),
+            "max_exposure_scaler": round(float(exposure), 6),
+            "max_dominant_probability": round(float(probability), 6),
+            "rule": "bilateral game probability scales active exposure; high contradiction delevers instead of forcing one narrative.",
+        }
+
+    @staticmethod
+    def _counterfactual_scenario_tail_overlay(market_context: Dict[str, Any]) -> Dict[str, Any]:
+        records: List[str] = []
+        for key in ["counterfactual_scenarios", "stress_scenarios", "scenario_flags", "counterfactual_flags"]:
+            value = market_context.get(key)
+            if isinstance(value, dict):
+                records.extend(str(item_key) for item_key, enabled in value.items() if enabled)
+            elif isinstance(value, list):
+                records.extend(str(item) for item in value)
+            elif isinstance(value, str):
+                records.append(value)
+        macro_event_state = market_context.get("macro_event_state", {})
+        if isinstance(macro_event_state, dict):
+            flags = macro_event_state.get("scenario_flags") or macro_event_state.get("event_flags") or {}
+            if isinstance(flags, dict):
+                records.extend(str(item_key) for item_key, enabled in flags.items() if enabled)
+            elif isinstance(flags, list):
+                records.extend(str(item) for item in flags)
+
+        text = " ".join(records).lower()
+        tail_risk = 0.0
+        reasons: List[str] = []
+        if any(token in text for token in ["hormuz", "blockade", "shipping_blockade", "geo_blockade", "封锁", "霍尔木兹"]):
+            tail_risk = max(tail_risk, 0.65)
+            reasons.append("geopolitical_or_shipping_blockade")
+        if any(token in text for token in ["us_yield_5pct", "yield_5", "5pct_yield", "美债5", "收益率破5"]):
+            tail_risk = max(tail_risk, 0.55)
+            reasons.append("us_yield_above_5pct")
+        if any(token in text for token in ["hawkish_fed_usd_weak", "dollar_weak_with_hike", "fed_hike_usd_down", "美元反常走弱"]):
+            tail_risk = max(tail_risk, 0.45)
+            reasons.append("hawkish_fed_with_weak_usd")
+
+        for key in ["us10y_yield", "us30y_yield", "us_10y_yield", "us_30y_yield"]:
+            raw = market_context.get(key)
+            if raw is None and isinstance(macro_event_state, dict):
+                raw = macro_event_state.get(key)
+            if raw is None:
+                continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            normalized = value / 100.0 if value > 1.0 else value
+            if normalized >= 0.05:
+                tail_risk = max(tail_risk, 0.55)
+                reasons.append(f"{key}_above_5pct")
+
+        return {
+            "tail_risk_score": round(float(np.clip(tail_risk, 0.0, 0.80)), 6),
+            "reasons": sorted(set(reasons)),
+            "scenario_records": records,
+        }
+
     def _extract_tail_risk_score(self, market_context: Dict[str, Any]) -> float:
         crisis_probability = float(market_context.get("crisis_probability", 0.15))
         game_analysis = market_context.get("game_causal_analysis", {})
@@ -2031,6 +2236,9 @@ class SelfIteratingCausalEngine:
             crisis_probability = max(
                 crisis_probability,
                 float(game_analysis.get("aggregate_risk_score", 0.0) or 0.0),
+                float(game_analysis.get("game_probability_overlay", {}).get("tail_risk_addon", 0.0) or 0.0)
+                if isinstance(game_analysis.get("game_probability_overlay"), dict)
+                else 0.0,
                 float(
                     game_analysis.get("risk_scores", {})
                     .get("geopolitical_energy", {})
@@ -2052,6 +2260,8 @@ class SelfIteratingCausalEngine:
                 float(macro_event_state.get("tail_risk_score", 0.0) or 0.0),
                 min(0.80, max(0.0, float(macro_event_state.get("tail_hedge_multiplier", 1.0) or 1.0) - 1.0)),
             )
+        scenario_overlay = self._counterfactual_scenario_tail_overlay(market_context)
+        crisis_probability = max(crisis_probability, float(scenario_overlay.get("tail_risk_score", 0.0) or 0.0))
         regime = market_context.get("regime") or market_context.get("cross_asset_regime", {}).get("regime", "")
         if isinstance(regime, dict):
             regime = regime.get("regime", "")
@@ -2108,9 +2318,15 @@ class SelfIteratingCausalEngine:
                         "impact_bps": allocation.impact_bps,
                     },
                     "state_conditioning_multiplier": allocation.state_conditioning_multiplier,
+                    "state_conditioning_audit": allocation.state_conditioning_audit,
                     "cross_asset_transfer_multiplier": allocation.cross_asset_transfer_multiplier,
                     "transferred_factor_count": allocation.transferred_factor_count,
                     "macro_event_overlay_multiplier": allocation.macro_event_overlay_multiplier,
+                    "counterfactual_position_multiplier": allocation.counterfactual_position_multiplier,
+                    "counterfactual_tail_risk_score": allocation.counterfactual_tail_risk_score,
+                    "counterfactual_stress_audit": allocation.counterfactual_stress_audit,
+                    "game_probability_position_multiplier": allocation.game_probability_position_multiplier,
+                    "game_probability_audit": allocation.game_probability_audit,
                     "abstention_gate": {
                         "decision": allocation.abstention_decision,
                         "risk_score": allocation.abstention_risk_score,
