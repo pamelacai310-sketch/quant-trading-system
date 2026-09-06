@@ -1,0 +1,65 @@
+name: Paper trading September 7-12
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/paper-week.yml']
+  schedule:
+    - cron: '*/5 1-7 7-11 9 *'
+    - cron: '0 18,19 11 9 *'
+permissions:
+  contents: write
+concurrency:
+  group: paper-week-ledger
+  cancel-in-progress: false
+jobs:
+  paper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Bound year and experiment dates
+        id: window
+        run: |
+          now=$(TZ=Asia/Shanghai date +%Y-%m-%dT%H:%M)
+          if [[ "$now" > "2026-09-05" && "$now" < "2026-09-12T04:00" ]]; then
+            echo "active=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.window.outputs.active == 'true'
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        if: steps.window.outputs.active == 'true'
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install paper dependencies
+        if: steps.window.outputs.active == 'true'
+        run: python -m pip install numpy==2.3.5 pandas==2.2.3 akshare==1.18.94 flask==3.1.3 scipy==1.17.1
+      - name: Process live quote paper orders
+        id: paper
+        if: steps.window.outputs.active == 'true'
+        continue-on-error: true
+        run: python -m quant_trade_system.paper_week step
+      - name: Generate account summary
+        if: steps.window.outputs.active == 'true'
+        run: python -m quant_trade_system.paper_week report
+      - name: Persist ledger before next quote
+        if: always() && steps.window.outputs.active == 'true'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add experiments/paper_week_20260907
+          if ! git diff --cached --quiet; then
+            git commit -m 'Record paper orders, quotes, fills and account summary'
+            git push origin HEAD:main
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.window.outputs.active == 'true'
+        with:
+          name: paper-week-${{ github.run_id }}
+          path: experiments/paper_week_20260907
+          retention-days: 90
+      - name: Surface capture failure
+        if: steps.paper.outcome == 'failure'
+        run: exit 1

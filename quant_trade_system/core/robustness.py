@@ -105,10 +105,10 @@ def _returns_stats(returns: pd.Series, periods_per_year: int = 252) -> Dict[str,
     std = float(clean.std(ddof=1)) if len(clean) > 1 else 0.0
     sharpe = float(math.sqrt(periods_per_year) * mean / std) if std > 1e-12 else 0.0
     centered = clean - mean
-    skew = float((centered.pow(3).mean()) / max(float(centered.pow(2).mean()) ** 1.5, 1e-12))
-    kurtosis = float((centered.pow(4).mean()) / max(float(centered.pow(2).mean()) ** 2, 1e-12))
+    skew = float((centered.pow(3).mean()) / max(float(centered.pow(2).mean()) ** 1.5, 1e-300))
+    kurtosis = float((centered.pow(4).mean()) / max(float(centered.pow(2).mean()) ** 2, 1e-300))
     equity = (1.0 + clean).cumprod()
-    max_drawdown = float((equity / equity.cummax() - 1.0).min()) if not equity.empty else 0.0
+    max_drawdown = float((equity / equity.cummax().clip(lower=1.0) - 1.0).min()) if not equity.empty else 0.0
     return {
         "observation_count": int(len(clean)),
         "mean_return": mean,
@@ -220,9 +220,11 @@ def evaluate_cpcv_returns(
         "min_path_sharpe": round(float(np.min(sharpes)), 6),
         "positive_path_rate": round(float(np.mean(sharpes > 0.0)), 6),
         "worst_path_drawdown": round(float(np.min(drawdowns)), 6),
-        "passed": bool(np.percentile(sharpes, 10) > 0.0 and np.mean(sharpes > 0.0) >= 0.60),
+        "passed": False,
+        "diagnostic_passed": bool(np.percentile(sharpes, 10) > 0.0 and np.mean(sharpes > 0.0) >= 0.60),
+        "validation_scope": "precomputed_returns_only_no_fold_refit",
         "paths": path_stats[:10],
-        "gate": "Promotion requires positive CPCV lower-tail Sharpe and broad path pass-rate.",
+        "gate": "Diagnostic only: fold-local fitting and untouched forward evidence are required for promotion.",
     }
 
 
@@ -231,6 +233,7 @@ def deflated_sharpe_ratio(
     *,
     effective_trials: int = 1,
     periods_per_year: int = 252,
+    trial_sharpe_std: float | None = None,
 ) -> Dict[str, Any]:
     clean = pd.to_numeric(returns, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
     stats = _returns_stats(clean, periods_per_year=periods_per_year)
@@ -243,8 +246,12 @@ def deflated_sharpe_ratio(
             "dsr_probability": 0.0,
             "passed_dsr_95": False,
         }
+    if trial_sharpe_std is not None and (not np.isfinite(trial_sharpe_std) or trial_sharpe_std < 0):
+        raise ValueError("Invalid per-period trial Sharpe dispersion")
     trials = max(int(effective_trials), 1)
-    sharpe = float(stats["sharpe"])
+    if periods_per_year <= 0:
+        raise ValueError("periods_per_year must be positive")
+    sharpe = float(stats["sharpe"]) / math.sqrt(periods_per_year)
     skew = float(stats["skew"])
     kurtosis = max(float(stats["kurtosis"]), 1.0)
     sr_std = math.sqrt(max(1.0 - skew * sharpe + ((kurtosis - 1.0) / 4.0) * sharpe * sharpe, 1e-9) / max(n - 1, 1))
@@ -252,7 +259,7 @@ def deflated_sharpe_ratio(
     if trials <= 1:
         benchmark_sr = 0.0
     else:
-        benchmark_sr = sr_std * (
+        benchmark_sr = (float(trial_sharpe_std) if trial_sharpe_std is not None else sr_std) * (
             (1.0 - gamma) * _normal_ppf(1.0 - 1.0 / trials)
             + gamma * _normal_ppf(1.0 - 1.0 / (math.e * trials))
         )
@@ -262,10 +269,13 @@ def deflated_sharpe_ratio(
         **{key: round(float(value), 6) if isinstance(value, float) else value for key, value in stats.items()},
         "status": "ready",
         "effective_trials": int(trials),
-        "benchmark_sharpe_after_deflation": round(float(benchmark_sr), 6),
+        "benchmark_sharpe_after_deflation": round(float(benchmark_sr) * math.sqrt(periods_per_year), 6),
+        "sharpe_unit": "annualized_display_per_period_inference",
+        "trial_dispersion_source": "observed_per_period" if trial_sharpe_std is not None else "sampling_proxy",
+        "inference_assumption": "IID; use separate block-based inference for dependent returns",
         "dsr_z_score": round(float(z_score), 6),
         "dsr_probability": round(float(probability), 6),
-        "passed_dsr_95": bool(probability >= 0.95),
+        "passed_dsr_95": bool(probability >= 0.95 and stats["volatility"] > 1e-12 and (trials == 1 or trial_sharpe_std is not None)),
         "gate": "DSR penalizes multiple trials, skew and fat tails; production promotion target >=0.95.",
     }
 

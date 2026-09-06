@@ -1533,6 +1533,9 @@ class FeatureEngineeringLayer:
         返回:
             FeatureMatrix
         """
+        if len(market_data) != 1:
+            raise ValueError("Use generate_feature_panels for multiple symbols")
+        self.feature_errors = {}
         # 1. 选择特征
         selected_features = self._select_top_features(
             limit=feature_limit,
@@ -1553,6 +1556,8 @@ class FeatureEngineeringLayer:
                     granularity,
                 )
 
+                if computed is None or computed.isna().all():
+                    raise ValueError("Feature has no finite observations")
                 if computed is not None:
                     feature_data[feature.feature_id] = computed
                     metadata[feature.feature_id] = {
@@ -1566,7 +1571,7 @@ class FeatureEngineeringLayer:
                         "independent_power": feature.independent_power,
                     }
             except Exception as e:
-                # 跳过计算失败的特征
+                self.feature_errors[feature.feature_id] = str(e)
                 continue
 
         # 3. 对齐时间戳
@@ -1584,6 +1589,16 @@ class FeatureEngineeringLayer:
             sampling_start=timestamps[0] if timestamps else datetime.now(),
             sampling_end=timestamps[-1] if timestamps else datetime.now(),
         )
+
+    def generate_feature_panels(self, market_data, **kwargs):
+        """Preserve instrument identity, units and errors in independent matrices."""
+        result = {}
+        errors = {}
+        for symbol, frame in market_data.items():
+            result[symbol] = self.generate_feature_matrix({symbol: frame}, **kwargs)
+            errors[symbol] = dict(self.feature_errors)
+        self.feature_errors = errors
+        return result
 
     def _select_top_features(
         self,
@@ -1628,39 +1643,11 @@ class FeatureEngineeringLayer:
         if not feature:
             return None
 
-        try:
-            # 获取数据需求
-            required_data = feature.data_requirements
-
-            # 聚合所有标的物的数据
-            aggregated_data = {}
-            for symbol, df in market_data.items():
-                for req in required_data:
-                    if req in df.columns:
-                        if req not in aggregated_data:
-                            aggregated_data[req] = []
-                        aggregated_data[req].append(df[req])
-
-            # 检查是否有足够的数据
-            if not aggregated_data:
-                return None
-
-            # 对每个数据列进行聚合（取平均）
-            for key in aggregated_data:
-                aggregated_data[key] = pd.concat(aggregated_data[key], axis=1).mean(axis=1)
-
-            # 根据公式计算特征
-            computed = self._evaluate_formula(
-                feature.formula,
-                aggregated_data,
-                granularity,
-            )
-
-            return computed
-
-        except Exception as e:
-            # 计算失败，返回None
-            return None
+        if len(market_data) != 1:
+            raise ValueError("Compute features per symbol; cross-symbol averaging is prohibited")
+        frame = next(iter(market_data.values()))
+        inputs = {name: frame[name] for name in feature.data_requirements if name in frame}
+        return self._evaluate_formula(feature.formula, inputs, granularity)
 
     def _evaluate_formula(
         self,
@@ -1679,89 +1666,8 @@ class FeatureEngineeringLayer:
         返回:
             计算结果序列
         """
-        # 简化的公式解析器
-        # 实际实现应该使用更复杂的表达式解析
-
-        result = None
-
-        # 示例1: 简单列引用 (如 "interest_rate_t")
-        if formula in data:
-            result = data[formula]
-
-        # 示例2: 变化率 (如 "(interest_rate_t - interest_rate_t-1) / interest_rate_t-1")
-        elif "_t-1" in formula and "_t" in formula:
-            # 提取变量名
-            var_name = formula.split("_")[0]
-            if var_name in data:
-                series = data[var_name]
-                result = series.diff() / series.shift(1)
-
-        # 示例3: 标准差 (如 "std(interest_rate_t-20:t)")
-        elif "std(" in formula:
-            # 提取变量名和窗口
-            var_name = formula.split("(")[1].split("_")[0]
-            window = int(formula.split("t-")[1].split(":")[0])
-            if var_name in data:
-                series = data[var_name]
-                mean_val = series.rolling(window=window).mean()
-                result = series.rolling(window=window).std() / mean_val
-
-        # 示例4: 比率 (如 "institutional_holdings / total_float")
-        elif "/" in formula and not "(" in formula:
-            numerator = formula.split("/")[0].strip()
-            denominator = formula.split("/")[1].strip()
-            if numerator in data and denominator in data:
-                result = data[numerator] / data[denominator]
-
-        # 示例5: 简单运算 (如 "roic - wacc")
-        elif " - " in formula:
-            parts = formula.split(" - ")
-            if len(parts) == 2 and parts[0] in data and parts[1] in data:
-                result = data[parts[0]] - data[parts[1]]
-
-        # 示例6: 直接引用 (如 "vix_index", "shibor_overnight")
-        elif formula in data:
-            result = data[formula]
-
-        # 示例7: 同比增长 (如 "(m2_t - m2_t-12) / m2_t-12")
-        elif "_t-12" in formula:
-            var_name = formula.split("_")[0]
-            if var_name in data:
-                series = data[var_name]
-                result = (series - series.shift(12)) / series.shift(12)
-
-        # 示例8: 环比增长 (如 "(gdp_t - gdp_t-1) / gdp_t-1")
-        elif "_t-1" in formula and "t-12" not in formula:
-            var_name = formula.split("_")[0]
-            if var_name in data:
-                series = data[var_name]
-                result = series.diff() / series.shift(1)
-
-        # 示例9: 季度同比增长 (如 "(eps_t - eps_t-4) / eps_t-4")
-        elif "_t-4" in formula:
-            var_name = formula.split("_")[0]
-            if var_name in data:
-                series = data[var_name]
-                result = (series - series.shift(4)) / series.shift(4)
-
-        # 示例10: 历史波动率 (如 "std(returns_t-20:t) * sqrt(252)")
-        elif "returns" in formula and "std" in formula:
-            # 需要先计算收益率
-            if "close" in data:
-                returns = data["close"].pct_change()
-                window = int(formula.split("t-")[1].split(":")[0])
-                result = returns.rolling(window=window).std() * np.sqrt(252)
-
-        # 如果没有匹配到任何模式，返回None
-        if result is None:
-            # 返回空序列
-            if data:
-                first_key = next(iter(data))
-                result = pd.Series([np.nan] * len(data[first_key]), index=data[first_key].index)
-            else:
-                result = pd.Series([], dtype=float)
-
-        return result
+        from .formulas import evaluate_formula
+        return evaluate_formula(formula, data)
 
     def _align_timestamps(
         self,

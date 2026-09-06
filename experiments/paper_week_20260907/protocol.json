@@ -1,0 +1,83 @@
+{
+  "experiment_id": "paper_week_20260907_v2",
+  "timezone": "Asia/Shanghai",
+  "sessions": [
+    "2026-09-07",
+    "2026-09-08",
+    "2026-09-09",
+    "2026-09-10",
+    "2026-09-11"
+  ],
+  "bootstrap_date": "2026-09-04",
+  "candidate": "close_above_sma20_long_else_flat_equity_long_else_short_futures",
+  "lookback": 20,
+  "baseline": "fixed_long_same_notional_budget",
+  "cash_per_sleeve": 10000000,
+  "notional_fraction": 0.2,
+  "max_participation": 0.001,
+  "max_drawdown": 0.02,
+  "costs_verified": false,
+  "execution": "next_fresh_displayed_book_paper_fill",
+  "instruments": [
+    {
+      "symbol": "600519",
+      "type": "stock",
+      "multiplier": 1,
+      "lot": 100,
+      "fee_bps": 3,
+      "sell_tax_bps": 5,
+      "slippage_bps": 5,
+      "tick": 0.01,
+      "margin_rate": 1
+    },
+    {
+      "symbol": "601318",
+      "type": "stock",
+      "multiplier": 1,
+      "lot": 100,
+      "fee_bps": 3,
+      "sell_tax_bps": 5,
+      "slippage_bps": 5,
+      "tick": 0.01,
+      "margin_rate": 1
+    },
+    {
+      "symbol": "IF2612",
+      "type": "futures",
+      "multiplier": 300,
+      "lot": 1,
+      "fee_bps": 1,
+      "sell_tax_bps": 0,
+      "slippage_bps": 5,
+      "tick": 0.2,
+      "margin_rate": 0.2
+    },
+    {
+      "symbol": "IM2612",
+      "type": "futures",
+      "multiplier": 200,
+      "lot": 1,
+      "fee_bps": 1,
+      "sell_tax_bps": 0,
+      "slippage_bps": 5,
+      "tick": 0.2,
+      "margin_rate": 0.2
+    }
+  ],
+  "minimum_independent_days_for_inference": 30,
+  "claim": "One week is preliminary evidence; no repeatable advantage or live execution claim.",
+  "start_at": "2026-09-07T09:00:00+08:00",
+  "end_at": "2026-09-12T02:00:00+08:00",
+  "report_at": "2026-09-12T03:00:00+08:00",
+  "quote_max_age_seconds": 90,
+  "order_ttl_seconds": 259200,
+  "model": "frozen_sma20_daily_v1",
+  "model_note": "Same simple frozen candidate as the P0 protocol; not a trained Transformer or entire nightly causal engine.",
+  "quote_poll_minutes": 5,
+  "end_policy": "expire_pending_and_mark_open_positions_at_last_observed_quote",
+  "source_paths": [
+    "quant_trade_system/ledger.py",
+    "quant_trade_system/forward_evidence.py",
+    "quant_trade_system/paper_week.py"
+  ]
+}
