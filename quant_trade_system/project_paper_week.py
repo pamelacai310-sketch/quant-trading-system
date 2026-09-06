@@ -80,10 +80,12 @@ def freeze(directory=DIR):
     if (directory/'lock.json').exists():
         load_events(directory,config);return
     if clock()>=datetime.fromisoformat(config['start_at']):raise ValueError('Pre-registration deadline missed')
+    original_protocol_hash=digest(config)
     config,bootstrap=prepare(config)
     from .project_paper_model import run_native
     bootstrap['native_preflight']=run_native({s:p for s,p in bootstrap['inputs'].items() if len(p.get('bars',[]))>=config['min_history']})
     if clock()>=datetime.fromisoformat(config['start_at']):raise ValueError('Preparation missed deadline')
+    if digest(read(directory/'protocol.json'))!=original_protocol_hash:raise ValueError('Protocol changed during preparation; refusing stale write')
     (directory/'protocol.json').write_text(json.dumps(config,indent=2)+'\n')
     write_once(directory/'bootstrap.json',bootstrap)
     write_once(directory/'lock.json',dict(frozen_at=clock().isoformat(),protocol_hash=digest(config),code_hash=code_digest(config),bootstrap_hash=digest(bootstrap)))
