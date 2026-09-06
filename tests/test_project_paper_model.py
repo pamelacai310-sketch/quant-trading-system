@@ -66,6 +66,17 @@ class ProjectPaperTests(unittest.TestCase):
             decision=next((d/'decisions').glob('*.json'));decision.write_text('{}')
             with self.assertRaises(ValueError):p.report(d)
 
+    def test_registered_protocol_prepares_complete_pool_and_40m_capital(self):
+        from unittest.mock import patch
+        from quant_trade_system.project_paper_model import prepare
+        config=p.read(p.DIR/'protocol.json')
+        with patch('quant_trade_system.project_paper_model.collect',return_value={}):
+            prepared,bootstrap=prepare(config)
+        self.assertEqual(len(prepared['instruments']),58)
+        self.assertAlmostEqual(sum(i['initial_cash'] for i in prepared['instruments']),40000000)
+        self.assertIn(config['universe_snapshot_path'],config['source_paths'])
+        self.assertEqual(prepared['notional_fraction'],.8)
+
     def test_native_entrypoint_executes_without_substituted_model(self):
         result=run_native({})
         self.assertEqual(result['status'],'no_data')

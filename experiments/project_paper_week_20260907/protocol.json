@@ -13,7 +13,7 @@
   "lookback": 20,
   "baseline": "liquidity_top5_sma20_same_pool_budget_costs",
   "cash_per_sleeve": 10000000,
-  "notional_fraction": 0.2,
+  "notional_fraction": 0.8,
   "max_participation": 0.001,
   "max_drawdown": 0.02,
   "costs_verified": false,
@@ -28,7 +28,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "600030",
@@ -39,7 +40,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "600031",
@@ -50,7 +52,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "600036",
@@ -61,7 +64,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "600050",
@@ -72,7 +76,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "600089",
@@ -83,7 +88,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "600111",
@@ -94,7 +100,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "600150",
@@ -105,7 +112,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "600183",
@@ -116,7 +124,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "600276",
@@ -127,7 +136,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "600309",
@@ -138,7 +148,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "600406",
@@ -149,7 +160,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "600519",
@@ -160,7 +172,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "600760",
@@ -171,7 +184,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "600809",
@@ -182,7 +196,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "600887",
@@ -193,7 +208,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "600900",
@@ -204,7 +220,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "600930",
@@ -215,7 +232,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "601012",
@@ -226,7 +244,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "601088",
@@ -237,7 +256,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "601127",
@@ -248,7 +268,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "601166",
@@ -259,7 +280,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "601211",
@@ -270,7 +292,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "601288",
@@ -281,7 +304,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "601318",
@@ -292,7 +316,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "601328",
@@ -303,7 +328,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "601398",
@@ -314,7 +340,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "601600",
@@ -325,7 +352,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "601601",
@@ -336,7 +364,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "601628",
@@ -347,7 +376,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "601658",
@@ -358,7 +388,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "601668",
@@ -369,7 +400,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "601688",
@@ -380,7 +412,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "601728",
@@ -391,7 +424,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "601857",
@@ -402,7 +436,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "601888",
@@ -413,7 +448,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "601899",
@@ -424,7 +460,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "601919",
@@ -435,7 +472,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "601988",
@@ -446,7 +484,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "603019",
@@ -457,7 +496,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "603259",
@@ -468,7 +508,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "603501",
@@ -479,7 +520,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "603986",
@@ -490,7 +532,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "603993",
@@ -501,7 +544,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "688008",
@@ -512,7 +556,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "688012",
@@ -523,7 +568,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "688041",
@@ -534,7 +580,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "688111",
@@ -545,7 +592,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "688256",
@@ -556,7 +604,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "688981",
@@ -567,7 +616,8 @@
       "sell_tax_bps": 5,
       "slippage_bps": 5,
       "tick": 0.01,
-      "margin_rate": 1
+      "margin_rate": 1,
+      "initial_cash": 400000.0
     },
     {
       "symbol": "IF2609",
@@ -578,7 +628,8 @@
       "sell_tax_bps": 0,
       "slippage_bps": 5,
       "tick": 0.2,
-      "margin_rate": 0.2
+      "margin_rate": 0.2,
+      "initial_cash": 2500000.0
     },
     {
       "symbol": "IF2612",
@@ -589,7 +640,8 @@
       "sell_tax_bps": 0,
       "slippage_bps": 5,
       "tick": 0.2,
-      "margin_rate": 0.2
+      "margin_rate": 0.2,
+      "initial_cash": 2500000.0
     },
     {
       "symbol": "IH2609",
@@ -600,7 +652,8 @@
       "sell_tax_bps": 0,
       "slippage_bps": 5,
       "tick": 0.2,
-      "margin_rate": 0.2
+      "margin_rate": 0.2,
+      "initial_cash": 2500000.0
     },
     {
       "symbol": "IH2612",
@@ -611,7 +664,8 @@
       "sell_tax_bps": 0,
       "slippage_bps": 5,
       "tick": 0.2,
-      "margin_rate": 0.2
+      "margin_rate": 0.2,
+      "initial_cash": 2500000.0
     },
     {
       "symbol": "IC2609",
@@ -622,7 +676,8 @@
       "sell_tax_bps": 0,
       "slippage_bps": 5,
       "tick": 0.2,
-      "margin_rate": 0.2
+      "margin_rate": 0.2,
+      "initial_cash": 2500000.0
     },
     {
       "symbol": "IC2612",
@@ -633,7 +688,8 @@
       "sell_tax_bps": 0,
       "slippage_bps": 5,
       "tick": 0.2,
-      "margin_rate": 0.2
+      "margin_rate": 0.2,
+      "initial_cash": 2500000.0
     },
     {
       "symbol": "IM2609",
@@ -644,7 +700,8 @@
       "sell_tax_bps": 0,
       "slippage_bps": 5,
       "tick": 0.2,
-      "margin_rate": 0.2
+      "margin_rate": 0.2,
+      "initial_cash": 2500000.0
     },
     {
       "symbol": "IM2612",
@@ -655,7 +712,8 @@
       "sell_tax_bps": 0,
       "slippage_bps": 5,
       "tick": 0.2,
-      "margin_rate": 0.2
+      "margin_rate": 0.2,
+      "initial_cash": 2500000.0
     }
   ],
   "minimum_independent_days_for_inference": 30,
@@ -670,6 +728,7 @@
   "quote_poll_minutes": 5,
   "end_policy": "expire_pending_and_mark_open_positions_at_last_observed_quote",
   "source_paths": [
+    "experiments/project_paper_week_20260907/universe.json",
     "quant_trade_system/__init__.py",
     "quant_trade_system/akshare_bridge.py",
     "quant_trade_system/backtest.py",
@@ -770,5 +829,8 @@
   "max_spread_bps": 5,
   "max_roundtrip_cost_bps": 40,
   "book_participation": 0.1,
-  "max_positions": 5
+  "max_positions": 5,
+  "initial_capital": 40000000,
+  "universe_snapshot_path": "experiments/project_paper_week_20260907/universe.json",
+  "capital_rule": "20m stock sleeves / 50 and 20m futures sleeves / 8; each strategy independently starts with 40m; no cross-sleeve borrowing"
 }
