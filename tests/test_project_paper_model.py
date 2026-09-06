@@ -37,6 +37,26 @@ class ProjectPaperTests(unittest.TestCase):
         q={'600519':dict(timestamp=now.isoformat(),last=100,bid=99,ask=101,bid_size=10000,ask_size=10000)}
         fills,rejects=p.execute_quotes(self.c,state,q,now)
         self.assertFalse(fills);self.assertEqual(rejects[0]['reason'],'spread_or_one_sided_book')
+    def test_decision_evidence_reused_and_tampering_blocks(self):
+        import json
+        from tempfile import TemporaryDirectory
+        from pathlib import Path
+        from unittest.mock import patch
+        from quant_trade_system.forward_evidence import digest
+        c=copy.deepcopy(self.c);c['source_paths']=[]
+        bootstrap={'inputs':self.data}
+        with TemporaryDirectory() as td:
+            d=Path(td)
+            for name,value in [('protocol',c),('bootstrap',bootstrap),('lock',dict(protocol_hash=digest(c),code_hash=p.code_digest(c),bootstrap_hash=digest(bootstrap)))]:
+                (d/(name+'.json')).write_text(json.dumps(value))
+            with patch.object(p,'clock',return_value=datetime(2026,9,7,9,tzinfo=p.TZ)), patch('quant_trade_system.project_paper_model.run_native',self.native):
+                self.assertEqual(p.step(d)['status'],'started')
+            with patch.object(p,'clock',return_value=datetime(2026,9,7,9,35,tzinfo=p.TZ)),patch.object(p,'fetch_quotes',return_value=('',{})):
+                p.step(d)
+            self.assertEqual(len(list((d/'decisions').glob('*.json'))),1)
+            decision=next((d/'decisions').glob('*.json'));decision.write_text('{}')
+            with self.assertRaises(ValueError):p.report(d)
+
     def test_native_entrypoint_executes_without_substituted_model(self):
         result=run_native({})
         self.assertEqual(result['status'],'no_data')

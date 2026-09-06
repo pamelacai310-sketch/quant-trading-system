@@ -185,6 +185,10 @@ def step(directory=DIR):
     bootstrap=read(directory/'bootstrap.json')
     if digest(bootstrap)!=read(directory/'lock.json')['bootstrap_hash']:raise ValueError('Bootstrap tampered')
     state=copy.deepcopy(events[-1]['state']) if events else initial_state(config,bootstrap)
+    if 'model_evidence_hash' in state:
+        model_evidence=read(directory/'decisions'/(state['model_evidence_hash']+'.json'))
+        if digest(model_evidence)!=state['model_evidence_hash']:raise ValueError('Model evidence tampered')
+        state.update(model_evidence)
     raw=None;quotes={};fills=[];rejects=[];kind='checkpoint'
     if now>=end:
         for items in state['orders'].values():
@@ -227,6 +231,11 @@ def step(directory=DIR):
                 if order.get('reason')!='drawdown_exit':
                     order.update(target_quantity=0,created_at=now.isoformat(),status='pending',reason='drawdown_exit')
                     order['order_id']=digest(order)
+    model_evidence={key:state.pop(key) for key in ('model_inputs','selection_audit') if key in state}
+    model_hash=digest(model_evidence);model_path=directory/'decisions'/(model_hash+'.json')
+    if not model_path.exists():write_once(model_path,model_evidence)
+    elif digest(read(model_path))!=model_hash:raise ValueError('Model evidence collision')
+    state['model_evidence_hash']=model_hash
     event=dict(kind=kind,recorded_at=clock().isoformat(),protocol_hash=digest(config),previous_hash=previous,raw_quote_response=raw,quotes=quotes,fills=fills,rejections=rejects,state=state)
     write_once(directory/'events'/f'{len(events):06d}.json',event)
     return {'status':kind,'fills':len(fills),'event_hash':digest(event)}
@@ -235,6 +244,10 @@ def step(directory=DIR):
 def report(directory=DIR):
     config=read(directory/'protocol.json');events,_=load_events(directory,config)
     state=events[-1]['state'] if events else initial_state(config,read(directory/'bootstrap.json'))
+    if 'model_evidence_hash' in state:
+        evidence=read(directory/'decisions'/(state['model_evidence_hash']+'.json'))
+        if digest(evidence)!=state['model_evidence_hash']:raise ValueError('Model evidence tampered')
+        state['selection_audit']=evidence.get('selection_audit')
     initial=sum(i.get('initial_cash',config['cash_per_sleeve']) for i in config['instruments']);result={}
     for strategy,items in state['states'].items():
         trades=[t for t in state['closed_trades'] if t['strategy']==strategy];pnl=[t['net_pnl'] for t in trades]
