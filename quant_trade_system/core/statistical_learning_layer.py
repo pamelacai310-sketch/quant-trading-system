@@ -18,6 +18,8 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any, Union, Callable
 from dataclasses import dataclass, field
 from enum import Enum
+import copy
+from quant_trade_system.ledger import position_returns
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -105,8 +107,8 @@ class TrainingResult:
     model_type: ModelType             # 模型类型
     feature_importance: Dict[str, float]  # 特征重要性
     selected_features: List[str]      # 选中的特征
-    training_metrics: Dict[str, float]  # 训练指标
-    validation_metrics: Dict[str, float]  # 验证指标
+    training_metrics: Dict[str, Any]  # 训练指标
+    validation_metrics: Dict[str, Any]  # 验证指标
     training_time: float              # 训练时间（秒）
     predictions: np.ndarray           # 预测结果
     positions: np.ndarray             # 仓位序列
@@ -122,9 +124,9 @@ class PredictionResult:
     positions: np.ndarray             # 建议仓位（0-1）
     confidence: np.ndarray            # 预测置信度
     feature_contributions: Dict[str, np.ndarray]  # 特征贡献度
-    expected_win_rate: float          # 预期胜率
-    expected_odds_ratio: float        # 预期赔率
-    expected_elasticity: float        # 预期弹性
+    expected_win_rate: Optional[float]          # 预期胜率
+    expected_odds_ratio: Optional[float]        # 预期赔率
+    expected_elasticity: Optional[float]        # 预期弹性
 
 
 @dataclass
@@ -278,7 +280,7 @@ if PYTORCH_AVAILABLE:
             self.seq_len = seq_len
 
         def __len__(self):
-            return len(self.labels) - self.seq_len
+            return max(0, len(self.labels) - self.seq_len)
 
         def __getitem__(self, idx):
             """
@@ -303,167 +305,33 @@ if PYTORCH_AVAILABLE:
 if PYTORCH_AVAILABLE:
 
     class WinRateLoss(nn.Module):
-        """
-        胜率损失函数
-
-        最大化胜率 = 最小化 (1 - 胜率)
-        """
-
-        def __init__(self):
-            super().__init__()
-
+        """Proper differentiable probability loss; not realized trade win rate."""
         def forward(self, predictions, targets, positions=None):
-            """
-            参数:
-                predictions: (batch_size,) 预测值（0-1）
-                targets: (batch_size,) 实际标签（0或1）
-                positions: (batch_size,) 仓位（可选）
-
-            返回:
-                loss: 标量
-            """
-            # 计算预测正确性
-            correct = (predictions > 0.5) == (targets > 0.5)
-
-            # 胜率 = 正确预测的比例
-            win_rate = correct.float().mean()
-
-            # 损失 = 1 - 胜率
-            loss = 1.0 - win_rate
-
-            return loss
+            return nn.functional.binary_cross_entropy(predictions, targets)
 
 
     class OddsRatioLoss(nn.Module):
-        """
-        赔率损失函数
-
-        最大化赔率 = 平均盈利 / 平均亏损
-        """
-
-        def __init__(self):
-            super().__init__()
-
+        """Retired: batch odds are not a proper probability training objective."""
         def forward(self, predictions, targets, returns=None):
-            """
-            参数:
-                predictions: (batch_size,) 预测值（0-1）
-                targets: (batch_size,) 实际标签（0或1）
-                returns: (batch_size,) 实际收益（可选）
-
-            返回:
-                loss: 标量
-            """
-            # 如果没有提供returns，使用prediction和target计算
-            if returns is None:
-                # 假设：预测正确时收益为1，错误时收益为-1
-                returns = torch.where(
-                    (predictions > 0.5) == (targets > 0.5),
-                    torch.ones_like(predictions),
-                    -torch.ones_like(predictions),
-                )
-
-            # 计算盈利和亏损
-            profits = returns[returns > 0]
-            losses = returns[returns < 0]
-
-            # 平均盈利和平均亏损
-            avg_profit = profits.mean() if len(profits) > 0 else torch.tensor(0.0)
-            avg_loss = -losses.mean() if len(losses) > 0 else torch.tensor(1.0)
-
-            # 赔率 = 平均盈利 / 平均亏损
-            odds_ratio = avg_profit / (avg_loss + 1e-8)
-
-            # 损失 = 1 / (赔率 + epsilon)
-            loss = 1.0 / (odds_ratio + 1e-8)
-
-            return loss
+            raise ValueError("OddsRatioLoss retired; use BCE and evaluate net ledger PnL")
 
 
     class ElasticityLoss(nn.Module):
-        """
-        弹性损失函数
-
-        最大化弹性 = 收益变化幅度 / 基准变化幅度
-        """
-
         def __init__(self, benchmark_return=0.001):
             super().__init__()
-            self.benchmark_return = benchmark_return
 
         def forward(self, predictions, targets, returns=None):
-            """
-            参数:
-                predictions: (batch_size,) 预测值（0-1）
-                targets: (batch_size,) 实际标签（0或1）
-                returns: (batch_size,) 实际收益（可选）
-
-            返回:
-                loss: 标量
-            """
-            # 如果没有提供returns，使用prediction和target计算
-            if returns is None:
-                # 假设：预测正确时收益为prediction，错误时收益为-prediction
-                returns = torch.where(
-                    (predictions > 0.5) == (targets > 0.5),
-                    predictions,
-                    -predictions,
-                )
-
-            # 计算策略收益的绝对变化幅度
-            strategy_elasticity = returns.abs().mean()
-
-            # 损失 = 1 / (弹性 + epsilon)
-            loss = 1.0 / (strategy_elasticity + 1e-8)
-
-            return loss
+            raise ValueError("ElasticityLoss retired; absolute return rewards losses")
 
 
     class CombinedLoss(nn.Module):
-        """
-        组合损失函数
-
-        同时优化胜率、赔率、弹性
-        """
-
-        def __init__(
-            self,
-            win_rate_weight: float = 0.4,
-            odds_ratio_weight: float = 0.3,
-            elasticity_weight: float = 0.3,
-        ):
+        def __init__(self, win_rate_weight=1.0, odds_ratio_weight=0.0, elasticity_weight=0.0):
             super().__init__()
-            self.win_rate_weight = win_rate_weight
-            self.odds_ratio_weight = odds_ratio_weight
-            self.elasticity_weight = elasticity_weight
-
-            self.win_rate_loss = WinRateLoss()
-            self.odds_ratio_loss = OddsRatioLoss()
-            self.elasticity_loss = ElasticityLoss()
+            if odds_ratio_weight or elasticity_weight or win_rate_weight != 1.0:
+                raise ValueError("Only calibrated probability BCE is supported")
 
         def forward(self, predictions, targets, returns=None):
-            """
-            参数:
-                predictions: (batch_size,) 预测值（0-1）
-                targets: (batch_size,) 实际标签（0或1）
-                returns: (batch_size,) 实际收益（可选）
-
-            返回:
-                loss: 标量
-            """
-            # 计算各项损失
-            loss_win_rate = self.win_rate_loss(predictions, targets)
-            loss_odds_ratio = self.odds_ratio_loss(predictions, targets, returns)
-            loss_elasticity = self.elasticity_loss(predictions, targets, returns)
-
-            # 加权组合
-            loss = (
-                self.win_rate_weight * loss_win_rate +
-                self.odds_ratio_weight * loss_odds_ratio +
-                self.elasticity_weight * loss_elasticity
-            )
-
-            return loss
+            return nn.functional.binary_cross_entropy(predictions, targets)
 
 
 # ============================================================================
@@ -655,9 +523,9 @@ class StatisticalLearningLayer:
         feature_contributions = self._compute_feature_contributions(X_selected, selected_features)
 
         # 预期指标
-        expected_win_rate = self.training_result.validation_metrics.get('win_rate', 0.5)
-        expected_odds_ratio = self.training_result.validation_metrics.get('odds_ratio', 1.0)
-        expected_elasticity = self.training_result.validation_metrics.get('elasticity', 1.0)
+        expected_win_rate = None  # No per-trade conditional estimate has been fitted.
+        expected_odds_ratio = None
+        expected_elasticity = None
 
         return PredictionResult(
             timestamps=feature_matrix.timestamps,
@@ -786,6 +654,9 @@ class StatisticalLearningLayer:
         epochs = default_params.pop('epochs')
         lr = default_params.pop('lr')
 
+        self.seq_len = seq_len
+        if min(len(X_train), len(X_val)) <= seq_len:
+            raise ValueError('Insufficient observations for sequence training/validation')
         # 创建数据集
         train_dataset = FinancialDataset(X_train, y_train, seq_len)
         val_dataset = FinancialDataset(X_val, y_val, seq_len)
@@ -803,11 +674,7 @@ class StatisticalLearningLayer:
         optimizer = optim.Adam(model.parameters(), lr=lr)
 
         # 损失函数
-        criterion = CombinedLoss(
-            win_rate_weight=0.4,
-            odds_ratio_weight=0.3,
-            elasticity_weight=0.3,
-        )
+        criterion = nn.BCELoss()  # Probability estimation, not a claimed PnL objective.
 
         # 训练循环
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -816,6 +683,7 @@ class StatisticalLearningLayer:
         best_val_loss = float('inf')
         patience = 10
         patience_counter = 0
+        best_state = None
 
         for epoch in range(epochs):
             # 训练
@@ -857,6 +725,7 @@ class StatisticalLearningLayer:
             # 早停
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
+                best_state = copy.deepcopy(model.state_dict())
                 patience_counter = 0
             else:
                 patience_counter += 1
@@ -864,6 +733,8 @@ class StatisticalLearningLayer:
             if patience_counter >= patience:
                 break
 
+        if best_state is not None:
+            model.load_state_dict(best_state)
         return model
 
     def _predict_proba(self, X: np.ndarray) -> np.ndarray:
@@ -878,7 +749,7 @@ class StatisticalLearningLayer:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
             # 创建序列数据
-            seq_len = 20  # 与训练时相同
+            seq_len = self.seq_len
             dataset = FinancialDataset(X, np.zeros(len(X)), seq_len)
             loader = DataLoader(dataset, batch_size=32, shuffle=False)
 
@@ -891,7 +762,7 @@ class StatisticalLearningLayer:
 
             # 填充前面没有预测的部分
             full_predictions = np.zeros(len(X))
-            pred_array = np.concatenate(predictions)
+            pred_array = np.concatenate(predictions) if predictions else np.array([])
 
             # 最后seq_len个时间点有预测
             full_predictions[seq_len:] = pred_array[:len(X)-seq_len]
@@ -899,64 +770,41 @@ class StatisticalLearningLayer:
             return full_predictions
 
     def _compute_positions(self, predictions: np.ndarray) -> np.ndarray:
-        """计算仓位（0-1）"""
-        # 简单策略：预测概率 > 0.5 时满仓，否则空仓
-        # 可以改进为：仓位 = 预测概率
-        return predictions
+        """Probability-sized long-only exposure; the same mapping is used in metrics."""
+        return np.clip(np.asarray(predictions, float), 0, 1)
 
-    def _compute_metrics(
-        self,
-        y_true: np.ndarray,
-        y_pred: np.ndarray,
-        returns: Optional[np.ndarray] = None,
-    ) -> Dict[str, float]:
-        """计算指标"""
-        metrics = {}
+    def _compute_metrics(self, y_true, y_pred, returns=None, cost_bps=8.0):
+        """Period diagnostics. returns[t] must follow the executable entry for w[t].
 
-        # 胜率
-        correct = ((y_pred > 0.5) == (y_true > 0.5)).sum()
-        total = len(y_true)
-        metrics['win_rate'] = correct / total if total > 0 else 0.0
-
-        # 如果有returns，计算赔率和弹性
+        Closed-trade win_rate/odds_ratio are deliberately unavailable here: a
+        direction classifier has no independent exit/round-trip ledger.
+        """
+        y_true, y_pred = np.asarray(y_true), np.asarray(y_pred)
+        if y_true.shape != y_pred.shape:
+            raise ValueError('Prediction/label alignment mismatch')
+        valid = np.isfinite(y_pred)
+        if self.model_type == ModelType.TRANSFORMER:
+            valid[:getattr(self, 'seq_len', 20)] = False
+        metrics = {'direction_accuracy': float(np.mean((y_pred[valid] > .5) == (y_true[valid] > .5))) if valid.any() else 0.0,
+                   'win_rate': None, 'odds_ratio': None,
+                   'training_objective': 'binary_cross_entropy',
+                   'metric_scope': 'period_diagnostic_not_closed_trades',
+                   'production_eligible': False}
         if returns is not None:
-            # 计算交易收益
-            trade_returns = np.where(
-                (y_pred > 0.5) == (y_true > 0.5),
-                returns,
-                -returns,
-            )
-
-            # 赔率
-            profits = trade_returns[trade_returns > 0]
-            losses = trade_returns[trade_returns < 0]
-
-            avg_profit = profits.mean() if len(profits) > 0 else 0
-            avg_loss = -losses.mean() if len(losses) > 0 else 0
-
-            metrics['odds_ratio'] = avg_profit / (avg_loss + 1e-8)
-            metrics['elasticity'] = np.abs(trade_returns).mean()
-
-            # 夏普比率
-            if len(trade_returns) > 1:
-                metrics['sharpe_ratio'] = (
-                    trade_returns.mean() / (trade_returns.std() + 1e-8) *
-                    np.sqrt(252)
-                )
-            else:
-                metrics['sharpe_ratio'] = 0.0
-
-            # 最大回撤
-            cumulative = np.cumprod(1 + trade_returns)
-            running_max = np.maximum.accumulate(cumulative)
-            drawdown = (cumulative - running_max) / running_max
-            metrics['max_drawdown'] = drawdown.min()
-
-            # CVaR
-            var = np.percentile(trade_returns, 5)
-            cvar = trade_returns[trade_returns <= var].mean()
-            metrics['cvar'] = cvar
-
+            r = np.asarray(returns, float)
+            if r.shape != y_pred.shape or not np.isfinite(r).all():
+                raise ValueError('Forward return alignment mismatch')
+            weights = self._compute_positions(y_pred)
+            weights[~valid] = 0
+            net = position_returns(weights, r, cost_bps)
+            equity = np.r_[1.0, np.cumprod(1 + net)]
+            metrics.update(net_total_return=float(equity[-1]-1),
+                           period_win_rate=float(np.mean(net[valid] > 0)) if valid.any() else 0.,
+                           elasticity=float(np.abs(net).mean()) if len(net) else 0.,
+                           sharpe_ratio=float(net.mean()/net.std()*np.sqrt(252)) if len(net) and net.std() > 1e-12 else 0.,
+                           max_drawdown=float(np.min(equity/np.maximum.accumulate(equity)-1)),
+                           cvar=float(net[net <= np.percentile(net, 5)].mean()) if len(net) else 0.,
+                           cost_bps=cost_bps)
         return metrics
 
     def _compute_feature_importance(

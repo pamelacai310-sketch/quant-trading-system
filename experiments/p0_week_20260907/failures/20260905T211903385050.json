@@ -1,0 +1,6 @@
+{
+  "captured_at": "2026-09-05T21:19:03.385050+08:00",
+  "error": "Expecting value: line 1 column 1 (char 0)",
+  "repeatable_advantage_proven": false,
+  "status": "blocked_no_synthetic_fallback"
+}
