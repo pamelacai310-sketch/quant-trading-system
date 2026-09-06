@@ -115,6 +115,7 @@ def model_targets(config,data,states,cutoff,runner=None):
             # Preserve units while direction survives; reverse only after a separate flat fill.
             if ledger.quantity:qty=ledger.quantity if qty*ledger.quantity>0 else 0
             if not qty and direction and strategy=='candidate':row['reasons'].append('below_one_lot_or_zero_weight');row['selected']=False
-            result[strategy][s]=dict(target_quantity=qty,reference_close=price,known_at=cutoff+'T15:00:00+08:00',decision='native_project_engine' if strategy=='candidate' else 'liquidity_top5_sma20_control')
+            risk=actions.get(s,{}) if strategy=='candidate' else {}
+            result[strategy][s]=dict(stop_loss_pct=float(risk.get('stop_loss_pct',.03)),take_profit_pct=float(risk.get('take_profit_pct',.06)),max_hold_days=int(risk.get('max_hold_days',5)),target_quantity=qty,reference_close=price,known_at=cutoff+'T15:00:00+08:00',decision='native_project_engine' if strategy=='candidate' else 'liquidity_top5_sma20_control')
     return result,dict(cutoff=cutoff,inputs_hash=digest(data),native_output=native,candidates=list(audit.values()),
         note='Native score is not calibrated expected return. Cost budget is an execution filter, not proof of positive expected value.')

@@ -37,6 +37,15 @@ class ProjectPaperTests(unittest.TestCase):
         q={'600519':dict(timestamp=now.isoformat(),last=100,bid=99,ask=101,bid_size=10000,ask_size=10000)}
         fills,rejects=p.execute_quotes(self.c,state,q,now)
         self.assertFalse(fills);self.assertEqual(rejects[0]['reason'],'spread_or_one_sided_book')
+    def test_concurrent_position_cap_blocks_new_fill(self):
+        c=copy.deepcopy(self.c);c['max_positions']=0
+        state=p.initial_state(c,dict(inputs=self.data))
+        state['orders']={s:{'600519':dict(target_quantity=100,created_at='2026-09-07T09:00:00+08:00',status='pending',order_id=s)} for s in self.states}
+        now=datetime(2026,9,7,9,35,tzinfo=p.TZ)
+        quotes={'600519':dict(timestamp=now.isoformat(),last=100,bid=100,ask=100,bid_size=10000,ask_size=10000)}
+        fills,rejects=p.execute_quotes(c,state,quotes,now)
+        self.assertFalse(fills);self.assertEqual(rejects[0]['reason'],'concurrent_position_or_family_cap')
+
     def test_decision_evidence_reused_and_tampering_blocks(self):
         import json
         from tempfile import TemporaryDirectory

@@ -123,6 +123,15 @@ def execute_quotes(config,state,quotes,now):
         state['marks'][symbol]={'price':quote['last'],'quote_time':quote['timestamp']}
         for strategy in state['states']:
             order=state['orders'].get(strategy,{}).get(symbol)
+            if order:
+                held=PositionLedger(**state['states'][strategy][symbol])
+                if held.quantity and order['target_quantity']!=0:
+                    move=(quote['last']/held.average_price-1)*(1 if held.quantity>0 else -1)
+                    cycle=state['cycles'].get(strategy+':'+symbol,{})
+                    days=(now-datetime.fromisoformat(cycle.get('entry_time',now.isoformat()))).total_seconds()/86400
+                    if move<=-order.get('stop_loss_pct',.03) or move>=order.get('take_profit_pct',.06) or days>=order.get('max_hold_days',5):
+                        order.update(target_quantity=0,created_at=now.isoformat(),status='pending',reason='model_price_or_time_exit')
+                        order['order_id']=digest(order)
             if not order or order['status'] not in ('pending','partial'):continue
             if now>=datetime.fromisoformat(config['end_at']):continue
             created=datetime.fromisoformat(order['created_at'])
@@ -150,6 +159,10 @@ def execute_quotes(config,state,quotes,now):
             notional=amount*price*item['multiplier']
             fee=notional*(item['fee_bps']+(item['sell_tax_bps'] if delta<0 else 0))/10000
             if item['type']=='stock':fee=max(notional*item['fee_bps']/10000,5.)+(notional*item['sell_tax_bps']/10000 if delta<0 else 0)
+            if ledger.quantity==0:
+                held_symbols=[s for s,v in state['states'][strategy].items() if v['quantity']]
+                if len(held_symbols)>=config['max_positions'] or (item['type']=='futures' and any(s.startswith(symbol[:2]) for s in held_symbols)):
+                    rejects.append(dict(symbol=symbol,strategy=strategy,reason='concurrent_position_or_family_cap'));continue
             if abs(ledger.quantity+signed)>abs(ledger.quantity) and (2*fee/notional*10000+2*item['slippage_bps']+2*max(0,spread)+item['sell_tax_bps'])>config['max_roundtrip_cost_bps']:
                 rejects.append(dict(symbol=symbol,strategy=strategy,reason='small_fill_cost_budget'));continue
             hypothetical=PositionLedger(**asdict(ledger));old=ledger.quantity
