@@ -70,12 +70,16 @@ CN_FUTURES_CONTRACT_SPECS: Dict[str, FuturesContractSpec] = {
     "PP": FuturesContractSpec("PP", "DCE", "聚丙烯", 5.0, "吨/手", 0.05),
     "EG": FuturesContractSpec("EG", "DCE", "乙二醇", 10.0, "吨/手", 0.06),
     "EB": FuturesContractSpec("EB", "DCE", "苯乙烯", 5.0, "吨/手", 0.07),
+    # New-product rates are contract-text minima, not current broker margins.
+    # Sources and quotation units: docs/futures-universe-expansion-20260907.md.
+    "BZ": FuturesContractSpec("BZ", "DCE", "纯苯", 30.0, "吨/手", 0.05),
     "PG": FuturesContractSpec("PG", "DCE", "液化石油气", 20.0, "吨/手", 0.07),
     "I": FuturesContractSpec("I", "DCE", "铁矿石", 100.0, "吨/手", 0.08),
     "J": FuturesContractSpec("J", "DCE", "焦炭", 100.0, "吨/手", 0.08),
     "JM": FuturesContractSpec("JM", "DCE", "焦煤", 60.0, "吨/手", 0.08),
     "FB": FuturesContractSpec("FB", "DCE", "纤维板", 10.0, "立方米/手", 0.10),
     "BB": FuturesContractSpec("BB", "DCE", "胶合板", 500.0, "张/手", 0.10),
+    "LG": FuturesContractSpec("LG", "DCE", "原木", 90.0, "立方米/手", 0.05),
     "RR": FuturesContractSpec("RR", "DCE", "粳米", 10.0, "吨/手", 0.05),
     # CZCE products.
     "CF": FuturesContractSpec("CF", "CZCE", "棉花", 5.0, "吨/手", 0.05),
@@ -103,6 +107,7 @@ CN_FUTURES_CONTRACT_SPECS: Dict[str, FuturesContractSpec] = {
     "SH": FuturesContractSpec("SH", "CZCE", "烧碱", 30.0, "吨/手", 0.08),
     "PX": FuturesContractSpec("PX", "CZCE", "对二甲苯", 5.0, "吨/手", 0.08),
     "PR": FuturesContractSpec("PR", "CZCE", "瓶片", 15.0, "吨/手", 0.08),
+    "PL": FuturesContractSpec("PL", "CZCE", "丙烯", 20.0, "吨/手", 0.05),
     "ZC": FuturesContractSpec("ZC", "CZCE", "动力煤", 100.0, "吨/手", 0.08),
     # CFFEX products. Stock index futures are yuan/index-point multipliers;
     # treasury futures use RMB 1,000,000 face value, i.e. quote point * 10,000.
@@ -118,6 +123,8 @@ CN_FUTURES_CONTRACT_SPECS: Dict[str, FuturesContractSpec] = {
     "SI": FuturesContractSpec("SI", "GFEX", "工业硅", 5.0, "吨/手", 0.08),
     "LC": FuturesContractSpec("LC", "GFEX", "碳酸锂", 1.0, "吨/手", 0.09),
     "PS": FuturesContractSpec("PS", "GFEX", "多晶硅", 3.0, "吨/手", 0.08),
+    "PT": FuturesContractSpec("PT", "GFEX", "铂", 1000.0, "克/手", 0.05),
+    "PD": FuturesContractSpec("PD", "GFEX", "钯", 1000.0, "克/手", 0.05),
 }
 
 

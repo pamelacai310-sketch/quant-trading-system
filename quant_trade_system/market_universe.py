@@ -97,12 +97,14 @@ DCE_FUTURES_PRODUCTS: List[dict[str, str]] = [
     {"symbol": "PP", "name_zh": "聚丙烯", "exchange": "DCE"},
     {"symbol": "EG", "name_zh": "乙二醇", "exchange": "DCE"},
     {"symbol": "EB", "name_zh": "苯乙烯", "exchange": "DCE"},
+    {"symbol": "BZ", "name_zh": "纯苯", "exchange": "DCE"},
     {"symbol": "PG", "name_zh": "液化石油气", "exchange": "DCE"},
     {"symbol": "I", "name_zh": "铁矿石", "exchange": "DCE"},
     {"symbol": "J", "name_zh": "焦炭", "exchange": "DCE"},
     {"symbol": "JM", "name_zh": "焦煤", "exchange": "DCE"},
     {"symbol": "FB", "name_zh": "纤维板", "exchange": "DCE"},
     {"symbol": "BB", "name_zh": "胶合板", "exchange": "DCE"},
+    {"symbol": "LG", "name_zh": "原木", "exchange": "DCE"},
     {"symbol": "RR", "name_zh": "粳米", "exchange": "DCE"},
 ]
 
@@ -132,6 +134,7 @@ CZCE_FUTURES_PRODUCTS: List[dict[str, str]] = [
     {"symbol": "SH", "name_zh": "烧碱", "exchange": "CZCE"},
     {"symbol": "PX", "name_zh": "对二甲苯", "exchange": "CZCE"},
     {"symbol": "PR", "name_zh": "瓶片", "exchange": "CZCE"},
+    {"symbol": "PL", "name_zh": "丙烯", "exchange": "CZCE"},
     {"symbol": "ZC", "name_zh": "动力煤", "exchange": "CZCE"},
 ]
 
@@ -150,7 +153,18 @@ GFEX_FUTURES_PRODUCTS: List[dict[str, str]] = [
     {"symbol": "SI", "name_zh": "工业硅", "exchange": "GFEX"},
     {"symbol": "LC", "name_zh": "碳酸锂", "exchange": "GFEX"},
     {"symbol": "PS", "name_zh": "多晶硅", "exchange": "GFEX"},
+    {"symbol": "PT", "name_zh": "铂", "exchange": "GFEX"},
+    {"symbol": "PD", "name_zh": "钯", "exchange": "GFEX"},
 ]
+
+# Verified delivery-month restrictions for newly added products. Other products
+# retain the provider's existing calendar-month candidate generation. These are
+# product rules, not a live list of currently listed contracts.
+CN_FUTURES_DELIVERY_MONTHS: dict[str, tuple[int, ...]] = {
+    "LG": (1, 3, 5, 7, 9, 11),
+    "PT": (2, 4, 6, 8, 10, 12),
+    "PD": (2, 4, 6, 8, 10, 12),
+}
 
 CN_FUTURES_PRODUCTS_BY_EXCHANGE: dict[str, List[dict[str, str]]] = {
     "SHFE": [item for item in SHFE_FUTURES_PRODUCTS if item.get("exchange") == "SHFE"],

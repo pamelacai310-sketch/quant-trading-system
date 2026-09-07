@@ -30,6 +30,7 @@ import pandas as pd
 
 from .market_universe import (
     CFFEX_FUTURES_PRODUCTS,
+    CN_FUTURES_DELIVERY_MONTHS,
     CN_FUTURES_PRODUCTS_BY_EXCHANGE,
     CZCE_FUTURES_PRODUCTS,
     DCE_FUTURES_PRODUCTS,
@@ -260,6 +261,9 @@ class MarketUniverseProvider:
                 month_number = now.month + offset
                 year = now.year + (month_number - 1) // 12
                 month = ((month_number - 1) % 12) + 1
+                delivery_months = CN_FUTURES_DELIVERY_MONTHS.get(product.symbol)
+                if delivery_months is not None and month not in delivery_months:
+                    continue
                 suffix = f"{year % 100:02d}{month:02d}"
                 contracts.append(MarketSymbol(
                     f"{product.symbol}{suffix}",
