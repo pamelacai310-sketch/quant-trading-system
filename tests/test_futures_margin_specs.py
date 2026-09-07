@@ -113,6 +113,58 @@ class FuturesMarginSpecTests(unittest.TestCase):
         missing = [item["symbol"] for item in all_products if get_futures_contract_spec(item["symbol"]) is None]
         self.assertEqual(missing, [])
 
+    def test_added_products_reach_provider_and_nightly_exchange_groups(self) -> None:
+        expected = {
+            "LG": ("原木", "DCE"), "BZ": ("纯苯", "DCE"),
+            "PL": ("丙烯", "CZCE"), "PT": ("铂", "GFEX"),
+            "PD": ("钯", "GFEX"),
+        }
+        products = MarketUniverseProvider(prefer_live=False).get_universe(
+            "cn_futures_products", include_contracts=False,
+        )
+        grouped = _cn_futures_exchange_universe()
+        for symbol, (name, exchange) in expected.items():
+            with self.subTest(symbol=symbol):
+                matches = [item for item in products if item.symbol == symbol]
+                self.assertEqual(len(matches), 1)
+                self.assertEqual((matches[0].name, matches[0].exchange), (name, exchange))
+                self.assertIn(symbol + "0", grouped[exchange])
+                self.assertEqual(sum(symbol + "0" in pool for pool in grouped.values()), 1)
+
+    def test_added_products_use_quote_units_and_explicit_platform_margin(self) -> None:
+        # Illustrative prices; expected notionals are independent unit checks.
+        cases = [
+            ("lg2611", 800.0, "DCE", 72_000.0),
+            ("BZ0", 6000.0, "DCE", 180_000.0),
+            ("PL610", 7000.0, "CZCE", 140_000.0),
+            ("pt2612", 400.0, "GFEX", 400_000.0),
+            ("PD0", 300.0, "GFEX", 300_000.0),
+        ]
+        for symbol, price, exchange, notional in cases:
+            with self.subTest(symbol=symbol):
+                row = build_one_lot_margin_table({symbol: price}, {symbol: 0.20})[0]
+                self.assertEqual(row["exchange"], exchange)
+                self.assertEqual(row["one_lot_notional"], notional)
+                self.assertAlmostEqual(row["one_lot_margin"], notional * 0.20)
+                self.assertAlmostEqual(calculate_futures_margin(symbol, price), notional * 0.05)
+
+    def test_added_contract_candidates_respect_delivery_months_across_year(self) -> None:
+        with patch("quant_trade_system.universe_provider.datetime") as clock:
+            clock.utcnow.return_value = datetime(2026, 9, 7)
+            contracts = MarketUniverseProvider(prefer_live=False).get_universe("cn_futures_all")
+        expected_months = {
+            "LG": {1, 3, 5, 7, 9, 11},
+            "PT": {2, 4, 6, 8, 10, 12},
+            "PD": {2, 4, 6, 8, 10, 12},
+            "BZ": set(range(1, 13)), "PL": set(range(1, 13)),
+        }
+        for product, months in expected_months.items():
+            with self.subTest(product=product):
+                rows = [item for item in contracts if item.metadata["underlying"] == product]
+                self.assertEqual(len(rows), len(months))
+                self.assertEqual({item.metadata["delivery_month"] for item in rows}, months)
+                self.assertTrue(any(item.metadata["delivery_year"] == 2027 for item in rows))
+
     def test_image_futures_products_have_specs(self) -> None:
         missing = [symbol for symbol in sorted(self.IMAGE_FUTURES_PRODUCTS) if get_futures_contract_spec(symbol) is None]
         self.assertEqual(missing, [])
