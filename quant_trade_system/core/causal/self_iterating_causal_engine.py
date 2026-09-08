@@ -293,6 +293,30 @@ class SelfIteratingCausalEngine:
             "latest_iteration_status": self.latest_iteration.get("status", "idle"),
         }
 
+    def run_daily_research(
+        self,
+        symbol_datasets: Dict[str, pd.DataFrame],
+        trading_calendar: List[str],
+        asof: str,
+    ) -> Dict[str, Any]:
+        """Explicit one-session research entry; legacy five-row scores are not returns.
+
+        Historical evidence is not forward validation. The result retains research
+        candidates for auditing but abstains from publishing unvalidated directions.
+        """
+        from ...daily_forecast import replay_panel, publication_record
+
+        result = replay_panel(symbol_datasets, trading_calendar, asof)
+        result["target_horizon"] = 1
+        result["target_unit"] = "exchange_trading_session"
+        result["return_basis"] = "next_close_over_asof_close_minus_one"
+        result["publication"] = [
+            publication_record(symbol, candidates, asof)
+            for symbol, candidates in result["contracts"].items()
+        ]
+        result["trade_actions"] = []
+        return result
+
     def run_learning_cycle(
         self,
         symbol_datasets: Dict[str, pd.DataFrame],
