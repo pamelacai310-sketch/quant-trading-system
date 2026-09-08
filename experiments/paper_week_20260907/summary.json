@@ -1,11 +1,13 @@
 {
   "experiment": "paper_week_20260907_v2",
-  "as_of": "2026-09-07T18:51:01.836882+08:00",
+  "as_of": "2026-09-08T13:37:55.950117+08:00",
   "start_at": "2026-09-07T09:00:00+08:00",
   "end_at": "2026-09-12T02:00:00+08:00",
   "status": "in_progress",
   "actual_start_at": "2026-09-07T13:46:24.265545+08:00",
-  "observed_quote_days": [],
+  "observed_quote_days": [
+    "2026-09-08"
+  ],
   "pending_orders": {
     "baseline": {
       "600519": {
@@ -14,7 +16,7 @@
         "known_at": "2026-09-07",
         "order_id": "7fcc78685bc05b194ac15cfe7350370447ad461aee0b31a232ebfa2c13c747eb",
         "reference_close": 1316.01,
-        "status": "pending",
+        "status": "partial",
         "strategy": "baseline",
         "symbol": "600519",
         "target_quantity": 1500
@@ -25,7 +27,7 @@
         "known_at": "2026-09-07",
         "order_id": "eaad776478c28a3956e8846ebbe48cfa47aba85650f5fbe4e310205572c746f3",
         "reference_close": 56.36,
-        "status": "pending",
+        "status": "partial",
         "strategy": "baseline",
         "symbol": "601318",
         "target_quantity": 35100
@@ -36,7 +38,7 @@
         "known_at": "2026-09-07",
         "order_id": "17aba8d5f0498715bb13e61cfa7184a79fac2f4b209191fb863ab0bcbe614343",
         "reference_close": 4474.2,
-        "status": "pending",
+        "status": "filled",
         "strategy": "baseline",
         "symbol": "IF2612",
         "target_quantity": 1
@@ -47,7 +49,7 @@
         "known_at": "2026-09-07",
         "order_id": "4875e393f6645ad341469a5546c2b04d890ecd4976aad69e52caf103ecc27ce4",
         "reference_close": 7381.0,
-        "status": "pending",
+        "status": "filled",
         "strategy": "baseline",
         "symbol": "IM2612",
         "target_quantity": 1
@@ -60,7 +62,7 @@
         "known_at": "2026-09-07",
         "order_id": "0755a3ef8fe1d3c19b6f25b5a051e854fa4a629bb76338760f7f2db2c7647b48",
         "reference_close": 1316.01,
-        "status": "pending",
+        "status": "partial",
         "strategy": "candidate",
         "symbol": "600519",
         "target_quantity": 1500
@@ -71,7 +73,7 @@
         "known_at": "2026-09-07",
         "order_id": "b3141e3b63a0ff80f576fc98a072d5aec889c7a54cabba7a18e43c0cd20e8e19",
         "reference_close": 56.36,
-        "status": "pending",
+        "status": "partial",
         "strategy": "candidate",
         "symbol": "601318",
         "target_quantity": 35100
@@ -82,7 +84,7 @@
         "known_at": "2026-09-07",
         "order_id": "f97aabac47be0764943e65ede985c4aa6377d936ba4d990e8e0a3f52d594d179",
         "reference_close": 4474.2,
-        "status": "pending",
+        "status": "filled",
         "strategy": "candidate",
         "symbol": "IF2612",
         "target_quantity": -1
@@ -93,7 +95,7 @@
         "known_at": "2026-09-07",
         "order_id": "236f5de0c9224fda1072a8dc07c8f3c8cbed486658a4ed7a3d652cade408add0",
         "reference_close": 7381.0,
-        "status": "pending",
+        "status": "filled",
         "strategy": "candidate",
         "symbol": "IM2612",
         "target_quantity": -1
@@ -104,30 +106,136 @@
   "accounts": {
     "baseline": {
       "starting_cash": 40000000,
-      "ending_nav": 40000000.0,
-      "net_profit": 0.0,
-      "net_return": 0.0,
+      "ending_nav": 39998011.7765,
+      "net_profit": -1988.2234999984503,
+      "net_return": -4.970558749994858e-05,
       "closed_trade_count": 0,
       "win_rate": null,
       "payoff_ratio": null,
       "realized_closed_trade_net_profit": 0,
-      "open_positions": [],
-      "fill_count": 0
+      "open_positions": [
+        {
+          "symbol": "600519",
+          "average_price": 1310.48,
+          "cash": 9737825.3712,
+          "entry_fees": 78.6288,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 200.0,
+          "mark": {
+            "price": 1309.83,
+            "quote_time": "2026-09-08T13:37:50+08:00"
+          }
+        },
+        {
+          "symbol": "601318",
+          "average_price": 55.97,
+          "cash": 9904822.4553,
+          "entry_fees": 28.5447,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 1700.0,
+          "mark": {
+            "price": 55.93,
+            "quote_time": "2026-09-08T13:37:53+08:00"
+          }
+        },
+        {
+          "symbol": "IF2612",
+          "average_price": 4475.8,
+          "cash": 9999865.726,
+          "entry_fees": 134.274,
+          "futures": true,
+          "multiplier": 300,
+          "quantity": 1.0,
+          "mark": {
+            "price": 4473.0,
+            "quote_time": "2026-09-08T13:37:39+08:00"
+          }
+        },
+        {
+          "symbol": "IM2612",
+          "average_price": 7438.8,
+          "cash": 9999851.224,
+          "entry_fees": 148.776,
+          "futures": true,
+          "multiplier": 200,
+          "quantity": 1.0,
+          "mark": {
+            "price": 7436.0,
+            "quote_time": "2026-09-08T13:37:39+08:00"
+          }
+        }
+      ],
+      "fill_count": 4
     },
     "candidate": {
       "starting_cash": 40000000,
-      "ending_nav": 40000000.0,
-      "net_profit": 0.0,
-      "net_return": 0.0,
+      "ending_nav": 39997512.1065,
+      "net_profit": -2487.8935000002384,
+      "net_return": -6.2197337500014e-05,
       "closed_trade_count": 0,
       "win_rate": null,
       "payoff_ratio": null,
       "realized_closed_trade_net_profit": 0,
-      "open_positions": [],
-      "fill_count": 0
+      "open_positions": [
+        {
+          "symbol": "600519",
+          "average_price": 1310.48,
+          "cash": 9737825.3712,
+          "entry_fees": 78.6288,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 200.0,
+          "mark": {
+            "price": 1309.83,
+            "quote_time": "2026-09-08T13:37:50+08:00"
+          }
+        },
+        {
+          "symbol": "601318",
+          "average_price": 55.97,
+          "cash": 9904822.4553,
+          "entry_fees": 28.5447,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 1700.0,
+          "mark": {
+            "price": 55.93,
+            "quote_time": "2026-09-08T13:37:53+08:00"
+          }
+        },
+        {
+          "symbol": "IF2612",
+          "average_price": 4470.0,
+          "cash": 9999865.9,
+          "entry_fees": 134.1,
+          "futures": true,
+          "multiplier": 300,
+          "quantity": -1.0,
+          "mark": {
+            "price": 4473.0,
+            "quote_time": "2026-09-08T13:37:39+08:00"
+          }
+        },
+        {
+          "symbol": "IM2612",
+          "average_price": 7431.0,
+          "cash": 9999851.38,
+          "entry_fees": 148.62,
+          "futures": true,
+          "multiplier": 200,
+          "quantity": -1.0,
+          "mark": {
+            "price": 7436.0,
+            "quote_time": "2026-09-08T13:37:39+08:00"
+          }
+        }
+      ],
+      "fill_count": 4
     }
   },
-  "events": 2,
+  "events": 3,
   "data_failures": 0,
   "repeatable_advantage_proven": false,
   "notes": [

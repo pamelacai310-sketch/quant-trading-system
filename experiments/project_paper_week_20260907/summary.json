@@ -1,11 +1,13 @@
 {
   "experiment": "project_paper_week_20260907_v1",
-  "as_of": "2026-09-07T18:50:48.008557+08:00",
+  "as_of": "2026-09-08T13:37:49.243139+08:00",
   "start_at": "2026-09-07T09:00:00+08:00",
   "end_at": "2026-09-12T02:00:00+08:00",
   "status": "in_progress",
   "actual_start_at": "2026-09-07T13:46:19.416303+08:00",
-  "observed_quote_days": [],
+  "observed_quote_days": [
+    "2026-09-08"
+  ],
   "pending_orders": {
     "baseline": {
       "600028": {
@@ -743,7 +745,7 @@
         "max_hold_days": 5,
         "order_id": "13c201827eb1634b00c33a8adae806d32449bfcbb4cdf15be9d95a248d284b65",
         "reference_close": 4555.6,
-        "status": "pending",
+        "status": "filled",
         "stop_loss_pct": 0.03,
         "strategy": "baseline",
         "symbol": "IF2609",
@@ -1639,18 +1641,32 @@
   "model": "SelfIteratingCausalEngine.run_learning_cycle",
   "accounts": {
     "baseline": {
-      "gross_exposure": 0.0,
-      "net_profit_at_double_recorded_cost": 0.0,
+      "gross_exposure": 0.034173,
+      "net_profit_at_double_recorded_cost": -1713.2400000046591,
       "starting_cash": 40000000.0,
-      "ending_nav": 40000000.0,
-      "net_profit": 0.0,
-      "net_return": 0.0,
+      "ending_nav": 39999143.379999995,
+      "net_profit": -856.6200000047684,
+      "net_return": -2.141550000012149e-05,
       "closed_trade_count": 0,
       "win_rate": null,
       "payoff_ratio": null,
       "realized_closed_trade_net_profit": 0,
-      "open_positions": [],
-      "fill_count": 0
+      "open_positions": [
+        {
+          "symbol": "IF2609",
+          "average_price": 4554.0,
+          "cash": 2499863.38,
+          "entry_fees": 136.62,
+          "futures": true,
+          "multiplier": 300,
+          "quantity": -1.0,
+          "mark": {
+            "price": 4556.4,
+            "quote_time": "2026-09-08T13:37:34+08:00"
+          }
+        }
+      ],
+      "fill_count": 1
     },
     "candidate": {
       "gross_exposure": 0.0,
@@ -1667,7 +1683,7 @@
       "fill_count": 0
     }
   },
-  "events": 2,
+  "events": 3,
   "data_failures": 1,
   "selection_audit": {
     "candidates": [
