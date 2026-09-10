@@ -4,6 +4,7 @@
 
 ## 📚 完整文档
 
+- **[2026-09-11日预测修复说明](docs/structural-forecast-20260911.md)** - 分层模型、收盘/结算独立目标、时间戳与强基准检验。日收益预测使用 `scripts/run_structural_forecast.py`，历史研究结果不自动获得交易资格。
 - **[API文档](API_DOCUMENTATION.md)** - 完整的API接口文档和使用说明
 - **[配置指南](CONFIGURATION_GUIDE.md)** - 详细的系统配置和部署指南
 - **[使用示例](USAGE_EXAMPLES.md)** - 丰富的代码示例和常见使用场景

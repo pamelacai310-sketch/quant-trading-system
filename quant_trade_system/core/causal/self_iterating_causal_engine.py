@@ -317,6 +317,20 @@ class SelfIteratingCausalEngine:
         result["trade_actions"] = []
         return result
 
+    def run_structural_daily_research(
+        self, symbol_datasets, trading_calendar, asof,
+        auxiliary=None, external_events=None, news=None, policy=None, replay_start=None,
+    ):
+        """One-session pooled close and settlement research; no order side effects."""
+        from ...structural_forecast import build_panel, replay, StructuralPolicy
+        panel, _ = build_panel(symbol_datasets, trading_calendar, asof,
+                               auxiliary, external_events, news)
+        result = replay(panel, asof, policy or StructuralPolicy(), start=replay_start)
+        result['target_horizon'] = 1
+        result['target_unit'] = 'exchange_trading_session'
+        result['trade_actions'] = []
+        return result
+
     def run_learning_cycle(
         self,
         symbol_datasets: Dict[str, pd.DataFrame],
