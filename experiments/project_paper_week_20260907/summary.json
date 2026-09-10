@@ -1,13 +1,14 @@
 {
   "experiment": "project_paper_week_20260907_v1",
-  "as_of": "2026-09-09T18:15:38.134349+08:00",
+  "as_of": "2026-09-10T13:37:49.149675+08:00",
   "start_at": "2026-09-07T09:00:00+08:00",
   "end_at": "2026-09-12T02:00:00+08:00",
   "status": "in_progress",
   "actual_start_at": "2026-09-07T13:46:19.416303+08:00",
   "observed_quote_days": [
     "2026-09-08",
-    "2026-09-09"
+    "2026-09-09",
+    "2026-09-10"
   ],
   "pending_orders": {
     "baseline": {
@@ -1642,12 +1643,12 @@
   "model": "SelfIteratingCausalEngine.run_learning_cycle",
   "accounts": {
     "baseline": {
-      "gross_exposure": 0.0342,
-      "net_profit_at_double_recorded_cost": -2793.240000004659,
+      "gross_exposure": 0.0341145,
+      "net_profit_at_double_recorded_cost": 626.7599999953408,
       "starting_cash": 40000000.0,
-      "ending_nav": 39998063.379999995,
-      "net_profit": -1936.6200000047684,
-      "net_return": -4.841550000012074e-05,
+      "ending_nav": 40001483.379999995,
+      "net_profit": 1483.3799999952316,
+      "net_return": 3.708449999995089e-05,
       "closed_trade_count": 0,
       "win_rate": null,
       "payoff_ratio": null,
@@ -1662,9 +1663,8 @@
           "multiplier": 300,
           "quantity": -1.0,
           "mark": {
-            "price": 4560.0,
-            "quote_time": "2026-09-09T15:00:00+08:00",
-            "source": "daily_close_valuation_only"
+            "price": 4548.6,
+            "quote_time": "2026-09-10T13:37:22+08:00"
           }
         }
       ],
@@ -1685,7 +1685,7 @@
       "fill_count": 0
     }
   },
-  "events": 6,
+  "events": 7,
   "data_failures": 1,
   "selection_audit": {
     "candidates": [

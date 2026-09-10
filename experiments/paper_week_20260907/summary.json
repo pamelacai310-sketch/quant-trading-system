@@ -1,13 +1,14 @@
 {
   "experiment": "paper_week_20260907_v2",
-  "as_of": "2026-09-09T18:15:49.226350+08:00",
+  "as_of": "2026-09-10T13:37:55.629982+08:00",
   "start_at": "2026-09-07T09:00:00+08:00",
   "end_at": "2026-09-12T02:00:00+08:00",
   "status": "in_progress",
   "actual_start_at": "2026-09-07T13:46:24.265545+08:00",
   "observed_quote_days": [
     "2026-09-08",
-    "2026-09-09"
+    "2026-09-09",
+    "2026-09-10"
   ],
   "pending_orders": {
     "baseline": {
@@ -63,7 +64,7 @@
         "known_at": "2026-09-09",
         "order_id": "a49e4647dd5be1762594e3dd9a9acb6f95c48c319db864cebd3d8bc33e2936bb",
         "reference_close": 1290.88,
-        "status": "pending",
+        "status": "filled",
         "strategy": "candidate",
         "symbol": "600519",
         "target_quantity": 0
@@ -96,7 +97,7 @@
         "known_at": "2026-09-09",
         "order_id": "a671da4513c904ca7eb2631a252d7a1be90291c9e885271d329fc38ed74d08f5",
         "reference_close": 7384.4,
-        "status": "pending",
+        "status": "filled",
         "strategy": "candidate",
         "symbol": "IM2612",
         "target_quantity": -1
@@ -107,9 +108,9 @@
   "accounts": {
     "baseline": {
       "starting_cash": 40000000,
-      "ending_nav": 39983862.7765,
-      "net_profit": -16137.22349999845,
-      "net_return": -0.00040343058749992,
+      "ending_nav": 39971288.7765,
+      "net_profit": -28711.22349999845,
+      "net_return": -0.0007177805874999388,
       "closed_trade_count": 0,
       "win_rate": null,
       "payoff_ratio": null,
@@ -124,9 +125,8 @@
           "multiplier": 1,
           "quantity": 200.0,
           "mark": {
-            "price": 1290.88,
-            "quote_time": "2026-09-09T15:00:00+08:00",
-            "source": "daily_close_valuation_only"
+            "price": 1283.53,
+            "quote_time": "2026-09-10T13:37:51+08:00"
           }
         },
         {
@@ -138,9 +138,8 @@
           "multiplier": 1,
           "quantity": 1700.0,
           "mark": {
-            "price": 56.26,
-            "quote_time": "2026-09-09T15:00:00+08:00",
-            "source": "daily_close_valuation_only"
+            "price": 55.34,
+            "quote_time": "2026-09-10T13:37:51+08:00"
           }
         },
         {
@@ -152,9 +151,8 @@
           "multiplier": 300,
           "quantity": 1.0,
           "mark": {
-            "price": 4471.0,
-            "quote_time": "2026-09-09T15:00:00+08:00",
-            "source": "daily_close_valuation_only"
+            "price": 4457.2,
+            "quote_time": "2026-09-10T13:37:30+08:00"
           }
         },
         {
@@ -166,9 +164,8 @@
           "multiplier": 200,
           "quantity": 1.0,
           "mark": {
-            "price": 7384.4,
-            "quote_time": "2026-09-09T15:00:00+08:00",
-            "source": "daily_close_valuation_only"
+            "price": 7357.4,
+            "quote_time": "2026-09-10T13:37:30+08:00"
           }
         }
       ],
@@ -176,28 +173,14 @@
     },
     "candidate": {
       "starting_cash": 40000000,
-      "ending_nav": 40009215.8345,
-      "net_profit": 9215.83449999988,
-      "net_return": 0.00023039586250006572,
-      "closed_trade_count": 1,
-      "win_rate": 1.0,
-      "payoff_ratio": null,
-      "realized_closed_trade_net_profit": 13184.107999999926,
+      "ending_nav": 40009079.5017,
+      "net_profit": 9079.501699998975,
+      "net_return": 0.0002269875425000567,
+      "closed_trade_count": 2,
+      "win_rate": 0.5,
+      "payoff_ratio": 2.271598687886821,
+      "realized_closed_trade_net_profit": 7380.218399999943,
       "open_positions": [
-        {
-          "symbol": "600519",
-          "average_price": 1310.48,
-          "cash": 9737825.3712,
-          "entry_fees": 78.6288,
-          "futures": false,
-          "multiplier": 1,
-          "quantity": 200.0,
-          "mark": {
-            "price": 1290.88,
-            "quote_time": "2026-09-09T15:00:00+08:00",
-            "source": "daily_close_valuation_only"
-          }
-        },
         {
           "symbol": "601318",
           "average_price": 55.97,
@@ -207,9 +190,8 @@
           "multiplier": 1,
           "quantity": 1700.0,
           "mark": {
-            "price": 56.26,
-            "quote_time": "2026-09-09T15:00:00+08:00",
-            "source": "daily_close_valuation_only"
+            "price": 55.34,
+            "quote_time": "2026-09-10T13:37:51+08:00"
           }
         },
         {
@@ -221,16 +203,28 @@
           "multiplier": 300,
           "quantity": -1.0,
           "mark": {
-            "price": 4471.0,
-            "quote_time": "2026-09-09T15:00:00+08:00",
-            "source": "daily_close_valuation_only"
+            "price": 4457.2,
+            "quote_time": "2026-09-10T13:37:30+08:00"
+          }
+        },
+        {
+          "symbol": "IM2612",
+          "average_price": 7353.6,
+          "cash": 10013037.036,
+          "entry_fees": 147.072,
+          "futures": true,
+          "multiplier": 200,
+          "quantity": -1.0,
+          "mark": {
+            "price": 7357.4,
+            "quote_time": "2026-09-10T13:37:30+08:00"
           }
         }
       ],
-      "fill_count": 5
+      "fill_count": 7
     }
   },
-  "events": 6,
+  "events": 7,
   "data_failures": 0,
   "repeatable_advantage_proven": false,
   "notes": [
