@@ -1,6 +1,6 @@
 {
   "experiment": "paper_week_20260907_v2",
-  "as_of": "2026-09-10T13:37:55.629982+08:00",
+  "as_of": "2026-09-10T18:06:58.274124+08:00",
   "start_at": "2026-09-07T09:00:00+08:00",
   "end_at": "2026-09-12T02:00:00+08:00",
   "status": "in_progress",
@@ -13,44 +13,44 @@
   "pending_orders": {
     "baseline": {
       "600519": {
-        "created_at": "2026-09-09T18:15:47.700093+08:00",
+        "created_at": "2026-09-10T18:06:57.065729+08:00",
         "decision": "long",
-        "known_at": "2026-09-09",
-        "order_id": "9af822452a89d95233ca71fbb9a1a42bc0ffe1244acd1f0a0f6ecb727ea06132",
-        "reference_close": 1290.88,
+        "known_at": "2026-09-10",
+        "order_id": "6613b287f450dc40c5dab2068724a847afc4705bc4fcd8d507f584498fb37719",
+        "reference_close": 1285.13,
         "status": "no_change",
         "strategy": "baseline",
         "symbol": "600519",
         "target_quantity": 200.0
       },
       "601318": {
-        "created_at": "2026-09-09T18:15:47.700093+08:00",
+        "created_at": "2026-09-10T18:06:57.065729+08:00",
         "decision": "long",
-        "known_at": "2026-09-09",
-        "order_id": "46e2b811772d17f5c353e99260e1237c3ff167d87a58821a5a96c776d8727ca0",
-        "reference_close": 56.26,
+        "known_at": "2026-09-10",
+        "order_id": "d6d6d2f5a629e11bb1ede00c3048da0ed22c065d8da4dd0eb1150aea46f28062",
+        "reference_close": 55.52,
         "status": "no_change",
         "strategy": "baseline",
         "symbol": "601318",
         "target_quantity": 1700.0
       },
       "IF2612": {
-        "created_at": "2026-09-09T18:15:47.700093+08:00",
+        "created_at": "2026-09-10T18:06:57.065729+08:00",
         "decision": "long",
-        "known_at": "2026-09-09",
-        "order_id": "49cc6fa854189b49dcd9cd441b4e9590f5456efd7c18c680bd178c31cb6f3110",
-        "reference_close": 4471.0,
+        "known_at": "2026-09-10",
+        "order_id": "901dcb5a0f40302586b20398058e4c70d6ec7907d620514ab5dba18fdf1304c3",
+        "reference_close": 4452.0,
         "status": "no_change",
         "strategy": "baseline",
         "symbol": "IF2612",
         "target_quantity": 1.0
       },
       "IM2612": {
-        "created_at": "2026-09-09T18:15:47.700093+08:00",
+        "created_at": "2026-09-10T18:06:57.065729+08:00",
         "decision": "long",
-        "known_at": "2026-09-09",
-        "order_id": "c10a8a6ec460118c4b95a9652dd6b717ffa629cea146cc652a6c8e2dfb275645",
-        "reference_close": 7384.4,
+        "known_at": "2026-09-10",
+        "order_id": "30d19102adae648f6d072181e0b430b2fc08e16235e918f7ac0dcb49e9398b4c",
+        "reference_close": 7340.2,
         "status": "no_change",
         "strategy": "baseline",
         "symbol": "IM2612",
@@ -59,48 +59,48 @@
     },
     "candidate": {
       "600519": {
-        "created_at": "2026-09-09T18:15:47.700093+08:00",
+        "created_at": "2026-09-10T18:06:57.065729+08:00",
         "decision": "sma20",
-        "known_at": "2026-09-09",
-        "order_id": "a49e4647dd5be1762594e3dd9a9acb6f95c48c319db864cebd3d8bc33e2936bb",
-        "reference_close": 1290.88,
-        "status": "filled",
+        "known_at": "2026-09-10",
+        "order_id": "b014a557a0a63c21b246fc7a8c8ec1ea203d333317b7eb15f1ba75b2a29975e3",
+        "reference_close": 1285.13,
+        "status": "no_change",
         "strategy": "candidate",
         "symbol": "600519",
-        "target_quantity": 0
+        "target_quantity": 0.0
       },
       "601318": {
-        "created_at": "2026-09-09T18:15:47.700093+08:00",
+        "created_at": "2026-09-10T18:06:57.065729+08:00",
         "decision": "sma20",
-        "known_at": "2026-09-09",
-        "order_id": "60cb6d639b039be7e3d5dca725134ff7ed76f2fcc504ed17b5bb9578c9345d21",
-        "reference_close": 56.26,
+        "known_at": "2026-09-10",
+        "order_id": "14be275dda35ccada505307b667a142b96d18fe12671216040ebc6eaa564776a",
+        "reference_close": 55.52,
         "status": "no_change",
         "strategy": "candidate",
         "symbol": "601318",
         "target_quantity": 1700.0
       },
       "IF2612": {
-        "created_at": "2026-09-09T18:15:47.700093+08:00",
+        "created_at": "2026-09-10T18:06:57.065729+08:00",
         "decision": "sma20",
-        "known_at": "2026-09-09",
-        "order_id": "7dc1d69b6a89b5bc8f5296fe1e8c776f2140f30be0e1aca8052ef204ed619fe8",
-        "reference_close": 4471.0,
+        "known_at": "2026-09-10",
+        "order_id": "c71f54a82f0f949eebf0b863ed4cc67e81e7ad7a5563a618ad920ab2a3815667",
+        "reference_close": 4452.0,
         "status": "no_change",
         "strategy": "candidate",
         "symbol": "IF2612",
         "target_quantity": -1.0
       },
       "IM2612": {
-        "created_at": "2026-09-09T18:15:47.700093+08:00",
+        "created_at": "2026-09-10T18:06:57.065729+08:00",
         "decision": "sma20",
-        "known_at": "2026-09-09",
-        "order_id": "a671da4513c904ca7eb2631a252d7a1be90291c9e885271d329fc38ed74d08f5",
-        "reference_close": 7384.4,
-        "status": "filled",
+        "known_at": "2026-09-10",
+        "order_id": "679a4576e40bc2af2ddcb27410c8ae36711728077982e33ef372c6f46e9aff8a",
+        "reference_close": 7340.2,
+        "status": "no_change",
         "strategy": "candidate",
         "symbol": "IM2612",
-        "target_quantity": -1
+        "target_quantity": -1.0
       }
     }
   },
@@ -108,9 +108,9 @@
   "accounts": {
     "baseline": {
       "starting_cash": 40000000,
-      "ending_nav": 39971288.7765,
-      "net_profit": -28711.22349999845,
-      "net_return": -0.0007177805874999388,
+      "ending_nav": 39966914.7765,
+      "net_profit": -33085.22349999845,
+      "net_return": -0.0008271305874999468,
       "closed_trade_count": 0,
       "win_rate": null,
       "payoff_ratio": null,
@@ -125,8 +125,9 @@
           "multiplier": 1,
           "quantity": 200.0,
           "mark": {
-            "price": 1283.53,
-            "quote_time": "2026-09-10T13:37:51+08:00"
+            "price": 1285.13,
+            "quote_time": "2026-09-10T15:00:00+08:00",
+            "source": "daily_close_valuation_only"
           }
         },
         {
@@ -138,8 +139,9 @@
           "multiplier": 1,
           "quantity": 1700.0,
           "mark": {
-            "price": 55.34,
-            "quote_time": "2026-09-10T13:37:51+08:00"
+            "price": 55.52,
+            "quote_time": "2026-09-10T15:00:00+08:00",
+            "source": "daily_close_valuation_only"
           }
         },
         {
@@ -151,8 +153,9 @@
           "multiplier": 300,
           "quantity": 1.0,
           "mark": {
-            "price": 4457.2,
-            "quote_time": "2026-09-10T13:37:30+08:00"
+            "price": 4452.0,
+            "quote_time": "2026-09-10T15:00:00+08:00",
+            "source": "daily_close_valuation_only"
           }
         },
         {
@@ -164,8 +167,9 @@
           "multiplier": 200,
           "quantity": 1.0,
           "mark": {
-            "price": 7357.4,
-            "quote_time": "2026-09-10T13:37:30+08:00"
+            "price": 7340.2,
+            "quote_time": "2026-09-10T15:00:00+08:00",
+            "source": "daily_close_valuation_only"
           }
         }
       ],
@@ -173,9 +177,9 @@
     },
     "candidate": {
       "starting_cash": 40000000,
-      "ending_nav": 40009079.5017,
-      "net_profit": 9079.501699998975,
-      "net_return": 0.0002269875425000567,
+      "ending_nav": 40014385.5017,
+      "net_profit": 14385.501699998975,
+      "net_return": 0.0003596375424999021,
       "closed_trade_count": 2,
       "win_rate": 0.5,
       "payoff_ratio": 2.271598687886821,
@@ -190,8 +194,9 @@
           "multiplier": 1,
           "quantity": 1700.0,
           "mark": {
-            "price": 55.34,
-            "quote_time": "2026-09-10T13:37:51+08:00"
+            "price": 55.52,
+            "quote_time": "2026-09-10T15:00:00+08:00",
+            "source": "daily_close_valuation_only"
           }
         },
         {
@@ -203,8 +208,9 @@
           "multiplier": 300,
           "quantity": -1.0,
           "mark": {
-            "price": 4457.2,
-            "quote_time": "2026-09-10T13:37:30+08:00"
+            "price": 4452.0,
+            "quote_time": "2026-09-10T15:00:00+08:00",
+            "source": "daily_close_valuation_only"
           }
         },
         {
@@ -216,15 +222,16 @@
           "multiplier": 200,
           "quantity": -1.0,
           "mark": {
-            "price": 7357.4,
-            "quote_time": "2026-09-10T13:37:30+08:00"
+            "price": 7340.2,
+            "quote_time": "2026-09-10T15:00:00+08:00",
+            "source": "daily_close_valuation_only"
           }
         }
       ],
       "fill_count": 7
     }
   },
-  "events": 7,
+  "events": 8,
   "data_failures": 0,
   "repeatable_advantage_proven": false,
   "notes": [

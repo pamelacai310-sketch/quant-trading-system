@@ -1,0 +1,2889 @@
+{
+  "fills": [],
+  "kind": "next_session_orders",
+  "previous_hash": "807591cc15ccb87874d4ff969819cde28c824071064c16f8919850b7efede56f",
+  "protocol_hash": "655cc3e9b426114c558af77b319e33e70fb8e1c9305dd7ddf3164feae81900c2",
+  "quotes": {},
+  "raw_quote_response": null,
+  "recorded_at": "2026-09-10T18:06:47.441159+08:00",
+  "rejections": [],
+  "state": {
+    "bought_today": {},
+    "closed_trades": [],
+    "cycles": {
+      "baseline:IF2609": {
+        "entry_notional": 1366200.0,
+        "entry_time": "2026-09-08T13:37:34+08:00",
+        "net_pnl": 0.0,
+        "strategy": "baseline",
+        "symbol": "IF2609"
+      }
+    },
+    "halted": false,
+    "last_fill_quote": {
+      "baseline:IF2609": "2026-09-08T13:37:34+08:00"
+    },
+    "last_model_date": "2026-09-10",
+    "marks": {
+      "600028": {
+        "price": 5.56,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "600030": {
+        "price": 27.6,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "600031": {
+        "price": 20.01,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "600036": {
+        "price": 41.57,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "600050": {
+        "price": 4.2,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "600089": {
+        "price": 19.01,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "600111": {
+        "price": 38.18,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "600150": {
+        "price": 40.82,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "600183": {
+        "price": 146.96,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "600276": {
+        "price": 42.93,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "600309": {
+        "price": 77.15,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "600406": {
+        "price": 22.49,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "600519": {
+        "price": 1285.13,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "600760": {
+        "price": 48.6,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "600809": {
+        "price": 116.06,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "600887": {
+        "price": 26.54,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "600900": {
+        "price": 28.09,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "600930": {
+        "price": 3.95,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "601012": {
+        "price": 11.7,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "601088": {
+        "price": 47.28,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "601127": {
+        "price": 47.07,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "601166": {
+        "price": 18.24,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "601211": {
+        "price": 17.74,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "601288": {
+        "price": 6.94,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "601318": {
+        "price": 55.52,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "601328": {
+        "price": 7.44,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "601398": {
+        "price": 8.1,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "601600": {
+        "price": 9.92,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "601601": {
+        "price": 33.63,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "601628": {
+        "price": 38.28,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "601658": {
+        "price": 5.46,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "601668": {
+        "price": 4.39,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "601688": {
+        "price": 19.52,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "601728": {
+        "price": 6.19,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "601857": {
+        "price": 11.27,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "601888": {
+        "price": 52.58,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "601899": {
+        "price": 34.11,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "601919": {
+        "price": 16.38,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "601988": {
+        "price": 6.53,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "603019": {
+        "price": 82.35,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "603259": {
+        "price": 154.5,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "603501": {
+        "price": 78.93,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "603986": {
+        "price": 380.64,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "603993": {
+        "price": 19.01,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "688008": {
+        "price": 195.33,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "688012": {
+        "price": 334.19,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "688041": {
+        "price": 232.37,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "688111": {
+        "price": 227.72,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "688256": {
+        "price": 1043.84,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "688981": {
+        "price": 119.18,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "IC2609": {
+        "price": 7705.8,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "IC2612": {
+        "price": 7491.2,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "IF2609": {
+        "price": 4542.2,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "IF2612": {
+        "price": 4452.0,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "IH2609": {
+        "price": 2897.0,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "IH2612": {
+        "price": 2831.0,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "IM2609": {
+        "price": 7574.0,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      },
+      "IM2612": {
+        "price": 7340.2,
+        "quote_time": "2026-09-10T15:00:00+08:00",
+        "source": "daily_close_valuation_only"
+      }
+    },
+    "model_evidence_hash": "ed7feebd28848cfd01f8ae5dcb8c560a709f3533714680a3afc45c39ef617695",
+    "orders": {
+      "baseline": {
+        "600028": {
+          "created_at": "2026-09-10T18:06:47.054458+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "5dc7693fd3e23747688fd9776f01b7ba28fd5d8e7a675930cd4018a877f2e87c",
+          "reference_close": 5.56,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "600028",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600030": {
+          "created_at": "2026-09-10T18:06:47.054500+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "8d957e08df090d6c1fe483314e6554e20b6cc4de59290fea03b79ea226ec8828",
+          "reference_close": 27.6,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "600030",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600031": {
+          "created_at": "2026-09-10T18:06:47.054513+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "04888a1c20146401c91308b706ff612ba2d13f285eeab7eaffcec7cd6e83f280",
+          "reference_close": 20.01,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "600031",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600036": {
+          "created_at": "2026-09-10T18:06:47.054523+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "db144d96f3e1b17d234f2ae96d398f61626dba45700c8129071b460ba953ff80",
+          "reference_close": 41.57,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "600036",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600050": {
+          "created_at": "2026-09-10T18:06:47.054532+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "c03e179a69988a71572b07952f7630822b375ce70a54200b7dd593ba71397a65",
+          "reference_close": 4.2,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "600050",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600089": {
+          "created_at": "2026-09-10T18:06:47.054540+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "5fcf378d70a0cba1b92572ef16f1f974a27c8d565989c58ca4815aed6daa14ec",
+          "reference_close": 19.01,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "600089",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600111": {
+          "created_at": "2026-09-10T18:06:47.054548+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "d5e5a7bf4b7e3a9fba2f0fc99f5225c4369e905f1824e932fdda7e71763a31d2",
+          "reference_close": 38.18,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "600111",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600150": {
+          "created_at": "2026-09-10T18:06:47.054556+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "5ff035acf53eb0f66ba99af13ef136be114d8cfc44dd6fcdcbce7652cdfdafc7",
+          "reference_close": 40.82,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "600150",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600183": {
+          "created_at": "2026-09-10T18:06:47.054564+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "c0cf98c0815d702dd08ae0a95123e430842161d18a253f0d614d714393709138",
+          "reference_close": 146.96,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "600183",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600276": {
+          "created_at": "2026-09-10T18:06:47.054572+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "8912d1fe766a0012c5fc44257910867b545bcd33f7dc7764918f7e1bbbd65789",
+          "reference_close": 42.93,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "600276",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600309": {
+          "created_at": "2026-09-10T18:06:47.054580+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "841fa6f7a76e068ae8a0b30303ce92adaa668654334a624467b973501ebb3fd8",
+          "reference_close": 77.15,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "600309",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600406": {
+          "created_at": "2026-09-10T18:06:47.054588+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "4386ac536980d36573540f934d6d067673aaa1921ed4497643395c10d4674958",
+          "reference_close": 22.49,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "600406",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600519": {
+          "created_at": "2026-09-10T18:06:47.054596+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "3cb4cad2767d63e8f0527f345030d7da5f7c5798163c1fb3b42d85dd53070333",
+          "reference_close": 1285.13,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "600519",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600760": {
+          "created_at": "2026-09-10T18:06:47.054604+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "7ff0a27a14d5d0e4496ee0810227dc945eb1ce95936f774862f611f195ca21fc",
+          "reference_close": 48.6,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "600760",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600809": {
+          "created_at": "2026-09-10T18:06:47.054612+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "be40b3cf05ea9a0538d58c059222802adadc2b42b654f286e4d5354407b78247",
+          "reference_close": 116.06,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "600809",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600887": {
+          "created_at": "2026-09-10T18:06:47.054620+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "d6c0da4ccdf41797fc17ed45e1f2c533852a3be9f88197f66ebf24dd6d1ae3f0",
+          "reference_close": 26.54,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "600887",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600900": {
+          "created_at": "2026-09-10T18:06:47.054628+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "47227f3bd41b8b68fdecb1572a1a7b2e68e39c18f536ff506ecccb45a07165d7",
+          "reference_close": 28.09,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "600900",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600930": {
+          "created_at": "2026-09-10T18:06:47.054635+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "7621d8e7d9bc47e895fabef193e2a2ef143a25501f33c7f943318a3d196696af",
+          "reference_close": 3.95,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "600930",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601012": {
+          "created_at": "2026-09-10T18:06:47.054643+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "46924b1544a50865b2aa8de84d47cecb1557d1e76a634c71a07b50fdbea01dc1",
+          "reference_close": 11.7,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "601012",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601088": {
+          "created_at": "2026-09-10T18:06:47.054651+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "cf43441d6518a3c6f06ca636820c57142d684a5da4a7b369a37001a2c0ab3eb9",
+          "reference_close": 47.28,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "601088",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601127": {
+          "created_at": "2026-09-10T18:06:47.054659+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "5af2bd4f1881fd277ae070edd23df875e4566e4a53dfd5bc6c775e53c3e10653",
+          "reference_close": 47.07,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "601127",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601166": {
+          "created_at": "2026-09-10T18:06:47.054667+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "0f576685d434f354f23d5e2ed0542d81f54efdf9b7018bcf5973704c077981d9",
+          "reference_close": 18.24,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "601166",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601211": {
+          "created_at": "2026-09-10T18:06:47.054675+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "022e397411a4b374f2428f501b5cb700ecc6fe98bcaa04516c45ba0b20aa5914",
+          "reference_close": 17.74,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "601211",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601288": {
+          "created_at": "2026-09-10T18:06:47.054683+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "d3ebb6b5757f720a606baef4bd9d3a28c54f67555542f674e4b8771127ba4d16",
+          "reference_close": 6.94,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "601288",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601318": {
+          "created_at": "2026-09-10T18:06:47.054691+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "c837e8acf1c05b35aed86d2e2feae492305f6f4d9d5072249b54dcd13b053ad5",
+          "reference_close": 55.52,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "601318",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601328": {
+          "created_at": "2026-09-10T18:06:47.054700+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "0250bfd238d2fc21369f3ca9c7bf1e4875a9b0ae7155d5b2d7e7151d2f585bdb",
+          "reference_close": 7.44,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "601328",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601398": {
+          "created_at": "2026-09-10T18:06:47.054708+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "10de83eb05ed9cd318f7de1116ff4bf658d7a70efea4644502e0a4ac1e65a7f7",
+          "reference_close": 8.1,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "601398",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601600": {
+          "created_at": "2026-09-10T18:06:47.054716+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "4e77249bbcd4de30c635bd2b72ef8b4019a122fdf97b53681b3d52440afb1291",
+          "reference_close": 9.92,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "601600",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601601": {
+          "created_at": "2026-09-10T18:06:47.054724+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "7ae554a83bb5e1d13a367599fcd806dd8cd6d803c66f45232cc43c4c794e7d30",
+          "reference_close": 33.63,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "601601",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601628": {
+          "created_at": "2026-09-10T18:06:47.054732+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "17feb6bdd254b7ae37c97052240a83d28de9130da0b1912d80bfb27b047ff4eb",
+          "reference_close": 38.28,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "601628",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601658": {
+          "created_at": "2026-09-10T18:06:47.054740+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "91f70567ca9f5736ef9e991f39ba9fdbe8284738db16e2feed6c097ea8e4dc13",
+          "reference_close": 5.46,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "601658",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601668": {
+          "created_at": "2026-09-10T18:06:47.054748+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "a7baec4aff75761e4b9a67318e3721700b7c26e339f84589d36e355b346d3e8a",
+          "reference_close": 4.39,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "601668",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601688": {
+          "created_at": "2026-09-10T18:06:47.054756+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "61462470ebc3c32f4b7960213deb0dd2b537578e1b1f196e055f643a1d635fa6",
+          "reference_close": 19.52,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "601688",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601728": {
+          "created_at": "2026-09-10T18:06:47.054763+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "6ee7806285a636e05e73ae906170b4a9f72176c41e644e2f80b09a7f8ee29297",
+          "reference_close": 6.19,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "601728",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601857": {
+          "created_at": "2026-09-10T18:06:47.054771+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "154faded63e5795200fcc44ea1750f7d36a89c4a130d18c25d7bef88cf95fe12",
+          "reference_close": 11.27,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "601857",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601888": {
+          "created_at": "2026-09-10T18:06:47.054779+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "d78bf477670af4607c2d624225c6ccaa5ae16286dcb1e2d61cce17e21c82b886",
+          "reference_close": 52.58,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "601888",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601899": {
+          "created_at": "2026-09-10T18:06:47.054787+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "7562bfc7c222cef6ed680acfdbfe1e59bc18183ac19eb4cb8a54da773a3a69c8",
+          "reference_close": 34.11,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "601899",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601919": {
+          "created_at": "2026-09-10T18:06:47.054795+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "7217beff5166cd2145b87a403ddf9074344a16d6a3525def888a6417367d0228",
+          "reference_close": 16.38,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "601919",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601988": {
+          "created_at": "2026-09-10T18:06:47.054803+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "39e87e5d02048f197bb9e06e2fa7d33bad999140fa331a41c0a5bcc9e32a59ef",
+          "reference_close": 6.53,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "601988",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "603019": {
+          "created_at": "2026-09-10T18:06:47.054810+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "2123d059eb074fbfd2d1f4235ed089976fbc9f6102b23cf20aaff2e93685bf35",
+          "reference_close": 82.35,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "603019",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "603259": {
+          "created_at": "2026-09-10T18:06:47.054818+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "168eb819302244424986b7aa62c2fc8f4adb32cc5dcf65c34a9f54eb803c4e0e",
+          "reference_close": 154.5,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "603259",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "603501": {
+          "created_at": "2026-09-10T18:06:47.054826+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "c167afbb49dd249f9cc6d23522bec09bf19b0eac9afdd2ebc2340376121b89c9",
+          "reference_close": 78.93,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "603501",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "603986": {
+          "created_at": "2026-09-10T18:06:47.054834+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "b396a826f7ce87cd8acd26d420e537b5ef8ae119bed25d578b6772adfbb33ecd",
+          "reference_close": 380.64,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "603986",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "603993": {
+          "created_at": "2026-09-10T18:06:47.054842+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "beaa37ac887245b4d59cb229a13cad86e161b509fb9aabb7c876c97d4764cf0c",
+          "reference_close": 19.01,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "603993",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "688008": {
+          "created_at": "2026-09-10T18:06:47.054850+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "1afc93553b95f69cb8ae048f2d7bce8e360ed2643fbf43e76e8b5e83ed450c19",
+          "reference_close": 195.33,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "688008",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "688012": {
+          "created_at": "2026-09-10T18:06:47.054858+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "f5476c7470b86a5bab5612c33abef4921ec7a51518ae7a4fbfb2cd2a30d26d93",
+          "reference_close": 334.19,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "688012",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "688041": {
+          "created_at": "2026-09-10T18:06:47.054866+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "01ebd84b4d2a0cf3123b0bfb17f970d11798f9189d6335181427f00d196188dc",
+          "reference_close": 232.37,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "688041",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "688111": {
+          "created_at": "2026-09-10T18:06:47.054874+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "b19d5b60c5f641f8aa158b19a31f08162888c2ec51583c28a6d3e7ccd53279a2",
+          "reference_close": 227.72,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "688111",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "688256": {
+          "created_at": "2026-09-10T18:06:47.054882+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "db82d6cbc31776ec9d80d2aca8c01a6ce27366734a6e92e05695fd4fe9b7a4b2",
+          "reference_close": 1043.84,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "688256",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "688981": {
+          "created_at": "2026-09-10T18:06:47.054889+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "fafde4c27e17d603d6b0bf9a6f676f6aee63d15b5a22ea52821b760de0fc22f7",
+          "reference_close": 119.18,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "688981",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "IC2609": {
+          "created_at": "2026-09-10T18:06:47.054940+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "bf7c9acd806abf77ba4c616f61f48f71b9635332b52724907237b46a07c111d1",
+          "reference_close": 7705.8,
+          "status": "pending",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "IC2609",
+          "take_profit_pct": 0.06,
+          "target_quantity": -1
+        },
+        "IC2612": {
+          "created_at": "2026-09-10T18:06:47.054948+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "c1797b71e01bb5dc5bd9eda9920400216a16a87b063d2441c13ac34f45f6e8a0",
+          "reference_close": 7491.2,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "IC2612",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "IF2609": {
+          "created_at": "2026-09-10T18:06:47.054898+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "c176bd6c57a79b1c5626ebe9a4b66f2dbf9ba273cd484ea2492c35db5219f567",
+          "reference_close": 4542.2,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "IF2609",
+          "take_profit_pct": 0.06,
+          "target_quantity": -1.0
+        },
+        "IF2612": {
+          "created_at": "2026-09-10T18:06:47.054916+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "3afc78b28bc38f4bcc45e033264ea7f629b7686f727956ac6cc173dd340477dd",
+          "reference_close": 4452.0,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "IF2612",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "IH2609": {
+          "created_at": "2026-09-10T18:06:47.054924+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "6300038175258157dcd17927989bbf14dd06bfb965cc60dbda3eb02983283979",
+          "reference_close": 2897.0,
+          "status": "pending",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "IH2609",
+          "take_profit_pct": 0.06,
+          "target_quantity": 2
+        },
+        "IH2612": {
+          "created_at": "2026-09-10T18:06:47.054932+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "383eb24d7c33d1ed24a2b3e571763c2d1c9f408e88880805de888b50f32b5a5f",
+          "reference_close": 2831.0,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "IH2612",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "IM2609": {
+          "created_at": "2026-09-10T18:06:47.054956+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "662c51e557bb06a6131e2374ca22136bd76e6730a2f838972a8a14339ef90e9e",
+          "reference_close": 7574.0,
+          "status": "pending",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "IM2609",
+          "take_profit_pct": 0.06,
+          "target_quantity": -1
+        },
+        "IM2612": {
+          "created_at": "2026-09-10T18:06:47.054964+08:00",
+          "decision": "liquidity_top5_sma20_control",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "1b82fcb1f54cc24abe10fc6dee98fed54e3567e604f6205deb5151fb64fdaf2d",
+          "reference_close": 7340.2,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "baseline",
+          "symbol": "IM2612",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        }
+      },
+      "candidate": {
+        "600028": {
+          "created_at": "2026-09-10T18:06:47.054973+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "f71becc6f624609d89acc9486ce21ede23a5b6ad9db7b023bdfa7c562a484bc8",
+          "reference_close": 5.56,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "600028",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600030": {
+          "created_at": "2026-09-10T18:06:47.054982+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "98d9d4f3f9762f1a52fadcb25c882b91c7872190a12e905fcd65afc7d448016a",
+          "reference_close": 27.6,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "600030",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600031": {
+          "created_at": "2026-09-10T18:06:47.054990+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "799ebfa92db6034535b4b1a5fcb75e3e455adcc5d26db80ef47ea417cf0fbcd7",
+          "reference_close": 20.01,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "600031",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600036": {
+          "created_at": "2026-09-10T18:06:47.054998+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "f6f769ea063a133f2f7d9f68643e1313f3a366c5646cf257f6d2ecddec79cc02",
+          "reference_close": 41.57,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "600036",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600050": {
+          "created_at": "2026-09-10T18:06:47.055006+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "dcbfd27f236740ff300d3564717415d84589aa3a22435a9bbe643b470b5da011",
+          "reference_close": 4.2,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "600050",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600089": {
+          "created_at": "2026-09-10T18:06:47.055014+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "e6426009e920891182d63317bd3bcf12f82ec825c525cf94dbbfd3b6e463fe62",
+          "reference_close": 19.01,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "600089",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600111": {
+          "created_at": "2026-09-10T18:06:47.055022+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "a67e6ff7c8f1d7197cd999cf9a49a94154621a977d2e2b4ccaef6f017fbaa21c",
+          "reference_close": 38.18,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "600111",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600150": {
+          "created_at": "2026-09-10T18:06:47.055030+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "57ff57c7be5d4f1c2cc1780c58d7fd1e6863226506f7fcd0c8e60fca7fb3c63c",
+          "reference_close": 40.82,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "600150",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600183": {
+          "created_at": "2026-09-10T18:06:47.055038+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "abe05ea5a8c55368a0eb75b354552914311733eef869ae3c0ed18c9af30d4a34",
+          "reference_close": 146.96,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "600183",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600276": {
+          "created_at": "2026-09-10T18:06:47.055045+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "9710c46b2c3621717bf087997b6b09d64c934642716e66f59278b47224ba0378",
+          "reference_close": 42.93,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "600276",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600309": {
+          "created_at": "2026-09-10T18:06:47.055053+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "cfc04956a0649407d6bac28962d40e4bd39d277a38a99bee32280b93082bcf23",
+          "reference_close": 77.15,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "600309",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600406": {
+          "created_at": "2026-09-10T18:06:47.055061+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "0c3f60ce9bba2072ffbd176a1ef24969263b326f2aae3576c66348e7d8a471d3",
+          "reference_close": 22.49,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "600406",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600519": {
+          "created_at": "2026-09-10T18:06:47.055069+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "08329106ccd3d0e18163b45fbe569a24c0505c9c883b0d929711fa5d8c9d759a",
+          "reference_close": 1285.13,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "600519",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600760": {
+          "created_at": "2026-09-10T18:06:47.055076+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "ec304c0c49d5f13753cb0889a4f89c465fc650ab47c7d785454320dda8f9a17e",
+          "reference_close": 48.6,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "600760",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600809": {
+          "created_at": "2026-09-10T18:06:47.055084+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "17b3b6dbc7003d9d0f824c3333fc34f57a93a21f26a8cde8cf707ad253c0a396",
+          "reference_close": 116.06,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "600809",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600887": {
+          "created_at": "2026-09-10T18:06:47.055092+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "6a6aff66a31d136f70ed9c66fb660b2283ddfafd9782c29eecefd424144196ad",
+          "reference_close": 26.54,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "600887",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600900": {
+          "created_at": "2026-09-10T18:06:47.055099+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "2b9d7f546b6f3ace2153b0f5de4432df6e6b2a0dc2ef9fc3883969276cde8626",
+          "reference_close": 28.09,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "600900",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "600930": {
+          "created_at": "2026-09-10T18:06:47.055108+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "30b00fc1ae7071a25abcd10b161d1f8560802cf1dc6718844fc00acbe2b7275b",
+          "reference_close": 3.95,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "600930",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601012": {
+          "created_at": "2026-09-10T18:06:47.055116+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "05a7d5bc26996590e2f3771f948a9fd7b2309feac0fc85b916c7e58f7622a3dd",
+          "reference_close": 11.7,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "601012",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601088": {
+          "created_at": "2026-09-10T18:06:47.055125+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "a2d4f286253ec5e290d33bccbb3471d9359eb429f0bdabcee78ed0d4a8068993",
+          "reference_close": 47.28,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "601088",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601127": {
+          "created_at": "2026-09-10T18:06:47.055133+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "b181192588f1308c7c2e772f9c722864088618e7ff20da2e026ed7cec213d670",
+          "reference_close": 47.07,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "601127",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601166": {
+          "created_at": "2026-09-10T18:06:47.055141+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "89a7664e7a269ad884de18e13bebdeaa6bd28036bbf99777a088372ce190a09a",
+          "reference_close": 18.24,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "601166",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601211": {
+          "created_at": "2026-09-10T18:06:47.055149+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "ff8440ded01c0520bf17b82fa10916cb4c1f66af710e23783db2fea871aac8c0",
+          "reference_close": 17.74,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "601211",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601288": {
+          "created_at": "2026-09-10T18:06:47.055158+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "45e350f3090057148be79ee2eb5204e1a8e2cb6f4f4f3d39e386d8e4a47efa40",
+          "reference_close": 6.94,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "601288",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601318": {
+          "created_at": "2026-09-10T18:06:47.055167+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "ae9ebf53c8a05a9e6115f4afa0db01dff6a06b4c248af2bc012531a4f132722a",
+          "reference_close": 55.52,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "601318",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601328": {
+          "created_at": "2026-09-10T18:06:47.055175+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "b3f710f023550d553b5983e1e7d095903d7c3199c983ef7bff5764aa91a5f200",
+          "reference_close": 7.44,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "601328",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601398": {
+          "created_at": "2026-09-10T18:06:47.055183+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "f6ab9537713faa79262934c5d6d3447e70744432acc77457ee072e469612251e",
+          "reference_close": 8.1,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "601398",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601600": {
+          "created_at": "2026-09-10T18:06:47.055192+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "8111beeab5db6832bcd39766dbf3db84e1ea894039a06698dff1035a94aa33bf",
+          "reference_close": 9.92,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "601600",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601601": {
+          "created_at": "2026-09-10T18:06:47.055200+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "618ec6860cb16c80c661699e829792f1401be8db60665039c1a57007a56b6eee",
+          "reference_close": 33.63,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "601601",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601628": {
+          "created_at": "2026-09-10T18:06:47.055208+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "7ab322459d47a91711dfd624123a4f3dc12952197bda4c18266fd5066fab2d06",
+          "reference_close": 38.28,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "601628",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601658": {
+          "created_at": "2026-09-10T18:06:47.055216+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "eb9117419e2f10decfc7e46b158653c6ee005cfedeff0bd674ee13c0753466a2",
+          "reference_close": 5.46,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "601658",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601668": {
+          "created_at": "2026-09-10T18:06:47.055224+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "9a10ebc72da2d3dbce8cb7026477cd6c3a49573e1fed0536e4cbe046026aad03",
+          "reference_close": 4.39,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "601668",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601688": {
+          "created_at": "2026-09-10T18:06:47.055232+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "f279f6250d027a45b6efc3666b06a9fe4cc889321bf7c5050a7cf169b6216b98",
+          "reference_close": 19.52,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "601688",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601728": {
+          "created_at": "2026-09-10T18:06:47.055240+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "57bbc0c61a0969bb5125ee1425ff43b053d9bac25b2f9ce55f80259b0934d977",
+          "reference_close": 6.19,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "601728",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601857": {
+          "created_at": "2026-09-10T18:06:47.055247+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "493fd87c7020b12b303f7becb83f1cb8223914ab690294e579d60b0d89c088b6",
+          "reference_close": 11.27,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "601857",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601888": {
+          "created_at": "2026-09-10T18:06:47.055255+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "4a5a3824b0bd36b8483868bab1038c5f0a095a4dfb51ebd536bcbbe99eb725b1",
+          "reference_close": 52.58,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "601888",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601899": {
+          "created_at": "2026-09-10T18:06:47.055263+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "4121dcd91b4dcfa31b2430ea531032a58c524ca20f8b1b2905051253c7e0fb89",
+          "reference_close": 34.11,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "601899",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601919": {
+          "created_at": "2026-09-10T18:06:47.055271+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "6554c11723bfcf550bf5c9f353091c1f18ea0441ec69a866b41a2989def036ec",
+          "reference_close": 16.38,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "601919",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "601988": {
+          "created_at": "2026-09-10T18:06:47.055278+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "ca14b6df6b695dd06860b44fcc15cc7fa090945d603756c6b5640ecee153bb1d",
+          "reference_close": 6.53,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "601988",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "603019": {
+          "created_at": "2026-09-10T18:06:47.055286+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "b823bb17ff6a0422808447847d409e9458f52e858b5ae9e0e12a7711f3b2252d",
+          "reference_close": 82.35,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "603019",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "603259": {
+          "created_at": "2026-09-10T18:06:47.055294+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "bba926f3b6b6f20460e01f52d747718b2a462702b0b621bb13ea3cb3c0dc325e",
+          "reference_close": 154.5,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "603259",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "603501": {
+          "created_at": "2026-09-10T18:06:47.055302+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "f70154c7c60052cc7627543605d7de5f73d602bf580ae1d32f3c5f5f7f01f0e0",
+          "reference_close": 78.93,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "603501",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "603986": {
+          "created_at": "2026-09-10T18:06:47.055310+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "93ed052d62b164074c534a054ae257947156f026e6cf4b9bc908ff1c086ffff6",
+          "reference_close": 380.64,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "603986",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "603993": {
+          "created_at": "2026-09-10T18:06:47.055318+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "0d4c3b5e506880048529e02df0a9cd009fd4d609eb494340efebf74903cbad19",
+          "reference_close": 19.01,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "603993",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "688008": {
+          "created_at": "2026-09-10T18:06:47.055326+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "676b164c5ed0be2d9c7326b20c67d94bebb62a34bc0e9dab2584ccab7554d422",
+          "reference_close": 195.33,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "688008",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "688012": {
+          "created_at": "2026-09-10T18:06:47.055334+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "4de88a1e9c9411834ce755046633a06ae7627193f9d45dbe153cea14c0fddd80",
+          "reference_close": 334.19,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "688012",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "688041": {
+          "created_at": "2026-09-10T18:06:47.055342+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "3beb3bf1c84d08c1b0b6fef58c14a81c31b4422873983f02514b7a0127b94ce2",
+          "reference_close": 232.37,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "688041",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "688111": {
+          "created_at": "2026-09-10T18:06:47.055349+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "6557506e4a6d0f493876c35bf230e98262a810f2ae95497b7de4db0541a70bed",
+          "reference_close": 227.72,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "688111",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "688256": {
+          "created_at": "2026-09-10T18:06:47.055358+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "d99b31556e87fc0ddfb7e3d5c2ab4a3f9bbf8c1acb731d36a1b51099afb7b5c1",
+          "reference_close": 1043.84,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "688256",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "688981": {
+          "created_at": "2026-09-10T18:06:47.055365+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "f112f68f344e04bda103baed6fae0ffb983777dcf11778ab6cfd0a818c4b686c",
+          "reference_close": 119.18,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "688981",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "IC2609": {
+          "created_at": "2026-09-10T18:06:47.055404+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "728413f9e18ddd81dca5eed6fb5e9ac6d19f2fe818c4303613ead2a527d66f6f",
+          "reference_close": 7705.8,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "IC2609",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "IC2612": {
+          "created_at": "2026-09-10T18:06:47.055412+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "0e52bb4c4f4e870fc54bc2b7fa764d9c22c39b93e1454da40d2ef2d0e561b177",
+          "reference_close": 7491.2,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "IC2612",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "IF2609": {
+          "created_at": "2026-09-10T18:06:47.055373+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "e2cfb615b3af1845599b20dfbdc7a8e827f277c49068b9a4b677e77b88128afa",
+          "reference_close": 4542.2,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "IF2609",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "IF2612": {
+          "created_at": "2026-09-10T18:06:47.055381+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "98066550b074b83ca8c85ae0ea3c72b285c94393d3f97085aba3cd7567f75216",
+          "reference_close": 4452.0,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "IF2612",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "IH2609": {
+          "created_at": "2026-09-10T18:06:47.055388+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "70500060943a36792984828267628d862eaee017b553074defd5d6e9c9cc58d6",
+          "reference_close": 2897.0,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "IH2609",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "IH2612": {
+          "created_at": "2026-09-10T18:06:47.055396+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "97275cdc3465f42eba8766d496b6f3e9fa3077e630f9e0d148beb954aac9ff18",
+          "reference_close": 2831.0,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "IH2612",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "IM2609": {
+          "created_at": "2026-09-10T18:06:47.055420+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "e9e1b83421ecc10dfe10d8ab0872bde211fd16aa86d6c1ee403bba40e69d22fb",
+          "reference_close": 7574.0,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "IM2609",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        },
+        "IM2612": {
+          "created_at": "2026-09-10T18:06:47.055427+08:00",
+          "decision": "native_project_engine",
+          "known_at": "2026-09-10T15:00:00+08:00",
+          "max_hold_days": 5,
+          "order_id": "9f9ceebc496724a8c025e097d05129536f781c811e9ede9afcabb30885a8752c",
+          "reference_close": 7340.2,
+          "status": "no_change",
+          "stop_loss_pct": 0.03,
+          "strategy": "candidate",
+          "symbol": "IM2612",
+          "take_profit_pct": 0.06,
+          "target_quantity": 0
+        }
+      }
+    },
+    "peak_equity": {
+      "baseline": 40003403.38,
+      "candidate": 40000000.0
+    },
+    "states": {
+      "baseline": {
+        "600028": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600030": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600031": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600036": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600050": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600089": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600111": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600150": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600183": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600276": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600309": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600406": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600519": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600760": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600809": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600887": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600900": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600930": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601012": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601088": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601127": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601166": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601211": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601288": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601318": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601328": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601398": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601600": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601601": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601628": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601658": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601668": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601688": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601728": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601857": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601888": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601899": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601919": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601988": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "603019": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "603259": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "603501": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "603986": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "603993": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "688008": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "688012": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "688041": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "688111": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "688256": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "688981": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "IC2609": {
+          "average_price": 0.0,
+          "cash": 2500000.0,
+          "entry_fees": 0.0,
+          "futures": true,
+          "multiplier": 200,
+          "quantity": 0.0
+        },
+        "IC2612": {
+          "average_price": 0.0,
+          "cash": 2500000.0,
+          "entry_fees": 0.0,
+          "futures": true,
+          "multiplier": 200,
+          "quantity": 0.0
+        },
+        "IF2609": {
+          "average_price": 4554.0,
+          "cash": 2499863.38,
+          "entry_fees": 136.62,
+          "futures": true,
+          "multiplier": 300,
+          "quantity": -1.0
+        },
+        "IF2612": {
+          "average_price": 0.0,
+          "cash": 2500000.0,
+          "entry_fees": 0.0,
+          "futures": true,
+          "multiplier": 300,
+          "quantity": 0.0
+        },
+        "IH2609": {
+          "average_price": 0.0,
+          "cash": 2500000.0,
+          "entry_fees": 0.0,
+          "futures": true,
+          "multiplier": 300,
+          "quantity": 0.0
+        },
+        "IH2612": {
+          "average_price": 0.0,
+          "cash": 2500000.0,
+          "entry_fees": 0.0,
+          "futures": true,
+          "multiplier": 300,
+          "quantity": 0.0
+        },
+        "IM2609": {
+          "average_price": 0.0,
+          "cash": 2500000.0,
+          "entry_fees": 0.0,
+          "futures": true,
+          "multiplier": 200,
+          "quantity": 0.0
+        },
+        "IM2612": {
+          "average_price": 0.0,
+          "cash": 2500000.0,
+          "entry_fees": 0.0,
+          "futures": true,
+          "multiplier": 200,
+          "quantity": 0.0
+        }
+      },
+      "candidate": {
+        "600028": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600030": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600031": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600036": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600050": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600089": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600111": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600150": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600183": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600276": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600309": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600406": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600519": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600760": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600809": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600887": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600900": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "600930": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601012": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601088": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601127": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601166": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601211": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601288": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601318": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601328": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601398": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601600": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601601": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601628": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601658": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601668": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601688": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601728": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601857": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601888": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601899": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601919": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "601988": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "603019": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "603259": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "603501": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "603986": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "603993": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "688008": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "688012": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "688041": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "688111": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "688256": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "688981": {
+          "average_price": 0.0,
+          "cash": 400000.0,
+          "entry_fees": 0.0,
+          "futures": false,
+          "multiplier": 1,
+          "quantity": 0.0
+        },
+        "IC2609": {
+          "average_price": 0.0,
+          "cash": 2500000.0,
+          "entry_fees": 0.0,
+          "futures": true,
+          "multiplier": 200,
+          "quantity": 0.0
+        },
+        "IC2612": {
+          "average_price": 0.0,
+          "cash": 2500000.0,
+          "entry_fees": 0.0,
+          "futures": true,
+          "multiplier": 200,
+          "quantity": 0.0
+        },
+        "IF2609": {
+          "average_price": 0.0,
+          "cash": 2500000.0,
+          "entry_fees": 0.0,
+          "futures": true,
+          "multiplier": 300,
+          "quantity": 0.0
+        },
+        "IF2612": {
+          "average_price": 0.0,
+          "cash": 2500000.0,
+          "entry_fees": 0.0,
+          "futures": true,
+          "multiplier": 300,
+          "quantity": 0.0
+        },
+        "IH2609": {
+          "average_price": 0.0,
+          "cash": 2500000.0,
+          "entry_fees": 0.0,
+          "futures": true,
+          "multiplier": 300,
+          "quantity": 0.0
+        },
+        "IH2612": {
+          "average_price": 0.0,
+          "cash": 2500000.0,
+          "entry_fees": 0.0,
+          "futures": true,
+          "multiplier": 300,
+          "quantity": 0.0
+        },
+        "IM2609": {
+          "average_price": 0.0,
+          "cash": 2500000.0,
+          "entry_fees": 0.0,
+          "futures": true,
+          "multiplier": 200,
+          "quantity": 0.0
+        },
+        "IM2612": {
+          "average_price": 0.0,
+          "cash": 2500000.0,
+          "entry_fees": 0.0,
+          "futures": true,
+          "multiplier": 200,
+          "quantity": 0.0
+        }
+      }
+    }
+  }
+}
