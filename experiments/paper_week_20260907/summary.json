@@ -1,9 +1,9 @@
 {
   "experiment": "paper_week_20260907_v2",
-  "as_of": "2026-09-11T18:04:12.787720+08:00",
+  "as_of": "2026-09-12T02:02:57.302009+08:00",
   "start_at": "2026-09-07T09:00:00+08:00",
   "end_at": "2026-09-12T02:00:00+08:00",
-  "status": "in_progress",
+  "status": "finalized",
   "actual_start_at": "2026-09-07T13:46:24.265545+08:00",
   "observed_quote_days": [
     "2026-09-08",
@@ -76,7 +76,7 @@
         "known_at": "2026-09-11",
         "order_id": "604bbfcd10b3bb456f02764a2897daa0796b154d0dee7b53b3049a0d780d8cdd",
         "reference_close": 54.83,
-        "status": "pending",
+        "status": "expired_at_cutoff",
         "strategy": "candidate",
         "symbol": "601318",
         "target_quantity": 0
@@ -232,7 +232,7 @@
       "fill_count": 7
     }
   },
-  "events": 10,
+  "events": 11,
   "data_failures": 0,
   "repeatable_advantage_proven": false,
   "notes": [

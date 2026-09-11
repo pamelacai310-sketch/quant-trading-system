@@ -1,9 +1,9 @@
 {
   "experiment": "project_paper_week_20260907_v1",
-  "as_of": "2026-09-11T18:04:03.300640+08:00",
+  "as_of": "2026-09-12T02:02:53.551178+08:00",
   "start_at": "2026-09-07T09:00:00+08:00",
   "end_at": "2026-09-12T02:00:00+08:00",
-  "status": "in_progress",
+  "status": "finalized",
   "actual_start_at": "2026-09-07T13:46:19.416303+08:00",
   "observed_quote_days": [
     "2026-09-08",
@@ -720,7 +720,7 @@
         "max_hold_days": 5,
         "order_id": "c27735c04cda667b13cc430d78f4c982234fe3e68d08d0cbb466485fff39be2d",
         "reference_close": 7569.0,
-        "status": "pending",
+        "status": "expired_at_cutoff",
         "stop_loss_pct": 0.03,
         "strategy": "baseline",
         "symbol": "IC2609",
@@ -776,7 +776,7 @@
         "max_hold_days": 5,
         "order_id": "959d57b0194f8c4eb40b1e60d1df33eba9cd056fc2d3eb53dc037b4e37396a6a",
         "reference_close": 2867.0,
-        "status": "pending",
+        "status": "expired_at_cutoff",
         "stop_loss_pct": 0.03,
         "strategy": "baseline",
         "symbol": "IH2609",
@@ -804,7 +804,7 @@
         "max_hold_days": 5,
         "order_id": "d6f2d2cb64bfd606a01b8f6310d30e72c9f12b78dec79082813e55202f1aa20d",
         "reference_close": 7415.2,
-        "status": "pending",
+        "status": "expired_at_cutoff",
         "stop_loss_pct": 0.03,
         "strategy": "baseline",
         "symbol": "IM2609",
@@ -1687,7 +1687,7 @@
       "fill_count": 0
     }
   },
-  "events": 10,
+  "events": 11,
   "data_failures": 1,
   "selection_audit": {
     "candidates": [
