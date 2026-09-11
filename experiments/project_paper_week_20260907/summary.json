@@ -1,6 +1,6 @@
 {
   "experiment": "project_paper_week_20260907_v1",
-  "as_of": "2026-09-10T18:06:48.779443+08:00",
+  "as_of": "2026-09-11T13:38:23.029878+08:00",
   "start_at": "2026-09-07T09:00:00+08:00",
   "end_at": "2026-09-12T02:00:00+08:00",
   "status": "in_progress",
@@ -8,7 +8,8 @@
   "observed_quote_days": [
     "2026-09-08",
     "2026-09-09",
-    "2026-09-10"
+    "2026-09-10",
+    "2026-09-11"
   ],
   "pending_orders": {
     "baseline": {
@@ -713,18 +714,19 @@
         "target_quantity": 0
       },
       "IC2609": {
-        "created_at": "2026-09-10T18:06:47.054940+08:00",
+        "created_at": "2026-09-11T13:38:20.888103+08:00",
         "decision": "liquidity_top5_sma20_control",
         "known_at": "2026-09-10T15:00:00+08:00",
         "max_hold_days": 5,
-        "order_id": "bf7c9acd806abf77ba4c616f61f48f71b9635332b52724907237b46a07c111d1",
+        "order_id": "58b888531906c7a9c780d546729e5a373c1a6ac0354576858396de9543ab1e4d",
+        "reason": "final_session_exit",
         "reference_close": 7705.8,
         "status": "pending",
         "stop_loss_pct": 0.03,
         "strategy": "baseline",
         "symbol": "IC2609",
         "take_profit_pct": 0.06,
-        "target_quantity": -1
+        "target_quantity": 0
       },
       "IC2612": {
         "created_at": "2026-09-10T18:06:47.054948+08:00",
@@ -741,18 +743,19 @@
         "target_quantity": 0
       },
       "IF2609": {
-        "created_at": "2026-09-10T18:06:47.054898+08:00",
+        "created_at": "2026-09-11T13:38:20.888103+08:00",
         "decision": "liquidity_top5_sma20_control",
         "known_at": "2026-09-10T15:00:00+08:00",
         "max_hold_days": 5,
-        "order_id": "c176bd6c57a79b1c5626ebe9a4b66f2dbf9ba273cd484ea2492c35db5219f567",
+        "order_id": "b9ac3945d8e329c455dd83d8d27320f3641de9f4f523199a19cd46aa5be4a9ea",
+        "reason": "final_session_exit",
         "reference_close": 4542.2,
-        "status": "no_change",
+        "status": "pending",
         "stop_loss_pct": 0.03,
         "strategy": "baseline",
         "symbol": "IF2609",
         "take_profit_pct": 0.06,
-        "target_quantity": -1.0
+        "target_quantity": 0
       },
       "IF2612": {
         "created_at": "2026-09-10T18:06:47.054916+08:00",
@@ -769,18 +772,19 @@
         "target_quantity": 0
       },
       "IH2609": {
-        "created_at": "2026-09-10T18:06:47.054924+08:00",
+        "created_at": "2026-09-11T13:38:20.888103+08:00",
         "decision": "liquidity_top5_sma20_control",
         "known_at": "2026-09-10T15:00:00+08:00",
         "max_hold_days": 5,
-        "order_id": "6300038175258157dcd17927989bbf14dd06bfb965cc60dbda3eb02983283979",
+        "order_id": "451b913c06ad7c07d53a842840f3fc107a253b45da2ce44b0bd35713bb6dfd99",
+        "reason": "final_session_exit",
         "reference_close": 2897.0,
         "status": "pending",
         "stop_loss_pct": 0.03,
         "strategy": "baseline",
         "symbol": "IH2609",
         "take_profit_pct": 0.06,
-        "target_quantity": 2
+        "target_quantity": 0
       },
       "IH2612": {
         "created_at": "2026-09-10T18:06:47.054932+08:00",
@@ -797,18 +801,19 @@
         "target_quantity": 0
       },
       "IM2609": {
-        "created_at": "2026-09-10T18:06:47.054956+08:00",
+        "created_at": "2026-09-11T13:38:20.888103+08:00",
         "decision": "liquidity_top5_sma20_control",
         "known_at": "2026-09-10T15:00:00+08:00",
         "max_hold_days": 5,
-        "order_id": "662c51e557bb06a6131e2374ca22136bd76e6730a2f838972a8a14339ef90e9e",
+        "order_id": "e4d6e05dc9c9e95972be057ebe3a20107f1c06dcadb857a86d10de820a63754e",
+        "reason": "final_session_exit",
         "reference_close": 7574.0,
         "status": "pending",
         "stop_loss_pct": 0.03,
         "strategy": "baseline",
         "symbol": "IM2609",
         "take_profit_pct": 0.06,
-        "target_quantity": -1
+        "target_quantity": 0
       },
       "IM2612": {
         "created_at": "2026-09-10T18:06:47.054964+08:00",
@@ -1643,12 +1648,12 @@
   "model": "SelfIteratingCausalEngine.run_learning_cycle",
   "accounts": {
     "baseline": {
-      "gross_exposure": 0.0340665,
-      "net_profit_at_double_recorded_cost": 2546.759999995341,
+      "gross_exposure": 0.033756,
+      "net_profit_at_double_recorded_cost": 14966.75999999534,
       "starting_cash": 40000000.0,
-      "ending_nav": 40003403.379999995,
-      "net_profit": 3403.3799999952316,
-      "net_return": 8.508449999977685e-05,
+      "ending_nav": 40015823.379999995,
+      "net_profit": 15823.379999995232,
+      "net_return": 0.0003955844999998792,
       "closed_trade_count": 0,
       "win_rate": null,
       "payoff_ratio": null,
@@ -1663,9 +1668,8 @@
           "multiplier": 300,
           "quantity": -1.0,
           "mark": {
-            "price": 4542.2,
-            "quote_time": "2026-09-10T15:00:00+08:00",
-            "source": "daily_close_valuation_only"
+            "price": 4500.8,
+            "quote_time": "2026-09-11T13:38:05+08:00"
           }
         }
       ],
@@ -1686,7 +1690,7 @@
       "fill_count": 0
     }
   },
-  "events": 8,
+  "events": 9,
   "data_failures": 1,
   "selection_audit": {
     "candidates": [
