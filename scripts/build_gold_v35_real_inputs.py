@@ -13,7 +13,7 @@ import numpy as np
 ROOT=Path(__file__).resolve().parents[1]
 END=pd.Timestamp("2026-10-30")
 BEGIN=pd.Timestamp("2024-01-01")
-REQ_HEADERS={"User-Agent":"Mozilla/5.0 (compatible; GoldResearchAudit/1.0)","Accept":"*/*"}
+REQ_HEADERS={"User-Agent":"Mozilla/5.0 (compatible; ResearchDataAudit/1.0)","Accept":"*/*"}
 EM_PARAMS={"klt":"101","fqt":"1","lmt":"10000","end":"20500000","iscca":"1",
            "fields1":"f1,f2,f3,f4,f5,f6,f7,f8",
            "fields2":"f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64",
@@ -47,7 +47,12 @@ def yahoo_dxy()->pd.DataFrame:
 
 def fred_tips()->pd.DataFrame:
     url="https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFII10&cosd=2024-01-01&coed=2026-10-30"
-    f=pd.read_csv(io.BytesIO(get(url)))
+    try:
+        payload=get(url,tries=2)
+    except Exception as ex:
+        print("FRED_PRIMARY_FAILED",type(ex).__name__,str(ex)[:150])
+        payload=get("https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFII10",tries=2)
+    f=pd.read_csv(io.BytesIO(payload))
     datecol=f.columns[0]
     f=f.rename(columns={datecol:'date','DFII10':'tips10_pp'})
     f['date']=pd.to_datetime(f['date'])
