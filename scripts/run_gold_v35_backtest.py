@@ -5,7 +5,9 @@ import json
 from pathlib import Path
 import numpy as np
 import pandas as pd
-from quant_trade_system.gold_v35_filter import backtest
+import sys
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'quant_trade_system'))
+from gold_v35_filter import backtest
 
 def summarize_by_year(frame):
     result={}
