@@ -64,3 +64,25 @@ Compare **same baseline** (next-session AU long if previous observable DFII10 an
 This is an **ablation on the simple falling-real-yield / falling-DXY long signal**, not a claim that the whole news→JEV→Codex→AU2612 system is already improved. To measure whole-system incremental value, also run shadow mode against timestamped historical V3.4 signals with otherwise identical execution and risk controls.
 
 This PR neither calls JEV nor contains secret keys. JEV can annotate news context but the P0 veto itself should be deterministic, testable code.
+
+
+## 调用示例：未来每次黄金预测的P0门控
+
+```python
+from quant_trade_system.gold_v35_filter import (
+    latest_p0_status, enforce_new_long_target, constrain_rate_upside_increment
+)
+
+# historical_market 为截止预测时点已知的 COMEX、TIPS、DXY 数据。
+# published_etf / published_cot 都必须含真实公开时刻 available_at。
+guard = latest_p0_status(historical_market, published_etf, published_cot)
+proposed_long_probability_delta = constrain_rate_upside_increment(
+    delta_probability_attributable_to_lower_real_yields, guard
+)
+approved_position, reason = enforce_new_long_target(
+    current_position, strategy_proposed_position, guard
+)
+# 上层引擎仍需将概率重新规范化、记录reason并实施其它风控。
+```
+
+**注意**：这里提供调用API，不代表已自动连接所有现有策略或实时执行引擎；需显式从预测/下单入口接线。缺少ETF/CFTC数据时保守地禁止仅凭实际利率下降新增多头。价格/资金流解锁并不生成买入信号。
