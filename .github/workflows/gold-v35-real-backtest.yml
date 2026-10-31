@@ -48,6 +48,8 @@ jobs:
           test ! -f results/gold_v35_signals_AU_MAIN.csv || git add -f results/gold_v35_signals_AU_MAIN.csv
           if ! git diff --cached --quiet; then
             git commit -m "research: verified 2024-2026 gold V3.5 inputs and real backtest results"
+            git fetch origin feat/gold-v35-p0-selling-pressure-20261031
+            git rebase origin/feat/gold-v35-p0-selling-pressure-20261031
             git push origin HEAD:feat/gold-v35-p0-selling-pressure-20261031
           fi
           # Never commit GLD proprietary sponsor archive or daily holdings.
