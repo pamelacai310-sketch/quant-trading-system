@@ -152,3 +152,14 @@ def latest_p0_status(history:pd.DataFrame,etf:pd.DataFrame,cot:pd.DataFrame,cfg:
             'selling_pressure_exhausted':bool(row['selling_pressure_exhausted']),
             'positive_flow_new':bool(row['positive_flow']),
             'policy':'VETO_LONG_ADDITIONS_ONLY; release is not a buy signal'}
+
+
+def enforce_new_long_target(current_position:float, proposed_position:float, guard:dict)->tuple[float,str]:
+    """P0 preserves exits and existing longs; vetoes only incremental long exposure."""
+    if guard.get('p0_block_new_long',True) and proposed_position>max(0.,current_position):
+        return max(0.,current_position),'P0_VETO_NEW_LONG_ADD'
+    return proposed_position,'ALLOWED'
+
+def constrain_rate_upside_increment(delta_probability:float, guard:dict)->float:
+    """Prevent rate-only bullish scenario probability upgrades while P0 blocks."""
+    return min(delta_probability,0.) if guard.get('p0_block_new_long',True) else delta_probability
