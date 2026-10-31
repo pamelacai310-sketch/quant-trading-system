@@ -23,7 +23,10 @@ jobs:
             "Yahoo DXY":"https://query1.finance.yahoo.com/v8/finance/chart/DX-Y.NYB?period1=1704067200&period2=1793404800&interval=1d",
             "FRED TIPS":"https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFII10&cosd=2024-01-01&coed=2026-10-30",
             "Stooq GC":"https://stooq.com/q/d/l/?s=gc.f&i=d&d1=20240101&d2=20261030",
-            "CFTC 2026":"https://www.cftc.gov/files/dea/history/fut_disagg_txt_2026.zip"
+            "CFTC 2026":"https://www.cftc.gov/files/dea/history/fut_disagg_txt_2026.zip",
+            "SINA AU0":"https://stock2.finance.sina.com.cn/futures/api/json.php/IndexService.getInnerFuturesDailyKLine?symbol=AU0",
+            "SINA AU2612":"https://stock2.finance.sina.com.cn/futures/api/json.php/IndexService.getInnerFuturesDailyKLine?symbol=AU2612",
+            "GLD archive":"https://api.spdrgoldshares.com/api/v1/historical-archive?exchange=NYSE&lang=en&product=gld"
           }
           for name,url in sources.items():
             try:
@@ -31,6 +34,21 @@ jobs:
               with urllib.request.urlopen(req,timeout=25) as f:
                 body=f.read(25000000)
                 print("PROBE",name,"status",f.status,"length",len(body),"type",f.headers.get("content-type"),"prefix",repr(body[:120]))
+                if name.startswith("SINA"):
+                  print("SINA_CONTENT",name,body[:230])
+                if name=="GLD archive":
+                  try:
+                    import io,zipfile
+                    z=zipfile.ZipFile(io.BytesIO(body))
+                    print("GLD_ZIPFILE_CONTENT",len(z.namelist()),z.namelist()[:8])
+                  except Exception as e: print("GLD_PARSE_ERR",str(e)[:150])
+                if name=="CFTC 2026":
+                  try:
+                    import io,zipfile
+                    z=zipfile.ZipFile(io.BytesIO(body))
+                    print("CFTC_ZIPFILE_CONTENT",z.namelist())
+                    print("CFTC_HEADER",z.read(z.namelist()[0])[:1400].split(b'\\n')[0])
+                  except Exception as e: print("CFTC_PARSE_ERR",str(e)[:150])
                 if name.startswith("Yahoo") and len(body):
                   try:
                     res=json.loads(body)["chart"]["result"][0]
