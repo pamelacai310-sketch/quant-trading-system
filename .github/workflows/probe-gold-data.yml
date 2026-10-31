@@ -73,4 +73,18 @@ jobs:
                     q=res["indicators"]["quote"][0];print("YAHOO_LAST_PRICE",q["close"][-1],"YAHOO_2024_FIRST",q["close"][0])
                   except Exception as e:print("YAHOO_PARSE_ERROR",name,type(e).__name__,str(e)[:180])
             except Exception as e: print("PROBE_FAILED",name,type(e).__name__,str(e)[:230])
+
+          try:
+            headers={"User-Agent":"Mozilla/5.0 (QuantResearchBot/1.0)"}
+            req=urllib.request.Request("https://futsse-static.eastmoney.com/redis?msgid=113",headers=headers)
+            with urllib.request.urlopen(req,timeout=20) as resp: marketindex=json.loads(resp.read())
+            print("EASTMONEY_MAIN_PAGES",len(marketindex))
+            for i in range(1,len(marketindex)+1):
+              try:
+                req=urllib.request.Request("https://futsse-static.eastmoney.com/redis?msgid=113_"+str(i),headers=headers)
+                with urllib.request.urlopen(req,timeout=15) as resp: items=json.loads(resp.read())
+                hits=[(x.get("name"),x.get("code"),x.get("vcode"),x.get("linetype")) for x in items if "沪金" in str(x.get("name")) or "黄金" in str(x.get("name")) or str(x.get("code","")).lower().startswith("au")]
+                if hits: print("AU_MAIN_MAPPING",i,hits)
+              except Exception as e: print("PAGE_ERR",i,str(e)[:90])
+          except Exception as e: print("MAIN_MAPPING_ERROR",str(e)[:120])
           PY
