@@ -1,0 +1,54 @@
+name: Real 2024-2026 V3.5 P0 Gold Backtest
+on:
+  push:
+    branches: [feat/gold-v35-p0-selling-pressure-20261031]
+    paths:
+      - 'scripts/build_gold_v35_real_inputs.py'
+      - 'scripts/run_gold_v35_real.py'
+      - '.github/workflows/gold-v35-real-backtest.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  real-backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/gold-v35-p0-selling-pressure-20261031
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install analysis dependencies
+        run: python -m pip install 'numpy>=1.26,<3' 'pandas>=2.2,<3' 'openpyxl>=3.1'
+      - name: Obtain official FRED CFTC GLD and EastMoney AU history (no fabricated data)
+        run: python scripts/build_gold_v35_real_inputs.py
+      - name: Execute actual 2024-2026 ablation and block-bootstrap evaluation
+        run: python scripts/run_gold_v35_real.py
+      - name: Print performance and acquisition integrity
+        run: |
+          python - <<'PY'
+          import json
+          p=json.load(open('results/gold_v35_real_backtest_20261030.json'))
+          for symbol in ('AU_MAIN','AU2612'):
+            r=p.get(symbol,{})
+            print('PERFORMANCE',symbol,'rows',r.get('input_rows'),'baseline',r.get('baseline'),'v35',r.get('v35'),'bootstrap',r.get('weekly_block_bootstrap'))
+          PY
+      - name: Commit verified research input references and derived results
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f data/research_inputs/cftc_releases.csv data/research_inputs/au2612_history.csv data/research_inputs/gold_v35_au2612_market.csv data/research_inputs/provenance.json
+          test ! -f data/research_inputs/au_main_history.csv || git add -f data/research_inputs/au_main_history.csv data/research_inputs/gold_v35_au_main_market.csv
+          git add -f results/gold_v35_real_backtest_20261030.json
+          git add -f results/gold_v35_signals_AU2612.csv
+          test ! -f results/gold_v35_signals_AU_MAIN.csv || git add -f results/gold_v35_signals_AU_MAIN.csv
+          if ! git diff --cached --quiet; then
+            git commit -m "research: verified 2024-2026 gold V3.5 inputs and real backtest results"
+            git push origin HEAD:feat/gold-v35-p0-selling-pressure-20261031
+          fi
+          # Never commit GLD proprietary sponsor archive or daily holdings.
+          rm -f data/research_inputs/gld_releases_LOCAL_ONLY.csv
