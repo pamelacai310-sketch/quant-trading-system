@@ -1,0 +1,42 @@
+name: Probe historical gold data sources
+on:
+  push:
+    branches: [feat/gold-v35-p0-selling-pressure-20261031]
+    paths:
+      - '.github/workflows/probe-gold-data.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe public data sources
+        shell: bash
+        run: |
+          python - <<'PY'
+          import urllib.request,urllib.error,json,datetime
+          sources={
+            "Yahoo GC=F":"https://query1.finance.yahoo.com/v8/finance/chart/GC%3DF?period1=1704067200&period2=1793404800&interval=1d",
+            "Yahoo DXY":"https://query1.finance.yahoo.com/v8/finance/chart/DX-Y.NYB?period1=1704067200&period2=1793404800&interval=1d",
+            "FRED TIPS":"https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFII10&cosd=2024-01-01&coed=2026-10-30",
+            "Stooq GC":"https://stooq.com/q/d/l/?s=gc.f&i=d&d1=20240101&d2=20261030",
+            "CFTC 2026":"https://www.cftc.gov/files/dea/history/fut_disagg_txt_2026.zip"
+          }
+          for name,url in sources.items():
+            try:
+              req=urllib.request.Request(url,headers={"User-Agent":"Mozilla/5.0 (compatible; ResearchDataAudit/1.0)","Accept":"*/*"})
+              with urllib.request.urlopen(req,timeout=25) as f:
+                body=f.read(25000000)
+                print("PROBE",name,"status",f.status,"length",len(body),"type",f.headers.get("content-type"),"prefix",repr(body[:120]))
+                if name.startswith("Yahoo") and len(body):
+                  try:
+                    res=json.loads(body)["chart"]["result"][0]
+                    arr=res["timestamp"]
+                    print("YAHOO_ROWS",name,len(arr),"first",datetime.datetime.fromtimestamp(arr[0],datetime.timezone.utc),"last",datetime.datetime.fromtimestamp(arr[-1],datetime.timezone.utc))
+                    q=res["indicators"]["quote"][0];print("YAHOO_LAST_PRICE",q["close"][-1],"YAHOO_2024_FIRST",q["close"][0])
+                  except Exception as e:print("YAHOO_PARSE_ERROR",name,type(e).__name__,str(e)[:180])
+            except Exception as e: print("PROBE_FAILED",name,type(e).__name__,str(e)[:230])
+          PY
