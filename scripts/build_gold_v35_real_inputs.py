@@ -46,18 +46,39 @@ def yahoo_dxy()->pd.DataFrame:
     return frame.dropna().drop_duplicates('date',keep='last').sort_values('date')
 
 def fred_tips()->pd.DataFrame:
-    url="https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFII10&cosd=2024-01-01&coed=2026-10-30"
-    try:
-        payload=get(url,tries=2)
-    except Exception as ex:
-        print("FRED_PRIMARY_FAILED",type(ex).__name__,str(ex)[:150])
-        payload=get("https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFII10",tries=2)
-    f=pd.read_csv(io.BytesIO(payload))
-    datecol=f.columns[0]
-    f=f.rename(columns={datecol:'date','DFII10':'tips10_pp'})
-    f['date']=pd.to_datetime(f['date'])
-    f['tips10_pp']=pd.to_numeric(f['tips10_pp'],errors='coerce')
-    return f.dropna().sort_values('date')
+    """Official US Treasury daily 10-year real CMT (same concept as FRED DFII10).
+
+    Preferred source is direct Treasury year-level CSV. Each row is one observation;
+    no synthetic interpolation across missing observation days.
+    """
+    parts=[]
+    for year in (2024,2025,2026):
+        url=("https://home.treasury.gov/resource-center/data-chart-center/interest-rates/"
+             f"daily-treasury-rates.csv/{year}/all?type=daily_treasury_real_yield_curve"
+             f"&field_tdr_date_value={year}&page&_format=csv")
+        raw=get(url,tries=1)
+        if raw.lstrip().startswith(b'<'):
+            raise ValueError(f'Treasury real yield returned HTML/XML not CSV in {year}')
+        tbl=pd.read_csv(io.BytesIO(raw))
+        colmap={str(c).strip().lower():c for c in tbl.columns}
+        datecol=colmap.get('date')
+        valuecol=colmap.get('10 yr')
+        if datecol is None or valuecol is None:
+            raise ValueError('Unexpected official Treasury real yield fields '+str(list(tbl.columns)))
+        tbl=tbl[[datecol,valuecol]].rename(columns={datecol:'date',valuecol:'tips10_pp'})
+        tbl['date']=pd.to_datetime(tbl['date'],errors='coerce')
+        tbl['tips10_pp']=pd.to_numeric(tbl['tips10_pp'],errors='coerce')
+        parts.append(tbl.dropna())
+    out=pd.concat(parts,ignore_index=True).sort_values('date').drop_duplicates('date')
+    if len(out)<680 or out.date.min()>pd.Timestamp('2024-01-03') or out.date.max()<pd.Timestamp('2026-10-28'):
+        raise ValueError(f'US Treasury real 10Y coverage invalid: rows={len(out)} {out.date.min()}..{out.date.max()}')
+    checks={'2026-10-29':2.63,'2026-10-28':2.67}
+    ix=out.set_index(out.date.dt.strftime('%Y-%m-%d'))['tips10_pp']
+    for d,reference in checks.items():
+        if d not in ix.index or abs(float(ix[d])-reference)>.04:
+            raise ValueError(f'Treasury real yield external spot audit mismatch at {d}: {ix.get(d)} vs {reference}')
+    print('TREASURY_REAL10Y',len(out),str(out.date.min()),str(out.date.max()))
+    return out
 
 def cot_releases()->pd.DataFrame:
     parts=[]
@@ -210,7 +231,7 @@ def main():
         raise RuntimeError('AU2612 insufficient actual tradable history')
     report={'source_gc':'Yahoo GC=F continuous; data/gold_daily.csv',
             'source_dxy':'Yahoo DX-Y.NYB',
-            'source_tips':'FRED DFII10, official daily observations',
+            'source_tips':'U.S. Treasury Daily Treasury Par Real Yield Curve Rates, 10 YR, daily official observations',
             'source_cot':'CFTC official disaggregated futures-only 2023-2026 zipped reports',
             'cot_availability':'as-of Tuesday +10 calendar days at 23:59 UTC; CONSERVATIVE, not actual release timestamp',
             'source_gld':'SPDR official GLD historical archive XLSX, analyzed only in CI; not redistributed',
