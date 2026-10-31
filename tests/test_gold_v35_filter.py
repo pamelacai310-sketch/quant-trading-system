@@ -1,7 +1,10 @@
 """Synthetic *unit tests*, never interpreted as historical performance."""
 import unittest
 import pandas as pd
-from quant_trade_system.gold_v35_filter import backtest, point_in_time_merge, latest_p0_status
+import sys
+from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'quant_trade_system'))
+from gold_v35_filter import backtest, point_in_time_merge, latest_p0_status
 
 def market():
     days=pd.bdate_range('2025-01-06',periods=11)
@@ -62,7 +65,7 @@ if __name__=='__main__':
 
 class P0PortfolioActionTest(unittest.TestCase):
     def test_veto_only_new_long_exposure_and_rate_only_probability_bump(self):
-        from quant_trade_system.gold_v35_filter import enforce_new_long_target,constrain_rate_upside_increment
+        from gold_v35_filter import enforce_new_long_target,constrain_rate_upside_increment
         guard={'p0_block_new_long':True}
         self.assertEqual(enforce_new_long_target(1,2,guard)[0],1)
         self.assertEqual(enforce_new_long_target(-1,1,guard)[0],0)
