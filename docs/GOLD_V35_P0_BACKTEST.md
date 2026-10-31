@@ -16,9 +16,9 @@ Initial thresholds are hypotheses, not learned values or validated optima.
 ## Source-data schema and publication times
 
 `market.csv` columns:
-`date,cutoff_at,next_au_open_at,gc_close,gc_high,gc_low,tips10_pp,dxy,au_next_open,au_next_close`
+`date,cutoff_at,next_au_open_at,gc_close,gc_high,gc_low,comex_oi,tips10_pp,dxy,au_next_open,au_next_close`
 
-- `gc_close/high/low`: real COMEX GC tradable continuous contracts (roll method and timestamps documented); no synthetic data.
+- `gc_close/high/low,comex_oi`: real COMEX GC tradable continuous contracts and matching daily contract OI (roll method and timestamps documented); no synthetic data.
 - `tips10_pp`: FRED `DFII10`, percent units e.g. 2.63 (not .0263), and **published** by the chosen cutoff.
 - `dxy`: actual ICE US Dollar Index. The Fed broad dollar index is not DXY.
 - `au_next_open/close`: executable next China session after the signal cutoff (AU main rolling contract for 2024–2025; **AU2612 ONLY after actual listing**, independent test). Respect Chinese holidays and COMEX holidays.
@@ -86,3 +86,6 @@ approved_position, reason = enforce_new_long_target(
 ```
 
 **注意**：这里提供调用API，不代表已自动连接所有现有策略或实时执行引擎；需显式从预测/下单入口接线。缺少ETF/CFTC数据时保守地禁止仅凭实际利率下降新增多头。价格/资金流解锁并不生成买入信号。
+
+
+Daily `comex_oi` is now a required diagnostic input. The output records `oi_delta`, `gold_down_oi_down`, and the number of divergence events accompanied by declining OI. Declining OI alone is **not** proof of forced liquidation or a sufficient reason to lift P0.
