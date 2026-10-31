@@ -37,7 +37,7 @@ def point_in_time_merge(market:pd.DataFrame, releases:pd.DataFrame, source:str, 
     return merged.rename(columns={value_col:source,'available_at':source+'_available_at'}).sort_values('date').reset_index(drop=True)
 
 def validate(m:pd.DataFrame)->pd.DataFrame:
-    needed={'date','cutoff_at','next_au_open_at','gc_close','gc_high','gc_low','tips10_pp','dxy','au_next_open','au_next_close'}
+    needed={'date','cutoff_at','next_au_open_at','gc_close','gc_high','gc_low','comex_oi','tips10_pp','dxy','au_next_open','au_next_close'}
     if needed-set(m.columns): raise ValueError('Missing columns '+str(sorted(needed-set(m.columns))))
     m=m.copy()
     m['date']=pd.to_datetime(m['date'])
@@ -51,6 +51,7 @@ def validate(m:pd.DataFrame)->pd.DataFrame:
         raise ValueError('Future info used: entry before cutoff')
     if (m['gc_close']<=0).any() or (m['tips10_pp'].abs()>20).any():
         raise ValueError('Gold price or TIPS scale invalid')
+    if (m['comex_oi']<0).any(): raise ValueError('Invalid COMEX open interest')
     if (m[['au_next_open','au_next_close']]<=0).any().any():
         raise ValueError('AU price invalid')
     return m
@@ -68,6 +69,8 @@ def backtest(market:pd.DataFrame,etf:pd.DataFrame,cot:pd.DataFrame,cfg:Config=Co
     m['tips_delta_pp']=m['tips10_pp'].diff()
     m['dxy_delta']=m['dxy'].diff()
     m['gold_ret']=m['gc_close'].pct_change()
+    m['oi_delta']=m['comex_oi'].diff()
+    m['gold_down_oi_down']=(m['gold_ret']<0)&(m['oi_delta']<0)
     m['baseline_long']=(m['tips_delta_pp']<=-cfg.yield_drop_pp)&(m['dxy_delta']<0)
     m['divergence']=(m['tips_delta_pp']<=-cfg.yield_drop_pp)&(m['gold_ret']<-cfg.min_gold_drop)
     for source in ('etf_tonnes','cot_mm_net'):
@@ -123,6 +126,7 @@ def backtest(market:pd.DataFrame,etf:pd.DataFrame,cot:pd.DataFrame,cfg:Config=Co
                 'max_drawdown_cny':float((cum-cum.cummax().clip(lower=0)).min()) if len(cum) else 0.}
     report={'status':'RESEARCH_ONLY','observations':len(m),
             'divergences':int(m['divergence'].sum()),
+            'divergence_with_oi_decline':int((m['divergence']&m['gold_down_oi_down']).sum()),
             'blocked_baseline_longs':int((m['baseline_long']&m['p0_block_new_long']).sum()),
             'confirmed_releases':int(m['p0_release_confirmed'].sum()),
             'baseline':stats('baseline','baseline_long'),
@@ -137,7 +141,7 @@ def latest_p0_status(history:pd.DataFrame,etf:pd.DataFrame,cot:pd.DataFrame,cfg:
     evaluator; no target price or backtest result informs this P0 gate.
     """
     market=history.copy()
-    for col in ('date','cutoff_at','gc_close','gc_high','gc_low','tips10_pp','dxy'):
+    for col in ('date','cutoff_at','gc_close','gc_high','gc_low','comex_oi','tips10_pp','dxy'):
         if col not in market: raise ValueError('Missing '+col)
     market['next_au_open_at']=pd.to_datetime(market['cutoff_at'],utc=True)+pd.Timedelta(days=1)
     market['au_next_open']=1.0
