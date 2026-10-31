@@ -128,3 +128,27 @@ def backtest(market:pd.DataFrame,etf:pd.DataFrame,cot:pd.DataFrame,cfg:Config=Co
             'baseline':stats('baseline','baseline_long'),
             'v35':stats('v35','v35_long')}
     return m,report
+
+
+def latest_p0_status(history:pd.DataFrame,etf:pd.DataFrame,cot:pd.DataFrame,cfg:Config=Config())->dict:
+    """Live entry-veto decision without future AU prices.
+
+    Temporary constant AU labels are used only to reuse the historical feature
+    evaluator; no target price or backtest result informs this P0 gate.
+    """
+    market=history.copy()
+    for col in ('date','cutoff_at','gc_close','gc_high','gc_low','tips10_pp','dxy'):
+        if col not in market: raise ValueError('Missing '+col)
+    market['next_au_open_at']=pd.to_datetime(market['cutoff_at'],utc=True)+pd.Timedelta(days=1)
+    market['au_next_open']=1.0
+    market['au_next_close']=1.0
+    frame,_=backtest(market,etf,cot,cfg)
+    if frame.empty: raise ValueError('No market history')
+    row=frame.iloc[-1]
+    return {'as_of':str(row['cutoff_at']),
+            'triggered_today':bool(row['divergence']),
+            'p0_block_new_long':bool(row['p0_block_new_long']),
+            'p0_release_confirmed':bool(row['p0_release_confirmed']),
+            'selling_pressure_exhausted':bool(row['selling_pressure_exhausted']),
+            'positive_flow_new':bool(row['positive_flow']),
+            'policy':'VETO_LONG_ADDITIONS_ONLY; release is not a buy signal'}
