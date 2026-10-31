@@ -14,6 +14,7 @@ def market():
         'cutoff_at':(days+pd.Timedelta(hours=23)).astype(str),
         'next_au_open_at':(days+pd.Timedelta(days=1,hours=3)).astype(str),
         'gc_close':gc,
+        'comex_oi':[1000000-i*500 for i in range(len(days))],
         'gc_high':[x+10 for x in gc],
         'gc_low':[x-10 for x in gc],
         'tips10_pp':[2,1.97,1.94,1.91,1.89,1.88,1.85,1.84,1.80,1.76,1.74],
