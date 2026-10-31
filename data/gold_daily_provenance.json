@@ -1,0 +1,158 @@
+{
+  "status": "PASSED",
+  "instrument": "COMEX GC nearby continuous, Yahoo Finance GC=F",
+  "currency": "USD",
+  "unit": "USD per troy oz",
+  "source_url": "https://query1.finance.yahoo.com/v8/finance/chart/GC%3DF?period1=1704067200&period2=1793491200&interval=1d",
+  "start": "2024-01-02",
+  "end": "2026-10-30",
+  "trading_rows": 713,
+  "rows_by_year": {
+    "2024": 252,
+    "2025": 252,
+    "2026": 209
+  },
+  "independent_sample_checks": [
+    {
+      "date": "2024-10-04",
+      "actual_gc": 2667.8,
+      "reference_gc": 2667.8,
+      "relative_error_pct": 0.0,
+      "tolerance_pct": 2.5,
+      "source": "COMEX Dec24 indicative settlement / secondary report"
+    },
+    {
+      "date": "2025-12-31",
+      "actual_gc": 4341.1001,
+      "reference_gc": 4341.1,
+      "relative_error_pct": 0.0,
+      "tolerance_pct": 3.0,
+      "source": "Secondary source referencing GC=F Dec25 daily settlement"
+    },
+    {
+      "date": "2026-10-26",
+      "actual_gc": 4038.3999,
+      "reference_gc": 4038.4,
+      "relative_error_pct": 0.0,
+      "tolerance_pct": 1.5,
+      "source": "Investing.com GC1! published historical close"
+    },
+    {
+      "date": "2026-10-27",
+      "actual_gc": 4074.6001,
+      "reference_gc": 4074.6,
+      "relative_error_pct": 0.0,
+      "tolerance_pct": 1.5,
+      "source": "Investing.com GC1! published historical close"
+    },
+    {
+      "date": "2026-10-28",
+      "actual_gc": 4051.6001,
+      "reference_gc": 4051.6,
+      "relative_error_pct": 0.0,
+      "tolerance_pct": 1.5,
+      "source": "Investing.com GC1! published historical close"
+    },
+    {
+      "date": "2026-10-29",
+      "actual_gc": 4031.3999,
+      "reference_gc": 4031.4,
+      "relative_error_pct": 0.0,
+      "tolerance_pct": 1.5,
+      "source": "Reuters reported U.S. December futures settlement"
+    },
+    {
+      "date": "2026-10-30",
+      "actual_gc": 3884.8999,
+      "reference_gc": 3884.9,
+      "relative_error_pct": 0.0,
+      "tolerance_pct": 1.5,
+      "source": "Investing.com GC1! published historical close"
+    }
+  ],
+  "internal_random_row_samples_NOT_independent_validation": {
+    "2024": [
+      {
+        "date": "2024-04-24",
+        "close": 2338.3999,
+        "volume": 187699
+      },
+      {
+        "date": "2024-04-01",
+        "close": 2257.1001,
+        "volume": 220767
+      },
+      {
+        "date": "2024-10-10",
+        "close": 2639.3,
+        "volume": 195581
+      },
+      {
+        "date": "2024-09-30",
+        "close": 2659.3999,
+        "volume": 173252
+      },
+      {
+        "date": "2024-05-20",
+        "close": 2438.5,
+        "volume": 281430
+      }
+    ],
+    "2025": [
+      {
+        "date": "2025-01-29",
+        "close": 2769.8,
+        "volume": 125692
+      },
+      {
+        "date": "2025-07-11",
+        "close": 3364.0,
+        "volume": 216883
+      },
+      {
+        "date": "2025-01-16",
+        "close": 2750.8999,
+        "volume": 186543
+      },
+      {
+        "date": "2025-03-20",
+        "close": 3043.8,
+        "volume": 141231
+      },
+      {
+        "date": "2025-04-03",
+        "close": 3121.7,
+        "volume": 382860
+      }
+    ],
+    "2026": [
+      {
+        "date": "2026-06-29",
+        "close": 4038.8999,
+        "volume": 107421
+      },
+      {
+        "date": "2026-03-25",
+        "close": 4552.2998,
+        "volume": 245178
+      },
+      {
+        "date": "2026-08-25",
+        "close": 4694.5,
+        "volume": 176784
+      },
+      {
+        "date": "2026-03-03",
+        "close": 5123.7002,
+        "volume": 273216
+      },
+      {
+        "date": "2026-02-11",
+        "close": 5098.5,
+        "volume": 129968
+      }
+    ]
+  },
+  "warning": "Continuous nearby COMEX roll dates differ from fixed GCZ6; cannot substitute for AU2612.",
+  "file_sha256": "4d946720b8e2af17146e43feaac6f098ca59ec9c8bc2e43c20a4da90b5a6741a"
+}
