@@ -224,6 +224,18 @@ def main():
     except Exception as e:
         print('AU_MAIN_DATA_BLOCKER',type(e).__name__,str(e)[:300])
     au2612=eastmoney_contract('AU2612')
+    # Independently reported exchange day-close (NOT settlement/weighted average).
+    external_au_samples={'2026-10-30':855.18,'2026-10-29':867.26,'2026-10-23':864.36}
+    au_ix=au2612.set_index(au2612.au_date.dt.strftime('%Y-%m-%d'))['au_close']
+    sample_audit=[]
+    for d,ref_close in external_au_samples.items():
+        actual=float(au_ix.get(d,float('nan')))
+        diff=abs(actual-ref_close)
+        sample_audit.append({'date':d,'source':'EastMoney AU2612','close':actual,
+                             'independent_shfe_close':ref_close,'absolute_error_cny_per_g':diff})
+        if not np.isfinite(actual) or diff>0.15:
+            raise RuntimeError(f'AU2612 independent sample CLOSE mismatch: {d}: {actual} vs {ref_close}; do NOT confuse settlement')
+    print('AU2612_CLOSE_SAMPLES',sample_audit)
     au2612.to_csv(out/'au2612_history.csv',index=False)
     m2=make_market(gold,dxy,tips,au2612,cot)
     m2.to_csv(out/'gold_v35_au2612_market.csv',index=False)
@@ -237,6 +249,7 @@ def main():
             'source_gld':'SPDR official GLD historical archive XLSX, analyzed only in CI; not redistributed',
             'gld_availability':'observation date +2 calendar days at 12:00 UTC; conservative',
             'source_au':'Eastmoney SHFE AU2612 fixed contract and (where accessible) main continuous',
+            'au2612_cross_source_sample_audit':sample_audit,
             'main_contract_code':main_code,
             'dxy_rows':len(dxy),'fred_rows':len(tips),'cot_reports':len(cot),
             'gld_rows':len(etf),'au2612_rows':len(au2612),'au2612_aligned_rows':len(m2),
