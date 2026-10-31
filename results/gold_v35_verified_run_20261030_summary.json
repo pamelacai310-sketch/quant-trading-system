@@ -1,0 +1,88 @@
+{
+  "asof": "2026-10-30",
+  "status": "ACTUAL_MARKET_DATA_RESEARCH_BACKTEST",
+  "source_run": "https://github.com/pamelacai310-sketch/quant-trading-system/actions/runs/41153961097",
+  "note": "Backtest executed successfully with actual verified GC=F, Treasury real10Y, DXY, GLD, CFTC and EastMoney AU data; GitHub Actions job failed ONLY during pushing output due branch race. Metrics copied faithfully from archived job logs; no fabricated trades.",
+  "baseline_definition": "Long on TIPS 10Y yield decline at least 2bp AND DXY decline; close at next eligible AU session close",
+  "p0_definition": "Veto new baseline rate-driven longs after down gold + falling TIPS until price and published positive flow both confirm",
+  "units": "CNY per trading one lot=1000g, illustrative commission+slippage; main continuous is synthetic",
+  "au_main": {
+    "n_observations": 636,
+    "n_divergences": 76,
+    "blocked_entries": 64,
+    "baseline": {
+      "trades": 147,
+      "direction_accuracy": 0.5034013605442177,
+      "payoff_ratio": 0.8299782210759564,
+      "profit_factor": 0.8413477857482299,
+      "pnl_cny": -70110,
+      "max_drawdown_cny": -144830
+    },
+    "v35": {
+      "trades": 83,
+      "direction_accuracy": 0.4939759036144578,
+      "payoff_ratio": 0.7248417867701433,
+      "profit_factor": 0.7075836489899017,
+      "pnl_cny": -74110,
+      "max_drawdown_cny": -113240
+    },
+    "incremental_net_pnl_cny": -4000,
+    "weekly_bootstrap_ci95_cny": [
+      -138881,
+      135701
+    ],
+    "by_year": {
+      "2024": {
+        "baseline_pnl_cny": 23340,
+        "v35_pnl_cny": 1300,
+        "incremental": -22040
+      },
+      "2025": {
+        "baseline_pnl_cny": -13660,
+        "v35_pnl_cny": -32730,
+        "incremental": -19070
+      },
+      "2026": {
+        "baseline_pnl_cny": -79790,
+        "v35_pnl_cny": -42680,
+        "incremental": 37110
+      }
+    }
+  },
+  "au2612": {
+    "n_observations": 215,
+    "n_divergences": null,
+    "baseline": {
+      "trades": 43,
+      "direction_accuracy": 0.46511627906976744,
+      "payoff_ratio": 0.9818018674817095,
+      "profit_factor": 0.7772598117563533,
+      "pnl_cny": -50170,
+      "max_drawdown_cny": -152450
+    },
+    "v35": {
+      "trades": 21,
+      "direction_accuracy": 0.42857142857142855,
+      "payoff_ratio": 1.2360267314702367,
+      "profit_factor": 0.7606318347509149,
+      "pnl_cny": -29550,
+      "max_drawdown_cny": -98410
+    },
+    "incremental_net_pnl_cny": 20620,
+    "weekly_bootstrap_ci95_cny": [
+      -84672.75,
+      134924.5
+    ]
+  },
+  "confidence": "BOTH bootstrap confidence intervals span zero: P0 improvement NOT statistically demonstrated",
+  "limitations": [
+    "GLD archival raw redistribution prohibited, data used transiently in GitHub runner",
+    "CFTC report release delay conservatively approximated as Tuesday+10 calendar days, not real release timestamps",
+    "Conservative GLD release lag approximated +2 calendar days",
+    "Main continuous contains potential roll artifacts",
+    "Weak simple rate+DXY baseline is NOT full V3.4",
+    "One-lot illustrative fee/slippage and session-open data, no market slippage verification",
+    "P0 released threshold chosen with full period knowledge; 2026 is not blind prospective holdout",
+    "No JEV call"
+  ]
+}
