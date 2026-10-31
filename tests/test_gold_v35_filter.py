@@ -58,3 +58,16 @@ class GoldP0Test(unittest.TestCase):
 
 if __name__=='__main__':
     unittest.main()
+
+
+class P0PortfolioActionTest(unittest.TestCase):
+    def test_veto_only_new_long_exposure_and_rate_only_probability_bump(self):
+        from quant_trade_system.gold_v35_filter import enforce_new_long_target,constrain_rate_upside_increment
+        guard={'p0_block_new_long':True}
+        self.assertEqual(enforce_new_long_target(1,2,guard)[0],1)
+        self.assertEqual(enforce_new_long_target(-1,1,guard)[0],0)
+        self.assertEqual(enforce_new_long_target(1,0,guard)[0],0)
+        self.assertEqual(constrain_rate_upside_increment(.05,guard),0.)
+        guard['p0_block_new_long']=False
+        self.assertEqual(enforce_new_long_target(1,2,guard)[0],2)
+        self.assertEqual(constrain_rate_upside_increment(.05,guard),.05)
