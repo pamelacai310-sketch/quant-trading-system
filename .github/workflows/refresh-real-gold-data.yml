@@ -1,0 +1,46 @@
+name: Refresh verified COMEX gold 2024-2026 data
+on:
+  push:
+    branches: [feat/gold-v35-p0-selling-pressure-20261031]
+    paths:
+      - 'scripts/refresh_gold_daily.py'
+      - '.github/workflows/refresh-real-gold-data.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/gold-v35-p0-selling-pressure-20261031
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Retrieve actual historical GC prices and audit independent sample dates
+        run: python scripts/refresh_gold_daily.py
+      - name: Inspect report and dates
+        run: |
+          wc -l data/gold_daily.csv
+          head -n 3 data/gold_daily.csv
+          tail -n 3 data/gold_daily.csv
+          python - <<'PY'
+          import json
+          r=json.load(open('data/gold_daily_provenance.json'))
+          print("AUDIT_STATUS",r['status'],"ROWS",r['trading_rows'],"YEARS",r['rows_by_year'])
+          for a in r['independent_sample_checks']:
+              print("SAMPLE",a['date'],a['actual_gc'],a['reference_gc'],a['relative_error_pct'])
+          PY
+      - name: Commit audited real history to research branch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/gold_daily.csv data/gold_daily_provenance.json data/archive/gold_daily_legacy_UNVERIFIED.csv
+          if ! git diff --cached --quiet; then
+            git commit -m "data: replace unverified synthetic gold bars with audited GC history through 2026-10-30"
+            git push origin HEAD:feat/gold-v35-p0-selling-pressure-20261031
+          fi
