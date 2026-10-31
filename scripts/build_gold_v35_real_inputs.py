@@ -125,22 +125,13 @@ def eastmoney_contract(code:str)->pd.DataFrame:
     return df.sort_values('au_date').reset_index(drop=True)
 
 def eastmoney_main_code()->str:
-    base='https://futsse-static.eastmoney.com/redis?msgid='
-    market=get_json(base+'113')
-    candidates=[]
-    for idx in range(1,len(market)+1):
-        try:
-            page=get_json(base+'113_'+str(idx))
-            for c in page:
-                name=str(c.get('name',''))
-                if ('沪金' in name or '黄金' in name) and ('主连' in name or '主力' in name or '连续' in name):
-                    candidates.append((name,str(c['code'])))
-        except Exception as ex:print('MAIN_MAP_SKIP_PAGE',idx,type(ex).__name__)
-    print('AU_MAIN_CANDIDATES',candidates)
-    if not candidates:raise ValueError('Could not identify AU continuous code; refuse unverified proxy')
-    # Favor published continuous symbol, not arbitrary fixed-month contract.
-    candidates=sorted(candidates,key=lambda x:(not('主连' in x[0]),x[0]))
-    return candidates[0][1]
+    # Official Eastmoney SHFE mapping: market 113, page 5, 沪金主连 => aum.
+    # Avoid repeatedly querying 20 pages (and hitting rate limits).
+    candidates=get_json('https://futsse-static.eastmoney.com/redis?msgid=113_5')
+    hits=[str(x.get('code')) for x in candidates if x.get('name')=='沪金主连']
+    if 'aum' not in hits:
+        raise ValueError('Expected 沪金主连/aum mapping absent; halt rather than guess')
+    return 'aum'
 
 def make_market(gold:pd.DataFrame,dxy:pd.DataFrame,tips:pd.DataFrame,au:pd.DataFrame,cot:pd.DataFrame)->pd.DataFrame:
     base=gold.rename(columns={'timestamp':'date','close':'gc_close','high':'gc_high','low':'gc_low'})
