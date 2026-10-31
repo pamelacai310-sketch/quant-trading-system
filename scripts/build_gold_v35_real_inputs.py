@@ -23,7 +23,7 @@ def get(url:str,tries:int=3)->bytes:
     for k in range(tries):
         try:
             req=urllib.request.Request(url,headers=REQ_HEADERS)
-            with urllib.request.urlopen(req,timeout=40) as r:
+            with urllib.request.urlopen(req,timeout=20) as r:
                 b=r.read()
                 if not b:raise RuntimeError('EMPTY')
                 return b
@@ -46,7 +46,7 @@ def yahoo_dxy()->pd.DataFrame:
     return frame.dropna().drop_duplicates('date',keep='last').sort_values('date')
 
 def fred_tips()->pd.DataFrame:
-    url="https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFII10&cosd=2023-12-01&coed=2026-10-30"
+    url="https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFII10&cosd=2024-01-01&coed=2026-10-30"
     f=pd.read_csv(io.BytesIO(get(url)))
     datecol=f.columns[0]
     f=f.rename(columns={datecol:'date','DFII10':'tips10_pp'})
