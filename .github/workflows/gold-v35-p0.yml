@@ -1,0 +1,22 @@
+name: Gold V3.5 P0 guard tests
+on:
+  pull_request:
+    paths:
+      - 'quant_trade_system/gold_v35_filter.py'
+      - 'tests/test_gold_v35_filter.py'
+      - 'scripts/run_gold_v35_backtest.py'
+      - '.github/workflows/gold-v35-p0.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  guard-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install 'numpy>=1.26,<3' 'pandas>=2.2,<3'
+      - run: python -m unittest discover -s tests -p 'test_gold_v35_filter.py' -v
